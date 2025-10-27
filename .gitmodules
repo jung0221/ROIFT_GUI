@@ -1,6 +1,3 @@
 [submodule "roift"]
 	path = roift
 	url = https://github.com/jung0221/roift.git
-[submodule "submodules/ITKLatestRelease"]
-	path = submodules/ITKLatestRelease
-	url = https://github.com/InsightSoftwareConsortium/ITK
