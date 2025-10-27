@@ -26,6 +26,19 @@ if (NOT USE_ITK)
     message(FATAL_ERROR "ITK is required for this project. Re-run CMake with -DUSE_ITK=ON.")
 endif()
 
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+file(GLOB SRC_FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+)
+
+add_executable(roift_gui ${SRC_FILES})
+
+# Build the ROIFT standalone executable (oiftrelax) located in the roift/ subdirectory.
+# This produces an additional binary named 'oiftrelax' alongside 'roift_gui'.
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/roift)
+
+# Build without ITK; use bundled fallback NIfTI reader in code
 message(STATUS "Attempting to find ITK (USE_ITK=ON)")
 find_package(ITK REQUIRED)
 if (ITK_FOUND)
@@ -35,35 +48,19 @@ else()
     message(FATAL_ERROR "ITK was not found on this system. Install ITK or set ITK_DIR to the installation path.")
 endif()
 
-if (USE_ITK)
-    # ITK may have optional dependencies (HDF5 built with libcurl). Ensure libcurl is available for linking.
-    find_package(CURL QUIET)
-    if (NOT CURL_FOUND)
-        message(FATAL_ERROR "ITK was found but libcurl (CURL) is required by ITK/HDF5. Please install libcurl and its CMake config (libcurl-dev) or set CMAKE_PREFIX_PATH to its location.")
-    else()
-        message(STATUS "Found CURL: ${CURL_VERSION_STRING}")
-    endif()
+# ITK may have optional dependencies (HDF5 built with libcurl). Ensure libcurl is available for linking.
+find_package(CURL QUIET)
+if (NOT CURL_FOUND)
+    message(WARNING "ITK found but libcurl (CURL) was not found; some ITK HDF5 features may be unavailable.")
+else()
+    message(STATUS "Found CURL: ${CURL_VERSION_STRING}")
 endif()
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-file(GLOB SRC_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
-)
-
-add_executable(roift_gui ${SRC_FILES})
-
-# Build without ITK; use bundled fallback NIfTI reader in code
-if (USE_ITK)
-    target_compile_definitions(roift_gui PRIVATE HAVE_ITK=1)
-    if (CURL_FOUND)
-        target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB ${ITK_LIBRARIES} CURL::libcurl)
-    else()
-        target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB ${ITK_LIBRARIES})
-    endif()
+target_compile_definitions(roift_gui PRIVATE HAVE_ITK=1)
+if (CURL_FOUND)
+    target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB ${ITK_LIBRARIES} CURL::libcurl)
 else()
-    target_compile_definitions(roift_gui PRIVATE HAVE_ITK=0)
-    target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB)
+    target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB ${ITK_LIBRARIES})
 endif()
 
 if (UNIX)
