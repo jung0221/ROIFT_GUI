@@ -18,29 +18,16 @@ else()
     set(QT_WIDGETS_LIB Qt5::Widgets)
 endif()
 
+message(STATUS "Attempting to find ZLIB")
 find_package(ZLIB REQUIRED)
-
-# Optionally enable ITK. Default OFF to keep dependencies minimal.
-option(USE_ITK "Enable ITK for robust NIfTI I/O and image processing" ON)
-if (NOT USE_ITK)
-    message(FATAL_ERROR "ITK is required for this project. Re-run CMake with -DUSE_ITK=ON.")
-endif()
-
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 file(GLOB SRC_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
 
-add_executable(roift_gui ${SRC_FILES})
-
-# Build the ROIFT standalone executable (oiftrelax) located in the roift/ subdirectory.
-# This produces an additional binary named 'oiftrelax' alongside 'roift_gui'.
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/roift)
-
-# Build without ITK; use bundled fallback NIfTI reader in code
-message(STATUS "Attempting to find ITK (USE_ITK=ON)")
-find_package(ITK REQUIRED)
+message(STATUS "Attempting to find ITK")
+find_package(ITK CONFIG REQUIRED)
 if (ITK_FOUND)
     include(${ITK_USE_FILE})
     message(STATUS "Found ITK: ${ITK_VERSION}")
@@ -48,20 +35,13 @@ else()
     message(FATAL_ERROR "ITK was not found on this system. Install ITK or set ITK_DIR to the installation path.")
 endif()
 
-# ITK may have optional dependencies (HDF5 built with libcurl). Ensure libcurl is available for linking.
-find_package(CURL QUIET)
-if (NOT CURL_FOUND)
-    message(WARNING "ITK found but libcurl (CURL) was not found; some ITK HDF5 features may be unavailable.")
-else()
-    message(STATUS "Found CURL: ${CURL_VERSION_STRING}")
-endif()
+find_package(CURL REQUIRED)
+message(STATUS "Found CURL: ${CURL_VERSION_STRING}")
 
+add_executable(roift_gui ${SRC_FILES})
 target_compile_definitions(roift_gui PRIVATE HAVE_ITK=1)
-if (CURL_FOUND)
-    target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB ${ITK_LIBRARIES} CURL::libcurl)
-else()
-    target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB ${ITK_LIBRARIES})
-endif()
+target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ZLIB::ZLIB ${ITK_LIBRARIES} CURL::libcurl)
+
 
 if (UNIX)
     # ensure we get X11 on Linux systems (Qt usually handles this)
