@@ -9,7 +9,6 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-# Prefer Qt6 if available, fall back to Qt5
 include(${CMAKE_CURRENT_LIST_DIR}/src/qtdownload.cmake)
 
 find_package(Qt6 COMPONENTS Widgets QUIET)
@@ -17,8 +16,6 @@ if (Qt6_FOUND)
     message(STATUS "Found Qt6")
     set(QT_WIDGETS_LIB Qt6::Widgets)
 else()
-    # qtdownload.cmake was included above and will attempt to populate CMAKE_PREFIX_PATH
-    # with a Qt6 distribution. If that failed or Qt6 is still not found, abort.
     message(FATAL_ERROR "Qt6 not found. Aborting.")
 endif()
 
@@ -30,10 +27,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
     list(APPEND SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
 endif()
 
-# Option to automatically fetch/build ITK if missing
 option(USE_ITK "Automatically fetch/build ITK if not found" ON)
 
-# Allow the user to preconfigure an ITK install prefix (useful when ITK was built separately)
 if (NOT DEFINED ITK_INSTALL_DIR)
     if (WIN32)
         set(ITK_INSTALL_DIR "C:/libs/itk_install" CACHE PATH "ITK install prefix")
@@ -122,37 +117,41 @@ endif()
 
 if(WIN32)
     set(ITK_DLL_DIR "${ITK_INSTALL_DIR}/bin")
-    set(QT_DIR "${CMAKE_BINARY_DIR}/qt")  # root do Qt baixado pelo qtdownload.cmake
+    set(QT_DIR "${CMAKE_BINARY_DIR}/deps/qt") 
     set(QT_DLL_DIR "${QT_DIR}/bin")
     set(QT_PLUGIN_DIR "${QT_DIR}/plugins")
+
+    set(DEST_BIN_DIR "$<TARGET_FILE_DIR:roift_gui>/bin")
+    set(DEST_PLUGIN_DIR "$<TARGET_FILE_DIR:roift_gui>/plugins")
 
     file(GLOB ITK_RUNTIME_DLLS "${ITK_DLL_DIR}/*.dll")
     file(GLOB QT_RUNTIME_DLLS "${QT_DLL_DIR}/*.dll")
 
     foreach(_dll IN LISTS ITK_RUNTIME_DLLS QT_RUNTIME_DLLS)
-        if(TARGET roift_gui)
-            add_custom_command(TARGET roift_gui POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" $<TARGET_FILE_DIR:roift_gui>
-                COMMENT "Copying runtime DLL ${_dll} -> $<TARGET_FILE_DIR:roift_gui>")
-        endif()
+        add_custom_command(TARGET roift_gui POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_BIN_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E echo "Copying runtime DLL ${_dll} -> ${DEST_BIN_DIR}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" "${DEST_BIN_DIR}"
+            VERBATIM
+        )
     endforeach()
 
-    # Copia pastas de plugins do Qt (platforms, imageformats, styles) para ao lado do exe
     if(EXISTS "${QT_PLUGIN_DIR}")
         set(QT_PLUGIN_SUBDIRS platforms imageformats styles)
         foreach(_subdir IN LISTS QT_PLUGIN_SUBDIRS)
             if(EXISTS "${QT_PLUGIN_DIR}/${_subdir}")
-                if(TARGET roift_gui)
-                    add_custom_command(TARGET roift_gui POST_BUILD
-                        COMMAND ${CMAKE_COMMAND} -E copy_directory "${QT_PLUGIN_DIR}/${_subdir}" $<TARGET_FILE_DIR:roift_gui>/${_subdir}
-                        COMMENT "Copying Qt plugins ${_subdir} -> $<TARGET_FILE_DIR:roift_gui>/${_subdir}")
-                endif()
+                add_custom_command(TARGET roift_gui POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_PLUGIN_DIR}/${_subdir}"
+                    COMMAND ${CMAKE_COMMAND} -E echo "Copying Qt plugins ${_subdir} -> ${DEST_PLUGIN_DIR}/${_subdir}"
+                    COMMAND ${CMAKE_COMMAND} -E copy_directory "${QT_PLUGIN_DIR}/${_subdir}" "${DEST_PLUGIN_DIR}/${_subdir}"
+                    VERBATIM
+                )
             endif()
         endforeach()
     endif()
-endif()
-if (USE_ITK)
-    message(STATUS "CMake project configured for roift_gui (USE_ITK=ON)")
-else()
-    message(STATUS "CMake project configured for roift_gui (USE_ITK=OFF)")
+    file(WRITE "${CMAKE_BINARY_DIR}/_cmake_includes/run_roift_gui.bat" "@echo off\r\nset PATH=%~dp0bin;%PATH%\r\n\"%~dp0roift_gui.exe\" %*\r\n")
+    add_custom_command(TARGET roift_gui POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/_cmake_includes/run_roift_gui.bat" "$<TARGET_FILE_DIR:roift_gui>/run_roift_gui.bat"
+        VERBATIM
+    )
 endif()

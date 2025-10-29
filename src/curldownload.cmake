@@ -6,6 +6,7 @@ function(fetch_curl_if_missing)
         FetchContent_Declare(
             curl_src
             URL https://github.com/curl/curl/archive/refs/tags/curl-8_1_2.tar.gz
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
             CMAKE_ARGS
                 -DBUILD_CURL_EXE=OFF
                 -DBUILD_TESTING=OFF

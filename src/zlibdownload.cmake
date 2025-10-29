@@ -12,7 +12,7 @@ function(fetch_zlib_if_missing)
             # Prefer a static zlib build for predictable target names; adjust if you need shared
             set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
             FetchContent_Populate(zlib_src)
-            set(zlib_binary_dir "${CMAKE_BINARY_DIR}/_deps/zlib_src-populated-build")
+            set(zlib_binary_dir "${CMAKE_BINARY_DIR}/deps/zlib_src-populated-build")
             file(MAKE_DIRECTORY "${zlib_binary_dir}")
             add_subdirectory("${zlib_src_SOURCE_DIR}" "${zlib_binary_dir}" EXCLUDE_FROM_ALL)
         endif()
