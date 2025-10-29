@@ -68,22 +68,22 @@ fetch_itk_if_missing()
 
 # Ensure we have a usable ZLIB target for linking: prefer ZLIB::ZLIB, fallback to 'zlib',
 # otherwise try to find/fetch it now.
-if (TARGET ZLIB::ZLIB)
-    set(ZLIB_LINK_TARGET ZLIB::ZLIB)
-elseif (TARGET zlib)
-    set(ZLIB_LINK_TARGET zlib)
-else()
-    find_package(ZLIB QUIET)
-    include(${CMAKE_CURRENT_LIST_DIR}/src/zlibdownload.cmake)
+find_package(ZLIB QUIET)
+include(${CMAKE_CURRENT_LIST_DIR}/src/zlibdownload.cmake)
+if (NOT TARGET ZLIB::ZLIB AND NOT TARGET zlib AND NOT TARGET zlibstatic)
     fetch_zlib_if_missing()
-    if (TARGET ZLIB::ZLIB)
-        set(ZLIB_LINK_TARGET ZLIB::ZLIB)
-    elseif (TARGET zlib)
-        set(ZLIB_LINK_TARGET zlib)
-    else()
-        set(ZLIB_LINK_TARGET "") # nothing found
+endif()
+
+# Normalize legacy names so subprojects can reliably use ZLIB::ZLIB
+if (NOT TARGET ZLIB::ZLIB)
+    if (TARGET zlib)
+        add_library(ZLIB::ZLIB ALIAS zlib)
+    elseif (TARGET zlibstatic)
+        add_library(ZLIB::ZLIB ALIAS zlibstatic)
     endif()
 endif()
+
+add_subdirectory(roift)
 
 # CURL (and fetch if needed)
 find_package(CURL QUIET)

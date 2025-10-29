@@ -1,12 +1,13 @@
 # ROIFT_GUI — Overview and build documentation
 
 ## Goal
-`ROIFT_GUI` is a small Qt-based application used to:
+`ROIFT_GUI` is a small Qt and ITK application used to:
 - Visualize 3D medical images (NIfTI), view axial/sagittal/coronal slices.
 - Place manual seeds for segmentation and edit masks (draw/erase per-label).
 - Launch an external segmentation tool (ROIFT / `oiftrelax`) for per-label segmentation and merge results.
 - Save/load seeds and save/load masks.
 
+## Build
 For platform-specific build instructions and troubleshooting, see the documentation in the docs/ directory:
 - docs/linux_build.md — Linux (Debian/Ubuntu) build instructions and troubleshooting.
 - docs/windows_build.md — Windows (Visual Studio / MSVC) build instructions and troubleshooting.
@@ -25,7 +26,6 @@ Open directly with an input image (example used during testing):
 ```bash
 ./roift_gui --input example_image.nii.gz
 ```
-
 
 Segmentation (ROIFT / `oiftrelax`):
 - The segmentation button launches a small dialog that can run a single label segmentation or batch-run per-label using seeds.
