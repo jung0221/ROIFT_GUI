@@ -9,10 +9,12 @@ function(fetch_zlib_if_missing)
         )
         FetchContent_GetProperties(zlib_src)
         if (NOT zlib_src_POPULATED)
-            FetchContent_MakeAvailable(zlib_src)
             # Prefer a static zlib build for predictable target names; adjust if you need shared
             set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-            add_subdirectory(${zlib_src_SOURCE_DIR} ${zlib_src_BINARY_DIR} EXCLUDE_FROM_ALL)
+            FetchContent_Populate(zlib_src)
+            set(zlib_binary_dir "${CMAKE_BINARY_DIR}/_deps/zlib_src-populated-build")
+            file(MAKE_DIRECTORY "${zlib_binary_dir}")
+            add_subdirectory("${zlib_src_SOURCE_DIR}" "${zlib_binary_dir}" EXCLUDE_FROM_ALL)
         endif()
 
         # Normalize common target names to ZLIB::ZLIB
