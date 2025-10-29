@@ -7,21 +7,23 @@
 - Launch an external segmentation tool (ROIFT / `oiftrelax`) for per-label segmentation and merge results.
 - Save/load seeds and save/load masks.
 
-For Linux build instructions (Debian/Ubuntu example) and troubleshooting, see `docs/linux_build.md`.
+For platform-specific build instructions and troubleshooting, see the documentation in the docs/ directory:
+- docs/linux_build.md — Linux (Debian/Ubuntu) build instructions and troubleshooting.
+- docs/windows_build.md — Windows (Visual Studio / MSVC) build instructions and troubleshooting.
+
+Each guide contains step‑by‑step commands and common fixes for that platform.
 
 ## Running
-After building, the binary is at `build/roift_gui`.
-
 Simple GUI run (open without a provided file):
 
 ```bash
-./build/roift_gui
+./roift_gui
 ```
 
 Open directly with an input image (example used during testing):
 
 ```bash
-./build/roift_gui --input example_image.nii.gz
+./roift_gui --input example_image.nii.gz
 ```
 
 
