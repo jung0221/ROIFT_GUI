@@ -26,10 +26,6 @@ file(GLOB SRC_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
 
-file(GLOB SRC_FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
-)
-
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
     list(APPEND SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
 endif()
