@@ -17,9 +17,9 @@ if (Qt6_FOUND)
     message(STATUS "Found Qt6")
     set(QT_WIDGETS_LIB Qt6::Widgets)
 else()
-    message(STATUS "Did not found Qt6, using Qt5 instead")
-    find_package(Qt5 COMPONENTS Widgets REQUIRED)
-    set(QT_WIDGETS_LIB Qt5::Widgets)
+    # qtdownload.cmake was included above and will attempt to populate CMAKE_PREFIX_PATH
+    # with a Qt6 distribution. If that failed or Qt6 is still not found, abort.
+    message(FATAL_ERROR "Qt6 not found. Aborting.")
 endif()
 
 file(GLOB SRC_FILES
