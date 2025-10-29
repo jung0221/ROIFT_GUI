@@ -155,9 +155,10 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
         QString seedPath = seedFile;
         QDir appDir(QCoreApplication::applicationDirPath());
         QStringList candidates;
-        candidates << appDir.filePath("../../src/postprocess/lunas/roift/oiftrelax");
-        candidates << QDir::current().filePath("../src/postprocess/lunas/roift/oiftrelax");
-        candidates << QDir(QCoreApplication::applicationDirPath()).absoluteFilePath("/home/jung/Documents/Scopic/Projects/MedCAD/medcad-ai/src/postprocess/lunas/roift/oiftrelax");
+        candidates << appDir.filePath("../roift/oiftrelax.exe");
+        candidates << QDir::current().filePath("build/roift/Release/oiftrelax.exe");
+        candidates << appDir.filePath("../roift/oiftrelax");
+        candidates << QDir::current().filePath("build/roift/Release/oiftrelax");
         QString exePath;
         for (auto &c : candidates) { if (QFile::exists(c)) { exePath = c; break; } }
         if (exePath.isEmpty()) { QMessageBox::critical(parent, "ROIFT not found", "Could not find external ROIFT executable."); return; }
