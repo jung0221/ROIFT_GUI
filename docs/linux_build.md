@@ -23,18 +23,9 @@ Notes about conda/anaconda: if you build inside a conda environment you may get 
 From the repository root:
 
 ```bash
-# create an out-of-source build dir
-mkdir -p build && cd build
-# configure with ITK enabled (ITK is required for full functionality)
-cmake -DUSE_ITK=ON -S ..
+cmake -S . -B build
 # build
-cmake --build . -j$(nproc)
-```
-
-If CMake cannot find ITK, either install the distribution package (`libinsighttoolkit5-dev`) or pass the ITK location explicitly:
-
-```bash
-cmake -DUSE_ITK=ON -DITK_DIR=/usr/lib/x86_64-linux-gnu/cmake/ITK-5.3 -S .. -B build
+cmake --build build -j$(nproc)
 ```
 
 ## Where the binaries are
