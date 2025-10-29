@@ -30,6 +30,10 @@ file(GLOB SRC_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
+    list(APPEND SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
+endif()
+
 # Option to automatically fetch/build ITK if missing
 option(USE_ITK "Automatically fetch/build ITK if not found" ON)
 
