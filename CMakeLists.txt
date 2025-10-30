@@ -117,41 +117,36 @@ endif()
 
 if(WIN32)
     set(ITK_DLL_DIR "${ITK_INSTALL_DIR}/bin")
-    set(QT_DIR "${CMAKE_BINARY_DIR}/deps/qt") 
+    set(QT_DIR "${CMAKE_BINARY_DIR}/qt")
     set(QT_DLL_DIR "${QT_DIR}/bin")
     set(QT_PLUGIN_DIR "${QT_DIR}/plugins")
-
-    set(DEST_BIN_DIR "$<TARGET_FILE_DIR:roift_gui>/bin")
-    set(DEST_PLUGIN_DIR "$<TARGET_FILE_DIR:roift_gui>/plugins")
 
     file(GLOB ITK_RUNTIME_DLLS "${ITK_DLL_DIR}/*.dll")
     file(GLOB QT_RUNTIME_DLLS "${QT_DLL_DIR}/*.dll")
 
     foreach(_dll IN LISTS ITK_RUNTIME_DLLS QT_RUNTIME_DLLS)
-        add_custom_command(TARGET roift_gui POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_BIN_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E echo "Copying runtime DLL ${_dll} -> ${DEST_BIN_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" "${DEST_BIN_DIR}"
-            VERBATIM
-        )
+        if(TARGET roift_gui)
+            add_custom_command(TARGET roift_gui POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" $<TARGET_FILE_DIR:roift_gui>
+                COMMENT "Copying runtime DLL ${_dll} -> $<TARGET_FILE_DIR:roift_gui>")
+        endif()
     endforeach()
 
     if(EXISTS "${QT_PLUGIN_DIR}")
         set(QT_PLUGIN_SUBDIRS platforms imageformats styles)
         foreach(_subdir IN LISTS QT_PLUGIN_SUBDIRS)
             if(EXISTS "${QT_PLUGIN_DIR}/${_subdir}")
-                add_custom_command(TARGET roift_gui POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E make_directory "${DEST_PLUGIN_DIR}/${_subdir}"
-                    COMMAND ${CMAKE_COMMAND} -E echo "Copying Qt plugins ${_subdir} -> ${DEST_PLUGIN_DIR}/${_subdir}"
-                    COMMAND ${CMAKE_COMMAND} -E copy_directory "${QT_PLUGIN_DIR}/${_subdir}" "${DEST_PLUGIN_DIR}/${_subdir}"
-                    VERBATIM
-                )
+                if(TARGET roift_gui)
+                    add_custom_command(TARGET roift_gui POST_BUILD
+                        COMMAND ${CMAKE_COMMAND} -E copy_directory "${QT_PLUGIN_DIR}/${_subdir}" $<TARGET_FILE_DIR:roift_gui>/${_subdir}
+                        COMMENT "Copying Qt plugins ${_subdir} -> $<TARGET_FILE_DIR:roift_gui>/${_subdir}")
+                endif()
             endif()
         endforeach()
     endif()
-    file(WRITE "${CMAKE_BINARY_DIR}/_cmake_includes/run_roift_gui.bat" "@echo off\r\nset PATH=%~dp0bin;%PATH%\r\n\"%~dp0roift_gui.exe\" %*\r\n")
-    add_custom_command(TARGET roift_gui POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/_cmake_includes/run_roift_gui.bat" "$<TARGET_FILE_DIR:roift_gui>/run_roift_gui.bat"
-        VERBATIM
-    )
+endif()
+if (USE_ITK)
+    message(STATUS "CMake project configured for roift_gui (USE_ITK=ON)")
+else()
+    message(STATUS "CMake project configured for roift_gui (USE_ITK=OFF)")
 endif()
