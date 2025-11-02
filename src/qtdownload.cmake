@@ -1,8 +1,7 @@
 include(FetchContent)
 
 if(WIN32)
-    set(QT_URL_X86 "https://mlperf-public-files.s3-accelerate.amazonaws.com/binaries/Qt/6.9.0/Windows_x64.zip")
-    set(QT_URL_ARM "https://mlperf-public-files.s3-accelerate.amazonaws.com/binaries/Qt/6.9.0/Windows_ARM.zip")
+    set(QT_URL_X86 "https://download.qt.io/official_releases/qt/6.10/6.10.0/single/qt-everywhere-src-6.10.0.zip")
 endif()
 
 function(download_and_setup_qt url destination_dir qt_target_name)
