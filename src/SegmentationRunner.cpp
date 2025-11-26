@@ -482,7 +482,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
             QMessageBox::warning(parent, "ROIFT", QString("Batch segmentation finished but failed to merge outputs: %1").arg(e.what()));
         }
     }
-    elseW
+    else
     {
         QMessageBox::information(parent, "ROIFT", "Batch segmentation finished. No successful per-label outputs were produced.");
     }
