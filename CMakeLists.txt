@@ -1,152 +1,125 @@
 cmake_minimum_required(VERSION 3.16)
 project(roift_gui LANGUAGES C CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Enable AUTOMOC/AUTOUIC for Qt
 set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
 
-include(${CMAKE_CURRENT_LIST_DIR}/src/qtdownload.cmake)
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+  set(_vcpkg_candidate_1 "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows")
+  set(_vcpkg_candidate_2 "${CMAKE_SOURCE_DIR}/build/vcpkg_installed/x64-windows")
+  set(_vcpkg_root "")
+  if(EXISTS "${_vcpkg_candidate_1}")
+    set(_vcpkg_root "${_vcpkg_candidate_1}")
+  elseif(EXISTS "${_vcpkg_candidate_2}")
+    set(_vcpkg_root "${_vcpkg_candidate_2}")
+  endif()
 
-find_package(Qt6 COMPONENTS Widgets QUIET)
-if (Qt6_FOUND)
-    message(STATUS "Found Qt6")
-    set(QT_WIDGETS_LIB Qt6::Widgets)
-else()
-    message(FATAL_ERROR "Qt6 not found. Aborting.")
+  if(_vcpkg_root)
+    message(STATUS "Using local vcpkg installed root: ${_vcpkg_root}")
+    # Let find_package search inside the x64-windows layout (share/*, lib/cmake, etc.)
+    list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}")
+    list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}/share")
+    # Hint include/library search locations as well
+    list(APPEND CMAKE_INCLUDE_PATH "${_vcpkg_root}/include")
+    list(APPEND CMAKE_LIBRARY_PATH "${_vcpkg_root}/lib" "${_vcpkg_root}/bin")
+        file(GLOB_RECURSE _qt6_config_files RELATIVE "${_vcpkg_root}" "${_vcpkg_root}/*Qt6Config.cmake")
+    if(_qt6_config_files)
+      list(GET _qt6_config_files 0 _qt6_first)
+      get_filename_component(_qt6_dir "${_vcpkg_root}/${_qt6_first}" DIRECTORY)
+      set(Qt6_DIR "${_qt6_dir}" CACHE PATH "Qt6_DIR set from local vcpkg_installed (detected)")
+      message(STATUS "Detected Qt6 config at ${Qt6_DIR}")
+    else()
+      if(EXISTS "${_vcpkg_root}/share/Qt6")
+        list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}/lib/cmake")
+        message(STATUS "Appended ${_vcpkg_root}/lib/cmake to CMAKE_PREFIX_PATH for Qt/other packages")
+      endif()
+    endif()
+  else()
+    message(STATUS "No local vcpkg_installed/x64-windows found. If you rely on vcpkg, provide vcpkg.cmake via -DCMAKE_TOOLCHAIN_FILE or supply system Qt/VTK.")
+  endif()
+endif()
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+
+# Find ITK (required). We prefer CONFIG mode so vcpkg-provided ITK is detected.
+find_package(ITK CONFIG REQUIRED)
+
+add_compile_definitions(HAVE_ITK=1)
+
+if (TARGET Qt5::Core)
+  message(FATAL_ERROR "A Qt5 target (Qt5::Core) was detected in the CMake graph. This project requires Qt6 exclusively.\nPossible causes: a dependency was built against Qt5.\nOptions: rebuild dependencies with Qt6, install matching Qt6 packages, or adjust CMAKE_PREFIX_PATH/Qt6_DIR to point to a Qt6 installation.")
+endif()
+
+message(STATUS "Selected Qt major version: 6 (Qt6 found and required)")
+
+# Include ITK helper (UseITK) early so it can set compile definitions
+if (DEFINED ITK_USE_FILE)
+  include(${ITK_USE_FILE})
+elseif (ITK_USE_FILE)
+  include(${ITK_USE_FILE})
 endif()
 
 file(GLOB SRC_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
-
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
     list(APPEND SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
 endif()
-
-option(USE_ITK "Automatically fetch/build ITK if not found" ON)
-
-if (NOT DEFINED ITK_INSTALL_DIR)
-    if (WIN32)
-        set(ITK_INSTALL_DIR "C:/libs/itk_install" CACHE PATH "ITK install prefix")
-    else()
-        set(ITK_INSTALL_DIR "${CMAKE_BINARY_DIR}/itk_install" CACHE PATH "ITK install prefix")
-    endif()
-endif()
-
-# Add the install prefix to CMAKE_PREFIX_PATH so find_package can locate ITK
-list(APPEND CMAKE_PREFIX_PATH "${ITK_INSTALL_DIR}")
-
-# If a typical ITK cmake folder exists under the prefix, set ITK_DIR for find_package
-if (EXISTS "${ITK_INSTALL_DIR}/lib/cmake/ITK")
-    set(ITK_DIR "${ITK_INSTALL_DIR}/lib/cmake/ITK" CACHE PATH "ITK install folder" FORCE)
-endif()
-
-# Try to find ITK first (it may provide zlib targets and other dependencies)
-find_package(ITK CONFIG QUIET)
-
-# If ITK is not found but will be automatically fetched/built, ensure ZLIB is available
-# because the ITK ExternalProject can require ZLIB_ROOT.
-if (NOT ITK_FOUND AND USE_ITK)
-    message(STATUS "ITK not found: preparing to fetch/build ITK - ensuring ZLIB is available for ITK build")
-    find_package(ZLIB QUIET)
-    include(${CMAKE_CURRENT_LIST_DIR}/src/zlibdownload.cmake)
-    fetch_zlib_if_missing()
-endif()
-
-# If not found and user requested ITK, configure automatic fetch/build
-include(${CMAKE_CURRENT_LIST_DIR}/src/itkdownload.cmake)
-fetch_itk_if_missing()
-
-# Ensure we have a usable ZLIB target for linking: prefer ZLIB::ZLIB, fallback to 'zlib',
-# otherwise try to find/fetch it now.
-find_package(ZLIB QUIET)
-include(${CMAKE_CURRENT_LIST_DIR}/src/zlibdownload.cmake)
-if (NOT TARGET ZLIB::ZLIB AND NOT TARGET zlib AND NOT TARGET zlibstatic)
-    fetch_zlib_if_missing()
-endif()
-
-# Normalize legacy names so subprojects can reliably use ZLIB::ZLIB
-if (NOT TARGET ZLIB::ZLIB)
-    if (TARGET zlib)
-        add_library(ZLIB::ZLIB ALIAS zlib)
-    elseif (TARGET zlibstatic)
-        add_library(ZLIB::ZLIB ALIAS zlibstatic)
-    endif()
-endif()
-
 add_subdirectory(roift)
-
-# CURL (and fetch if needed)
-find_package(CURL QUIET)
-include(${CMAKE_CURRENT_LIST_DIR}/src/curldownload.cmake)
-fetch_curl_if_missing()
-message(STATUS "Found CURL: ${CURL_VERSION_STRING}")
-
 add_executable(roift_gui ${SRC_FILES})
 
-if (ITK_FOUND)
-    message(STATUS "Found ITK: ${ITK_VERSION} (from ${ITK_DIR})")
-    target_compile_definitions(roift_gui PRIVATE HAVE_ITK=1)
-else()
-    message(STATUS "ITK not found. HAVE_ITK=0")
-    target_compile_definitions(roift_gui PRIVATE HAVE_ITK=0)
+target_include_directories(${PROJECT_NAME} PRIVATE src)
+
+target_link_libraries(${PROJECT_NAME}
+  PRIVATE
+    Qt6::Widgets
+    ${ITK_LIBRARIES}
+)
+
+if(DEFINED _vcpkg_root AND _vcpkg_root)
+  # Ensure the vcpkg library directories are on the linker's search path so
+  # that plain-named libs (e.g. minc2.lib) provided by vcpkg are found.
+  target_link_directories(${PROJECT_NAME} PRIVATE
+    "$<$<CONFIG:Debug>:${_vcpkg_root}/debug/lib>"
+    "$<$<NOT:$<CONFIG:Debug>>:${_vcpkg_root}/lib>"
+  )
 endif()
 
-# Link core dependencies; add ZLIB target only if we resolved one
-if (ZLIB_LINK_TARGET)
-    target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} ${ZLIB_LINK_TARGET} CURL::libcurl)
-else()
-    target_link_libraries(roift_gui PRIVATE ${QT_WIDGETS_LIB} CURL::libcurl)
+# For UIC/MOC if needed later
+set_target_properties(${PROJECT_NAME} PROPERTIES
+  AUTOMOC ON
+  AUTOUIC ON
+  AUTORCC ON
+)
+
+if(DEFINED _vcpkg_root AND _vcpkg_root)
+  set(_qt_plugins_src_debug "${_vcpkg_root}/debug/Qt6/plugins")
+  set(_qt_plugins_src_release "${_vcpkg_root}/Qt6/plugins")
+
+  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "Copying Qt plugins (platforms) from vcpkg_installed..."
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${PROJECT_NAME}>/platforms
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "$<$<CONFIG:Debug>:${_qt_plugins_src_debug}/platforms>$<$<NOT:$<CONFIG:Debug>>:${_qt_plugins_src_release}/platforms>"
+      $<TARGET_FILE_DIR:${PROJECT_NAME}>/platforms
+    COMMENT "Copy Qt plugins (platforms) to runtime folder"
+  )
 endif()
 
-if (ITK_FOUND)
-    target_link_libraries(roift_gui PRIVATE ${ITK_LIBRARIES})
+if(DEFINED _vcpkg_root AND _vcpkg_root)
+  set(_vcpkg_bin_release "${_vcpkg_root}/bin")
+  set(_vcpkg_bin_debug   "${_vcpkg_root}/debug/bin")
+
+  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "Copying vcpkg bin/ -> runtime folder"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "$<$<CONFIG:Debug>:${_vcpkg_bin_debug}>$<$<NOT:$<CONFIG:Debug>>:${_vcpkg_bin_release}>"
+      $<TARGET_FILE_DIR:${PROJECT_NAME}>
+    COMMENT "Copy matching vcpkg runtime DLLs to target folder"
+  )
 endif()
 
-if (UNIX)
-    # ensure we get X11 on Linux systems (Qt usually handles this)
-    find_package(X11 QUIET)
-    if (X11_FOUND)
-        target_link_libraries(roift_gui PRIVATE ${X11_LIBRARIES})
-    endif()
-endif()
+# Note: ITK helper already included earlier (UseITK) so no-op here.
 
-if(WIN32)
-    set(ITK_DLL_DIR "${ITK_INSTALL_DIR}/bin")
-    set(QT_DIR "${CMAKE_BINARY_DIR}/qt")
-    set(QT_DLL_DIR "${QT_DIR}/bin")
-    set(QT_PLUGIN_DIR "${QT_DIR}/plugins")
-
-    file(GLOB ITK_RUNTIME_DLLS "${ITK_DLL_DIR}/*.dll")
-    file(GLOB QT_RUNTIME_DLLS "${QT_DLL_DIR}/*.dll")
-
-    foreach(_dll IN LISTS ITK_RUNTIME_DLLS QT_RUNTIME_DLLS)
-        if(TARGET roift_gui)
-            add_custom_command(TARGET roift_gui POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll}" $<TARGET_FILE_DIR:roift_gui>
-                COMMENT "Copying runtime DLL ${_dll} -> $<TARGET_FILE_DIR:roift_gui>")
-        endif()
-    endforeach()
-
-    if(EXISTS "${QT_PLUGIN_DIR}")
-        set(QT_PLUGIN_SUBDIRS platforms imageformats styles)
-        foreach(_subdir IN LISTS QT_PLUGIN_SUBDIRS)
-            if(EXISTS "${QT_PLUGIN_DIR}/${_subdir}")
-                if(TARGET roift_gui)
-                    add_custom_command(TARGET roift_gui POST_BUILD
-                        COMMAND ${CMAKE_COMMAND} -E copy_directory "${QT_PLUGIN_DIR}/${_subdir}" $<TARGET_FILE_DIR:roift_gui>/${_subdir}
-                        COMMENT "Copying Qt plugins ${_subdir} -> $<TARGET_FILE_DIR:roift_gui>/${_subdir}")
-                endif()
-            endif()
-        endforeach()
-    endif()
-endif()
-if (USE_ITK)
-    message(STATUS "CMake project configured for roift_gui (USE_ITK=ON)")
-else()
-    message(STATUS "CMake project configured for roift_gui (USE_ITK=OFF)")
-endif()
+message(STATUS "Configuração CMake concluída. Use: mkdir build && cd build && cmake .. && cmake --build .")

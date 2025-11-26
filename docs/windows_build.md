@@ -1,38 +1,49 @@
-## System dependencies
-Required tools/libraries to build `ROIFT_GUI`:
+## System requirements
+
+Required tools and libraries to build `ROIFT_GUI` on Windows:
+
 - CMake (3.16+ recommended)
-- A C++17 capable compiler (g++ 9+ or clang)
-- Observation: buiding this program will install a local QT6, Zlib, ITK and libcurl. 
+- A C++17-capable compiler (MSVC / Visual Studio)
 
-## Configure and build
-```bash
+## Build using the prebuilt vcpkg artifacts
 
-# build
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DUSE_ITK=ON
+This repository includes a prebuilt archive of the vcpkg artifacts (ITK, Qt6, curl, etc.) to simplify building on Windows. The restore script will unpack the prebuilt libraries and DLLs into the repository so you don't need a networked vcpkg installation.
+
+1. Restore the prebuilt artifacts (run in `cmd.exe`, from the repository root):
+
+```bat
+.\scripts\restore_prebuilt.cmd
+```
+
+2. Configure and build (out-of-source, example for x64 Release):
+
+```bat
+:: Configure the build
+cmake -S . -B build -A x64
+
+:: Build the Release configuration
 cmake --build build --config Release
 ```
-``` 
 
-## Where the binaries are
-- GUI: `build/Release/roift_gui` (or the build directory you used)
-- If the repository contains the ROIFT implementation and you build it, the `oiftrelax` binary will be in the build directory as well (check `build/roift` or `build/roift/roift` depending on the layout).
+Notes:
 
-## Quick runtime check
-After build, run the GUI:
+- The prebuilt artifacts include both library files and runtime DLLs. The project's CMake setup copies only the matching configuration's DLLs (Release vs Debug) next to the built executables to avoid mixing CRTs.
 
-```bash
-./build/roift_gui
+## Produced binaries and locations
+
+- GUI executable: `build\Release\roift_gui.exe`
+- CLI segmentation tool (if built): `build\roift\oiftrelax.exe` or `build\roift\Release\oiftrelax.exe` depending on how CMake configured targets
+
+## Quick runtime checks
+
+- Run the GUI without an input file:
+
+```bat
+.\build\Release\roift_gui.exe
 ```
 
-To run the GUI opening an image directly:
+- Run the GUI and open an image directly:
 
-```bash
-./build/roift_gui --input path/to/image.nii.gz
-```
-
-If you encounter shared-library conflicts at runtime (errors about missing or incompatible libX11, libcurl, libpng, etc.), try deactivating conda or running the binary with a clean environment:
-
-```bash
-# temporarily run with a clean environment (keeps PATH)
-env -i PATH="$PATH" ./build/roift_gui
+```bat
+.\build\Release\roift_gui.exe --input C:\path\to\image.nii.gz
 ```
