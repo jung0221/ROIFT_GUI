@@ -166,6 +166,8 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
         QStringList candidates;
         candidates << appDir.filePath("../roift/oiftrelax.exe");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax.exe");
+        candidates << QDir::current().filePath("build/roift/oiftrelax");
+        candidates << appDir.filePath("roift/oiftrelax");
         candidates << appDir.filePath("../roift/oiftrelax");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax");
         QString exePath;
@@ -258,6 +260,8 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
     QStringList candidates;
     candidates << appDir.filePath("../roift/oiftrelax.exe");
     candidates << QDir::current().filePath("build/roift/Release/oiftrelax.exe");
+    candidates << QDir::current().filePath("build/roift/oiftrelax");
+    candidates << appDir.filePath("roift/oiftrelax");
     candidates << appDir.filePath("../roift/oiftrelax");
     candidates << QDir::current().filePath("build/roift/Release/oiftrelax");
     QString exePath;
