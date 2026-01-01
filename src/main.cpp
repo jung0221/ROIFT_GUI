@@ -1,4 +1,6 @@
 #include <QApplication>
+#include <QCoreApplication>
+#include <QScreen>
 #include "ManualSeedSelector.h"
 #include <iostream>
 #include <string>
@@ -11,6 +13,9 @@ static void print_help()
 
 int main(int argc, char **argv)
 {
+    // QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    // QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+
     QApplication app(argc, argv);
     std::string path;
     std::string seedsPath;
@@ -103,6 +108,9 @@ int main(int argc, char **argv)
                 std::cerr << "Warning: failed to load mask or seeds from " << seedsPath << "\n";
         }
     }
+    QScreen *screen = QGuiApplication::primaryScreen();
+    w.setGeometry(screen->availableGeometry());
     w.show();
+
     return app.exec();
 }

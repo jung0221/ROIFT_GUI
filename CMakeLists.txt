@@ -1,11 +1,15 @@
 cmake_minimum_required(VERSION 3.16)
 project(roift_gui LANGUAGES C CXX)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
+
+# Windows instalation
 if(WIN32)
-  if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     set(_vcpkg_candidate_1 "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows")
     set(_vcpkg_candidate_2 "${CMAKE_SOURCE_DIR}/build/vcpkg_installed/x64-windows")
     set(_vcpkg_root "")
@@ -17,20 +21,18 @@ if(WIN32)
 
     if(_vcpkg_root)
       message(STATUS "Using local vcpkg installed root: ${_vcpkg_root}")
-      # Let find_package search inside the x64-windows layout (share/*, lib/cmake, etc.)
       list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}")
       list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}/share")
-      # Hint include/library search locations as well
       list(APPEND CMAKE_INCLUDE_PATH "${_vcpkg_root}/include")
       list(APPEND CMAKE_LIBRARY_PATH "${_vcpkg_root}/lib" "${_vcpkg_root}/bin")
-          file(GLOB_RECURSE _qt6_config_files RELATIVE "${_vcpkg_root}" "${_vcpkg_root}/*Qt6Config.cmake")
-      if(_qt6_config_files)
-        list(GET _qt6_config_files 0 _qt6_first)
-        get_filename_component(_qt6_dir "${_vcpkg_root}/${_qt6_first}" DIRECTORY)
-        set(Qt6_DIR "${_qt6_dir}" CACHE PATH "Qt6_DIR set from local vcpkg_installed (detected)")
-        message(STATUS "Detected Qt6 config at ${Qt6_DIR}")
+      file(GLOB_RECURSE _qt5_config_files RELATIVE "${_vcpkg_root}" "${_vcpkg_root}/*Qt5Config.cmake")
+      if(_qt5_config_files)
+        list(GET _qt5_config_files 0 _qt5_first)
+        get_filename_component(_qt5_dir "${_vcpkg_root}/${_qt5_first}" DIRECTORY)
+        set(Qt5_DIR "${_qt5_dir}" CACHE PATH "Qt5_DIR set from local vcpkg_installed (detected)")
+        message(STATUS "Detected Qt5 config at ${Qt5_DIR}")
       else()
-        if(EXISTS "${_vcpkg_root}/share/Qt6")
+        if(EXISTS "${_vcpkg_root}/share/Qt5")
           list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}/lib/cmake")
           message(STATUS "Appended ${_vcpkg_root}/lib/cmake to CMAKE_PREFIX_PATH for Qt/other packages")
         endif()
@@ -41,16 +43,15 @@ if(WIN32)
   endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt5 REQUIRED COMPONENTS Widgets)
 
-# Find ITK (required). We prefer CONFIG mode so vcpkg-provided ITK is detected.
+# Find ITK
 find_package(ITK REQUIRED)
-
 add_compile_definitions(HAVE_ITK=1)
 
-message(STATUS "Selected Qt major version: 6 (Qt6 found and required)")
+message(STATUS "Selected Qt major version: 5 (Qt5 found and required)")
 
-# Include ITK helper (UseITK) early so it can set compile definitions
+# Include ITK
 if (DEFINED ITK_USE_FILE)
   include(${ITK_USE_FILE})
 elseif (ITK_USE_FILE)
@@ -60,18 +61,39 @@ endif()
 file(GLOB SRC_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
-    list(APPEND SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
-endif()
+# if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
+#     list(APPEND SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
+# endif()
+
+# Find VTK
+find_package(VTK REQUIRED COMPONENTS
+  CommonCore
+  CommonDataModel
+  FiltersCore
+  FiltersGeneral
+  FiltersGeometry
+  FiltersModeling
+  IOImage
+  InteractionStyle
+  RenderingCore
+  RenderingFreeType
+  RenderingOpenGL2
+  GUISupportQt
+)
+
+
+# Include ROIFT
 add_subdirectory(roift)
 add_executable(roift_gui ${SRC_FILES})
 
-target_include_directories(${PROJECT_NAME} PRIVATE src)
 
+
+target_include_directories(${PROJECT_NAME} PRIVATE src)
 target_link_libraries(${PROJECT_NAME}
   PRIVATE
-    Qt6::Widgets
+    Qt5::Widgets
     ${ITK_LIBRARIES}
+    ${VTK_LIBRARIES}
 )
 
 if(DEFINED _vcpkg_root AND _vcpkg_root)
@@ -90,11 +112,10 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
   AUTORCC ON
 )
 
-
 if(WIN32)
   if(DEFINED _vcpkg_root AND _vcpkg_root)
-    set(_qt_plugins_src_debug "${_vcpkg_root}/debug/Qt6/plugins")
-    set(_qt_plugins_src_release "${_vcpkg_root}/Qt6/plugins")
+    set(_qt_plugins_src_debug "${_vcpkg_root}/debug/Qt5/plugins")
+    set(_qt_plugins_src_release "${_vcpkg_root}/Qt5/plugins")
 
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E echo "Copying Qt plugins (platforms) from vcpkg_installed..."
@@ -120,6 +141,3 @@ if(WIN32)
   endif()
 endif()
 
-# Note: ITK helper already included earlier (UseITK) so no-op here.
-
-message(STATUS "Configuração CMake concluída. Use: mkdir build && cd build && cmake .. && cmake --build .")

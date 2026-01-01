@@ -1,8 +1,12 @@
 #include "ManualSeedSelector.h"
 #include "SegmentationRunner.h"
-#include <QKeyEvent>
-#include <QHBoxLayout>
+#include "ColorUtils.h"
+#include "Mask3DView.h"
+#include <QDialog>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QGridLayout>
+#include <QSizePolicy>
 #include <QApplication>
 #include <QCursor>
 #include <QPushButton>
@@ -41,23 +45,6 @@
 #include <QDir>
 #include <QProcess>
 
-// deterministic color map for integer labels that avoids accidental equal RGB
-static QColor colorForLabel(int lbl)
-{
-    // clamp to a sensible range
-    int v = std::max(1, std::min(254, lbl));
-    // use three different multipliers and a prime modulus to reduce collisions
-    const int MOD = 251; // prime < 256
-    int r = (v * 67) % MOD;
-    int g = (v * 131) % MOD;
-    int b = (v * 199) % MOD;
-    // scale to 0-255 range
-    int sr = (r * 255) / MOD;
-    int sg = (g * 255) / MOD;
-    int sb = (b * 255) / MOD;
-    return QColor(sr, sg, sb);
-}
-
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent) : QMainWindow(parent), m_path(niftiPath)
 {
     setupUi();
@@ -76,6 +63,7 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
             {
                 std::cerr << "ManualSeedSelector: clearing existing mask buffer due to new image load" << std::endl;
                 m_maskData.clear();
+                m_mask3DDirty = true;
             }
             // initialize sliders and ranges for the loaded image
             initializeImageWidgets();
@@ -124,25 +112,37 @@ void ManualSeedSelector::setupUi()
     setCentralWidget(central);
     QVBoxLayout *main = new QVBoxLayout(central);
 
-    QHBoxLayout *imgRow = new QHBoxLayout();
+    // 2 x 2 View
+    QGridLayout *viewGrid = new QGridLayout();
     m_axialView = new OrthogonalView();
     m_sagittalView = new OrthogonalView();
     m_coronalView = new OrthogonalView();
+    m_mask3DView = new Mask3DView();
     // Ensure views can receive focus and key events; install event filter
-    m_axialView->setFocusPolicy(Qt::StrongFocus);
-    m_sagittalView->setFocusPolicy(Qt::StrongFocus);
-    m_coronalView->setFocusPolicy(Qt::StrongFocus);
-    m_axialView->installEventFilter(this);
-    m_sagittalView->installEventFilter(this);
-    m_coronalView->installEventFilter(this);
-    // prefer larger default sizes
-    m_axialView->setMinimumSize(512, 512);
-    m_sagittalView->setMinimumSize(300, 512);
-    m_coronalView->setMinimumSize(300, 512);
-    imgRow->addWidget(m_axialView);
-    imgRow->addWidget(m_sagittalView);
-    imgRow->addWidget(m_coronalView);
-    main->addLayout(imgRow);
+    for (OrthogonalView *view : {m_axialView, m_sagittalView, m_coronalView})
+    {
+        view->setFocusPolicy(Qt::StrongFocus);
+        view->installEventFilter(this);
+    }
+    // prefer balanced defaults but keep buttons reachable
+    m_axialView->setMinimumSize(360, 280);
+    m_sagittalView->setMinimumSize(320, 280);
+    m_coronalView->setMinimumSize(320, 280);
+    m_mask3DView->setMinimumSize(320, 240);
+    viewGrid->addWidget(m_axialView, 0, 0);
+    viewGrid->addWidget(m_sagittalView, 0, 1);
+    viewGrid->addWidget(m_coronalView, 1, 0);
+    viewGrid->addWidget(m_mask3DView, 1, 1);
+    viewGrid->setColumnStretch(0, 1);
+    viewGrid->setColumnStretch(1, 1);
+    viewGrid->setRowStretch(0, 1);
+    viewGrid->setRowStretch(1, 1);
+    viewGrid->setSpacing(6);
+    viewGrid->setContentsMargins(2, 2, 2, 2);
+    QWidget *viewContainer = new QWidget();
+    viewContainer->setLayout(viewGrid);
+    viewContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    main->addWidget(viewContainer, 1);
 
     QHBoxLayout *btnRow = new QHBoxLayout();
     QPushButton *btnNiftiOptions = new QPushButton("NIfTI Options");
@@ -367,6 +367,7 @@ void ManualSeedSelector::openImage()
     {
         std::cerr << "ManualSeedSelector: clearing mask buffer on openImage()" << std::endl;
         m_maskData.clear();
+        m_mask3DDirty = true;
     }
     if (!m_seeds.empty())
     {
@@ -624,6 +625,11 @@ void ManualSeedSelector::updateViews()
     unsigned int sizeX = m_image.getSizeX();
     unsigned int sizeY = m_image.getSizeY();
     unsigned int sizeZ = m_image.getSizeZ();
+    if (m_mask3DDirty)
+    {
+        update3DMaskView();
+        m_mask3DDirty = false;
+    }
     if (sizeX == 0 || sizeY == 0 || sizeZ == 0)
     {
         std::cerr << "[WARN] updateViews: image dimensions invalid (" << sizeX << "," << sizeY << "," << sizeZ << ")\n";
@@ -642,6 +648,7 @@ void ManualSeedSelector::updateViews()
         {
             std::cerr << "ManualSeedSelector::updateViews(): mask buffer size (" << m_maskData.size() << ") does not match expected (" << expected << "). Clearing mask to avoid OOB access." << std::endl;
             m_maskData.clear();
+            m_mask3DDirty = true;
         }
     }
     if (!m_maskData.empty())
@@ -796,6 +803,16 @@ void ManualSeedSelector::updateViews()
     }
 }
 
+void ManualSeedSelector::update3DMaskView()
+{
+    if (!m_mask3DView)
+        return;
+    unsigned int sx = m_image.getSizeX();
+    unsigned int sy = m_image.getSizeY();
+    unsigned int sz = m_image.getSizeZ();
+    m_mask3DView->setMaskData(m_maskData, sx, sy, sz);
+}
+
 // Mask options dialog moved to MaskOptionsDialog class.
 
 void ManualSeedSelector::setMaskMode(int mode)
@@ -806,6 +823,7 @@ void ManualSeedSelector::setMaskMode(int mode)
 void ManualSeedSelector::cleanMask()
 {
     m_maskData.clear();
+    m_mask3DDirty = true;
 }
 
 bool ManualSeedSelector::saveMaskToFile(const std::string &path)
@@ -909,6 +927,7 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
         {
             m_maskData[idx] = static_cast<int>(it.Get());
         }
+        m_mask3DDirty = true;
         return true;
     }
     catch (const std::exception &e)
@@ -991,6 +1010,7 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
                 }
             }
         }
+        m_mask3DDirty = true;
     }
 }
 

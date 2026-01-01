@@ -11,6 +11,7 @@
 #include "MaskOptionsDialog.h"
 
 struct Seed { int x,y,z,label,internal; };
+class Mask3DView;
 
 class ManualSeedSelector : public QMainWindow {
     Q_OBJECT
@@ -60,6 +61,7 @@ private:
     bool handleSliceKey(QKeyEvent *event);
     void addSeed(int x, int y, int z);
     void eraseNear(int x, int y, int z, int r);
+    void update3DMaskView();
 
     void updateLabelColor(int label);
 
@@ -93,4 +95,6 @@ private:
     int m_seedBrushRadius = 5;
     SeedOptionsDialog *m_seedDialog = nullptr;
     MaskOptionsDialog *m_maskDialog = nullptr;
+    Mask3DView *m_mask3DView = nullptr;
+    bool m_mask3DDirty = false;
 };
