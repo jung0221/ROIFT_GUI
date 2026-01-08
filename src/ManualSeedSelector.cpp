@@ -638,6 +638,11 @@ void ManualSeedSelector::updateViews()
     int z = m_axialSlider->value();
     float lo = m_image.getGlobalMin();
     float hi = m_image.getGlobalMax();
+    if (m_image.isMask())
+    {
+        lo = 0.0f;
+        hi = 1.0f;
+    }
     auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
     // blend mask if present
     if (!m_maskData.empty())
@@ -1016,6 +1021,15 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
 
 void ManualSeedSelector::keyPressEvent(QKeyEvent *event)
 {
+    // Allow toggling fullscreen with F11 anywhere
+    if (event->key() == Qt::Key_F11)
+    {
+        if (isFullScreen())
+            showNormal();
+        else
+            showFullScreen();
+        return;
+    }
     // Only handle slice navigation when focus is on one of the image views
     // (or no widget has focus). If the user is editing a spinbox, slider or
     // other UI control, defer to the default handler so keys modify those
