@@ -9,6 +9,9 @@
 #include "OrthogonalView.h"
 #include "SeedOptionsDialog.h"
 #include "MaskOptionsDialog.h"
+#include "RangeSlider.h"
+
+class QDoubleSpinBox;
 
 struct Seed { int x,y,z,label,internal; };
 class Mask3DView;
@@ -54,6 +57,8 @@ private slots:
     void paintSagittalMask(int x, int y);
     void paintCoronalMask(int x, int y);
     void applyBrushToMask(const std::array<int,3> &center, const std::pair<int,int> &axes, int radius, int labelValue, bool erase=false);
+    void resetWindowToFullRange();
+    void applyWindowFromValues(float low, float high, bool fromSlider);
     
 
 private:
@@ -97,4 +102,12 @@ private:
     MaskOptionsDialog *m_maskDialog = nullptr;
     Mask3DView *m_mask3DView = nullptr;
     bool m_mask3DDirty = false;
+    RangeSlider *m_windowSlider = nullptr;
+    QDoubleSpinBox *m_windowLevelSpin = nullptr;
+    QDoubleSpinBox *m_windowWidthSpin = nullptr;
+    float m_windowLow = 0.0f;
+    float m_windowHigh = 1.0f;
+    float m_windowGlobalMin = 0.0f;
+    float m_windowGlobalMax = 1.0f;
+    bool m_blockWindowSignals = false;
 };

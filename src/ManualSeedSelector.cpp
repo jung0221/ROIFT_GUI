@@ -2,6 +2,7 @@
 #include "SegmentationRunner.h"
 #include "ColorUtils.h"
 #include "Mask3DView.h"
+#include "RangeSlider.h"
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -34,6 +35,7 @@
 #include <QDialogButtonBox>
 #include <QCheckBox>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QSlider>
 #include <QKeyEvent>
 #include <fstream>
@@ -93,6 +95,39 @@ void ManualSeedSelector::initializeImageWidgets()
     m_axialSlider->blockSignals(false);
     m_sagittalSlider->blockSignals(false);
     m_coronalSlider->blockSignals(false);
+
+    // initialize window/level ranges based on image min/max
+    m_windowGlobalMin = m_image.getGlobalMin();
+    m_windowGlobalMax = m_image.getGlobalMax();
+    if (m_windowGlobalMax <= m_windowGlobalMin)
+        m_windowGlobalMax = m_windowGlobalMin + 1.0f;
+
+    int winMinInt = static_cast<int>(std::floor(m_windowGlobalMin));
+    int winMaxInt = static_cast<int>(std::ceil(m_windowGlobalMax));
+    if (winMaxInt <= winMinInt)
+        winMaxInt = winMinInt + 1;
+
+    m_blockWindowSignals = true;
+    if (m_windowSlider)
+    {
+        bool prevBlocked = m_windowSlider->blockSignals(true);
+        m_windowSlider->setRange(winMinInt, winMaxInt);
+        m_windowSlider->setLowerValue(winMinInt);
+        m_windowSlider->setUpperValue(winMaxInt);
+        m_windowSlider->blockSignals(prevBlocked);
+    }
+    if (m_windowLevelSpin)
+    {
+        m_windowLevelSpin->setRange(m_windowGlobalMin, m_windowGlobalMax);
+    }
+    if (m_windowWidthSpin)
+    {
+        double widthMax = std::max(1e-3, static_cast<double>(m_windowGlobalMax - m_windowGlobalMin));
+        m_windowWidthSpin->setRange(0.0, widthMax);
+    }
+    m_blockWindowSignals = false;
+
+    resetWindowToFullRange();
 }
 
 ManualSeedSelector::~ManualSeedSelector()
@@ -166,6 +201,27 @@ void ManualSeedSelector::setupUi()
     m_labelColorIndicator->setFrameStyle(QFrame::Box | QFrame::Plain);
     btnRow->addWidget(m_labelColorIndicator);
     main->addLayout(btnRow);
+
+    // Window/Level controls (WL/WW) with dual-handle slider
+    QHBoxLayout *windowRow = new QHBoxLayout();
+    windowRow->addWidget(new QLabel("Window (WL/WW)"));
+    m_windowSlider = new RangeSlider(Qt::Horizontal);
+    m_windowSlider->setToolTip("Drag the two handles to adjust the Window Level and Window Width.");
+    m_windowSlider->setMinimumHeight(30);
+    windowRow->addWidget(m_windowSlider, 1);
+    windowRow->addWidget(new QLabel("WL"));
+    m_windowLevelSpin = new QDoubleSpinBox();
+    m_windowLevelSpin->setDecimals(1);
+    m_windowLevelSpin->setSingleStep(10.0);
+    windowRow->addWidget(m_windowLevelSpin);
+    windowRow->addWidget(new QLabel("WW"));
+    m_windowWidthSpin = new QDoubleSpinBox();
+    m_windowWidthSpin->setDecimals(1);
+    m_windowWidthSpin->setSingleStep(10.0);
+    windowRow->addWidget(m_windowWidthSpin);
+    QPushButton *btnWindowReset = new QPushButton("Reset Window");
+    windowRow->addWidget(btnWindowReset);
+    main->addLayout(windowRow);
 
     m_axialSlider = new QSlider(Qt::Horizontal);
     m_sagittalSlider = new QSlider(Qt::Horizontal);
@@ -347,6 +403,25 @@ void ManualSeedSelector::setupUi()
             { updateLabelColor(v); });
     // initialize indicator to current label
     updateLabelColor(m_labelSelector->value());
+
+    // window/level wiring
+    connect(m_windowSlider, &RangeSlider::rangeChanged, this, [this](int low, int high)
+            { applyWindowFromValues(static_cast<float>(low), static_cast<float>(high), true); });
+    connect(m_windowLevelSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this, [this](double level)
+            {
+        if (m_blockWindowSignals) return;
+        double width = m_windowWidthSpin->value();
+        double half = width * 0.5;
+        applyWindowFromValues(static_cast<float>(level - half), static_cast<float>(level + half), false);
+    });
+    connect(m_windowWidthSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this, [this](double width)
+            {
+        if (m_blockWindowSignals) return;
+        double level = m_windowLevelSpin->value();
+        double half = width * 0.5;
+        applyWindowFromValues(static_cast<float>(level - half), static_cast<float>(level + half), false);
+    });
+    connect(btnWindowReset, &QPushButton::clicked, this, &ManualSeedSelector::resetWindowToFullRange);
 }
 
 void ManualSeedSelector::openImage()
@@ -374,26 +449,7 @@ void ManualSeedSelector::openImage()
         std::cerr << "ManualSeedSelector: clearing seeds on openImage()" << std::endl;
         m_seeds.clear();
     }
-    // Prevent emitting valueChanged while we initialize ranges/values to avoid
-    // re-entrant calls into updateViews() while image buffers may not be ready.
-    m_axialSlider->blockSignals(true);
-    m_sagittalSlider->blockSignals(true);
-    m_coronalSlider->blockSignals(true);
-
-    m_axialSlider->setMinimum(0);
-    m_axialSlider->setMaximum(int(m_image.getSizeZ()) - 1);
-    m_axialSlider->setValue(int(m_image.getSizeZ()) / 2);
-    m_sagittalSlider->setMinimum(0);
-    m_sagittalSlider->setMaximum(int(m_image.getSizeX()) - 1);
-    m_sagittalSlider->setValue(int(m_image.getSizeX()) / 2);
-    m_coronalSlider->setMinimum(0);
-    m_coronalSlider->setMaximum(int(m_image.getSizeY()) - 1);
-    m_coronalSlider->setValue(int(m_image.getSizeY()) / 2);
-
-    m_axialSlider->blockSignals(false);
-    m_sagittalSlider->blockSignals(false);
-    m_coronalSlider->blockSignals(false);
-
+    initializeImageWidgets();
     updateViews();
 }
 
@@ -619,6 +675,42 @@ static QImage makeQImageFromRGB(const std::vector<unsigned char> &rgb, int w, in
     return img;
 }
 
+void ManualSeedSelector::resetWindowToFullRange()
+{
+    applyWindowFromValues(m_windowGlobalMin, m_windowGlobalMax, false);
+}
+
+void ManualSeedSelector::applyWindowFromValues(float low, float high, bool fromSlider)
+{
+    if (m_windowGlobalMax <= m_windowGlobalMin)
+        m_windowGlobalMax = m_windowGlobalMin + 1.0f;
+
+    float clampedLow = std::max(m_windowGlobalMin, std::min(low, m_windowGlobalMax));
+    float clampedHigh = std::max(clampedLow + 1e-3f, std::min(high, m_windowGlobalMax));
+
+    m_windowLow = clampedLow;
+    m_windowHigh = clampedHigh;
+
+    double level = 0.5 * (static_cast<double>(clampedLow) + static_cast<double>(clampedHigh));
+    double width = static_cast<double>(clampedHigh - clampedLow);
+
+    m_blockWindowSignals = true;
+    if (!fromSlider && m_windowSlider)
+    {
+        bool prevBlocked = m_windowSlider->blockSignals(true);
+        m_windowSlider->setLowerValue(static_cast<int>(std::round(clampedLow)));
+        m_windowSlider->setUpperValue(static_cast<int>(std::round(clampedHigh)));
+        m_windowSlider->blockSignals(prevBlocked);
+    }
+    if (m_windowLevelSpin)
+        m_windowLevelSpin->setValue(level);
+    if (m_windowWidthSpin)
+        m_windowWidthSpin->setValue(width);
+    m_blockWindowSignals = false;
+
+    updateViews();
+}
+
 void ManualSeedSelector::updateViews()
 {
     // basic guards: ensure image sizes are valid
@@ -636,12 +728,12 @@ void ManualSeedSelector::updateViews()
         return;
     }
     int z = m_axialSlider->value();
-    float lo = m_image.getGlobalMin();
-    float hi = m_image.getGlobalMax();
-    if (m_image.isMask())
+    float lo = m_windowLow;
+    float hi = m_windowHigh;
+    if (hi <= lo)
     {
-        lo = 0.0f;
-        hi = 1.0f;
+        lo = m_windowGlobalMin;
+        hi = m_windowGlobalMax;
     }
     auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
     // blend mask if present
