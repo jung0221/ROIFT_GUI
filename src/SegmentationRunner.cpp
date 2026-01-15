@@ -13,10 +13,12 @@
 #include <QMessageBox>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QProcess>
 #include <QDebug>
 #include <QThread>
 #include <algorithm>
+#include <cmath>
 #include <QListWidget>
 #include <set>
 #include <unordered_set>
@@ -104,6 +106,13 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
     QCheckBox *segmentAllBox = new QCheckBox("Segment all labeled seeds (one run per label)");
     dlgLayout->addWidget(segmentAllBox);
 
+    QCheckBox *polSweepBox = new QCheckBox("Segment all polarities (-1.0 to 1.0, step 0.1)");
+    dlgLayout->addWidget(polSweepBox);
+
+    // Avoid exploding combinations: disable polarity sweep when batch-by-label is enabled
+    QObject::connect(segmentAllBox, &QCheckBox::toggled, polSweepBox, [polSweepBox](bool on)
+                     { polSweepBox->setChecked(false); polSweepBox->setEnabled(!on); });
+
     // Provide a checklist of labels so the user can choose labels to SKIP in batch mode.
     dlgLayout->addWidget(new QLabel("Check labels to SKIP when 'Segment all' is used:"));
     QListWidget *skipList = new QListWidget();
@@ -129,6 +138,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
     int percentile = percSlider->value();
 
     bool doAll = segmentAllBox->isChecked();
+    bool polSweep = polSweepBox->isChecked() && !doAll;
     if (!doAll)
     {
         bool ok = false;
@@ -137,7 +147,9 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
             return;
         int internal_label = sel.toInt();
 
-        QString seedFile = QFileDialog::getSaveFileName(parent, "Save seed file", QString::fromStdString(parent->getImagePath()), "Text files (*.txt);;All files (*)");
+        QString baseDir = QFileInfo(QString::fromStdString(parent->getImagePath())).absolutePath();
+
+        QString seedFile = QFileDialog::getSaveFileName(parent, "Save seed file", baseDir, "Text files (*.txt);;All files (*)");
         QCoreApplication::processEvents();
         if (seedFile.isEmpty())
             return;
@@ -153,13 +165,17 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
         }
         ofs.close();
 
-        QString outQ = QFileDialog::getSaveFileName(parent, "Save segmentation output", QString::fromStdString(parent->getImagePath()), "NIfTI files (*.nii *.nii.gz);;All files (*)");
-        QCoreApplication::processEvents();
-        if (outQ.isEmpty())
-            return;
-        QString outp = outQ;
-        if (!(outp.endsWith(".nii", Qt::CaseInsensitive) || outp.endsWith(".nii.gz", Qt::CaseInsensitive)))
-            outp += ".nii.gz";
+        QString outp;
+        if (!polSweep)
+        {
+            QString outQ = QFileDialog::getSaveFileName(parent, "Save segmentation output", baseDir, "NIfTI files (*.nii *.nii.gz);;All files (*)");
+            QCoreApplication::processEvents();
+            if (outQ.isEmpty())
+                return;
+            outp = outQ;
+            if (!(outp.endsWith(".nii", Qt::CaseInsensitive) || outp.endsWith(".nii.gz", Qt::CaseInsensitive)))
+                outp += ".nii.gz";
+        }
 
         QString seedPath = seedFile;
         QDir appDir(QCoreApplication::applicationDirPath());
@@ -185,67 +201,198 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
             return;
         }
 
-        QProcess proc;
-        QStringList args;
-        args << QString::fromStdString(parent->getImagePath()) << seedPath << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp;
-        QStringList quotedArgs;
-        for (const QString &a : args)
-            quotedArgs << '"' + a + '"';
-        qDebug().noquote() << "Running:" << exePath << quotedArgs.join(' ');
+        if (polSweep)
+        {
+            QString outDir = QFileDialog::getExistingDirectory(parent, "Select directory to save per-polarity segmentations", baseDir);
+            QCoreApplication::processEvents();
+            if (outDir.isEmpty())
+                return;
 
-        proc.setProcessChannelMode(QProcess::SeparateChannels);
-        proc.start(exePath, args);
-        bool started = proc.waitForStarted(60000);
-        if (!started)
-        {
-            QMessageBox::critical(parent, "ROIFT start failed", "Failed to start ROIFT executable.");
-            return;
-        }
-        bool finished = proc.waitForFinished(-1);
-        QString procStdout = proc.readAllStandardOutput();
-        QString procStderr = proc.readAllStandardError();
-        if (!finished)
-        {
-            std::cerr << "ROIFT did not finish (timed out or was killed).\n";
-            if (!procStdout.isEmpty())
-                std::cerr << "ROIFT STDOUT:\n"
-                          << procStdout.toStdString() << "\n";
-            if (!procStderr.isEmpty())
-                std::cerr << "ROIFT STDERR:\n"
-                          << procStderr.toStdString() << "\n";
-            QMessageBox::critical(parent, "ROIFT failed", "ROIFT did not finish successfully. See console for details.");
-            return;
-        }
-        int exitCode = proc.exitCode();
-        if (exitCode == 0)
-        {
-            std::cerr << "ROIFT finished successfully, output=" << outp.toStdString() << "\n";
-            if (!procStdout.isEmpty())
-                std::cerr << "ROIFT STDOUT:\n"
-                          << procStdout.toStdString() << "\n";
-            if (!procStderr.isEmpty())
-                std::cerr << "ROIFT STDERR:\n"
-                          << procStderr.toStdString() << "\n";
-            bool loaded = parent->applyMaskFromPath(outp.toStdString());
-            if (!loaded)
+            std::vector<double> polValues;
+            polValues.reserve(21);
+            for (int i = 0; i <= 20; ++i)
             {
-                QMessageBox::warning(parent, "Load Mask", QString("ROIFT finished but failed to load output mask: %1").arg(outp));
+                double v = -1.0 + 0.1 * i;
+                // keep one decimal place, but avoid -0.0
+                double rounded = std::round(v * 10.0) / 10.0;
+                if (std::abs(rounded) < 1e-4)
+                    rounded = 0.0;
+                polValues.push_back(rounded);
             }
-            else
+
+            int maxParallel = std::min(5, std::max(1, QThread::idealThreadCount()));
+            struct PolProc
             {
-                QMessageBox::information(parent, "ROIFT", "Segmentation finished and mask loaded successfully.");
+                double polValue;
+                QString outPath;
+                QProcess *proc;
+            };
+            std::vector<PolProc> running;
+            std::vector<std::pair<double, QString>> successes;
+
+            auto safeTag = [](double v) {
+                QString t = QString::number(v, 'f', 1);
+                t.replace("-", "neg");
+                t.replace(".", "_");
+                return t;
+            };
+
+            size_t nextIdx = 0;
+            auto startPol = [&](double polVal) -> bool
+            {
+                QString tag = safeTag(polVal);
+                QString outPol = QDir(outDir).filePath(QString("segmentation_pol_%1.nii.gz").arg(tag));
+                QProcess *p = new QProcess();
+                QStringList argsPol;
+                argsPol << QString::fromStdString(parent->getImagePath()) << seedPath << QString::number(polVal, 'f', 1) << QString::number(niter) << QString::number(percentile) << outPol;
+                QStringList quotedArgs;
+                for (const QString &a : argsPol)
+                    quotedArgs << '"' + a + '"';
+                qDebug().noquote() << "Running:" << exePath << quotedArgs.join(' ');
+                p->setProcessChannelMode(QProcess::SeparateChannels);
+                p->start(exePath, argsPol);
+                bool startedPol = p->waitForStarted(60000);
+                if (!startedPol)
+                {
+                    std::cerr << "[ERROR] Failed to start ROIFT for pol=" << polVal << "\n";
+                    delete p;
+                    return false;
+                }
+                running.push_back({polVal, outPol, p});
+                return true;
+            };
+
+            while (nextIdx < polValues.size() && (int)running.size() < maxParallel)
+            {
+                startPol(polValues[nextIdx]);
+                ++nextIdx;
             }
+
+            while (nextIdx < polValues.size() || !running.empty())
+            {
+                QCoreApplication::processEvents();
+                for (auto it = running.begin(); it != running.end();)
+                {
+                    QProcess *p = it->proc;
+                    if (p->state() == QProcess::NotRunning)
+                    {
+                        QString outStd = p->readAllStandardOutput();
+                        QString outErr = p->readAllStandardError();
+                        int code = p->exitCode();
+                        double polVal = it->polValue;
+                        if (code == 0)
+                        {
+                            std::cerr << "[INFO] ROIFT finished for pol=" << polVal << " output=" << it->outPath.toStdString() << "\n";
+                            if (!outStd.isEmpty())
+                                std::cerr << outStd.toStdString() << "\n";
+                            if (!outErr.isEmpty())
+                                std::cerr << outErr.toStdString() << "\n";
+                            successes.emplace_back(polVal, it->outPath);
+                        }
+                        else
+                        {
+                            std::cerr << "[ERROR] ROIFT failed for pol=" << polVal << " code=" << code << "\n";
+                            if (!outStd.isEmpty())
+                                std::cerr << outStd.toStdString() << "\n";
+                            if (!outErr.isEmpty())
+                                std::cerr << outErr.toStdString() << "\n";
+                        }
+                        if (p->state() != QProcess::NotRunning)
+                        {
+                            p->kill();
+                            p->waitForFinished(1000);
+                        }
+                        delete p;
+                        it = running.erase(it);
+                        if (nextIdx < polValues.size())
+                        {
+                            startPol(polValues[nextIdx]);
+                            ++nextIdx;
+                        }
+                    }
+                    else
+                    {
+                        ++it;
+                    }
+                }
+                QThread::msleep(50);
+            }
+
+            if (successes.empty())
+            {
+                QMessageBox::warning(parent, "ROIFT", "No successful outputs were generated for the polarity sweep.");
+                return;
+            }
+
+            QString summary = QString("Polarity sweep finished (%1 outputs). Masks saved in: %2")
+                                   .arg(successes.size())
+                                   .arg(outDir);
+            QMessageBox::information(parent, "ROIFT", summary);
         }
         else
         {
-            std::cerr << "ROIFT failed with code=" << exitCode << "\n";
-            if (!procStdout.isEmpty())
-                std::cerr << "ROIFT STDOUT:\n"
-                          << procStdout.toStdString() << "\n";
-            if (!procStderr.isEmpty())
-                std::cerr << "ROIFT STDERR:\n"
-                          << procStderr.toStdString() << "\n";
-            QMessageBox::critical(parent, "ROIFT failed", QString("ROIFT returned exit code %1.\nSee console for details.\nSTDERR:\n%2").arg(exitCode).arg(procStderr));
+            QProcess proc;
+            QStringList args;
+            args << QString::fromStdString(parent->getImagePath()) << seedPath << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp;
+            QStringList quotedArgs;
+            for (const QString &a : args)
+                quotedArgs << '"' + a + '"';
+            qDebug().noquote() << "Running:" << exePath << quotedArgs.join(' ');
+
+            proc.setProcessChannelMode(QProcess::SeparateChannels);
+            proc.start(exePath, args);
+            bool started = proc.waitForStarted(60000);
+            if (!started)
+            {
+                QMessageBox::critical(parent, "ROIFT start failed", "Failed to start ROIFT executable.");
+                return;
+            }
+            bool finished = proc.waitForFinished(-1);
+            QString procStdout = proc.readAllStandardOutput();
+            QString procStderr = proc.readAllStandardError();
+            if (!finished)
+            {
+                std::cerr << "ROIFT did not finish (timed out or was killed).\n";
+                if (!procStdout.isEmpty())
+                    std::cerr << "ROIFT STDOUT:\n"
+                              << procStdout.toStdString() << "\n";
+                if (!procStderr.isEmpty())
+                    std::cerr << "ROIFT STDERR:\n"
+                              << procStderr.toStdString() << "\n";
+                QMessageBox::critical(parent, "ROIFT failed", "ROIFT did not finish successfully. See console for details.");
+                return;
+            }
+            int exitCode = proc.exitCode();
+            if (exitCode == 0)
+            {
+                std::cerr << "ROIFT finished successfully, output=" << outp.toStdString() << "\n";
+                if (!procStdout.isEmpty())
+                    std::cerr << "ROIFT STDOUT:\n"
+                              << procStdout.toStdString() << "\n";
+                if (!procStderr.isEmpty())
+                    std::cerr << "ROIFT STDERR:\n"
+                              << procStderr.toStdString() << "\n";
+                bool loaded = parent->applyMaskFromPath(outp.toStdString());
+                if (!loaded)
+                {
+                    QMessageBox::warning(parent, "Load Mask", QString("ROIFT finished but failed to load output mask: %1").arg(outp));
+                }
+                else
+                {
+                    QMessageBox::information(parent, "ROIFT", "Segmentation finished and mask loaded successfully.");
+                }
+            }
+            else
+            {
+                std::cerr << "ROIFT failed with code=" << exitCode << "\n";
+                if (!procStdout.isEmpty())
+                    std::cerr << "ROIFT STDOUT:\n"
+                              << procStdout.toStdString() << "\n";
+                if (!procStderr.isEmpty())
+                    std::cerr << "ROIFT STDERR:\n"
+                              << procStderr.toStdString() << "\n";
+                QMessageBox::critical(parent, "ROIFT failed", QString("ROIFT returned exit code %1.\nSee console for details.\nSTDERR:\n%2").arg(exitCode).arg(procStderr));
+            }
         }
 
         return;
