@@ -25,14 +25,14 @@ if(WIN32)
       list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}/share")
       list(APPEND CMAKE_INCLUDE_PATH "${_vcpkg_root}/include")
       list(APPEND CMAKE_LIBRARY_PATH "${_vcpkg_root}/lib" "${_vcpkg_root}/bin")
-      file(GLOB_RECURSE _qt5_config_files RELATIVE "${_vcpkg_root}" "${_vcpkg_root}/*Qt5Config.cmake")
-      if(_qt5_config_files)
-        list(GET _qt5_config_files 0 _qt5_first)
-        get_filename_component(_qt5_dir "${_vcpkg_root}/${_qt5_first}" DIRECTORY)
-        set(Qt5_DIR "${_qt5_dir}" CACHE PATH "Qt5_DIR set from local vcpkg_installed (detected)")
-        message(STATUS "Detected Qt5 config at ${Qt5_DIR}")
+      file(GLOB_RECURSE _qt6_config_files RELATIVE "${_vcpkg_root}" "${_vcpkg_root}/*Qt6Config.cmake")
+      if(_qt6_config_files)
+        list(GET _qt6_config_files 0 _qt6_first)
+        get_filename_component(_qt6_dir "${_vcpkg_root}/${_qt6_first}" DIRECTORY)
+        set(Qt6_DIR "${_qt6_dir}" CACHE PATH "Qt6_DIR set from local vcpkg_installed (detected)")
+        message(STATUS "Detected Qt6 config at ${Qt6_DIR}")
       else()
-        if(EXISTS "${_vcpkg_root}/share/Qt5")
+        if(EXISTS "${_vcpkg_root}/share/qt6" OR EXISTS "${_vcpkg_root}/share/Qt6")
           list(APPEND CMAKE_PREFIX_PATH "${_vcpkg_root}/lib/cmake")
           message(STATUS "Appended ${_vcpkg_root}/lib/cmake to CMAKE_PREFIX_PATH for Qt/other packages")
         endif()
@@ -43,13 +43,13 @@ if(WIN32)
   endif()
 endif()
 
-find_package(Qt5 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 # Find ITK
 find_package(ITK REQUIRED)
 add_compile_definitions(HAVE_ITK=1)
 
-message(STATUS "Selected Qt major version: 5 (Qt5 found and required)")
+message(STATUS "Selected Qt major version: 6 (Qt6 found and required)")
 
 # Include ITK
 if (DEFINED ITK_USE_FILE)
@@ -91,7 +91,7 @@ add_executable(roift_gui ${SRC_FILES})
 target_include_directories(${PROJECT_NAME} PRIVATE src)
 target_link_libraries(${PROJECT_NAME}
   PRIVATE
-    Qt5::Widgets
+    Qt6::Widgets
     ${ITK_LIBRARIES}
     ${VTK_LIBRARIES}
 )
@@ -111,33 +111,3 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
   AUTOUIC ON
   AUTORCC ON
 )
-
-if(WIN32)
-  if(DEFINED _vcpkg_root AND _vcpkg_root)
-    set(_qt_plugins_src_debug "${_vcpkg_root}/debug/Qt5/plugins")
-    set(_qt_plugins_src_release "${_vcpkg_root}/Qt5/plugins")
-
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E echo "Copying Qt plugins (platforms) from vcpkg_installed..."
-      COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${PROJECT_NAME}>/platforms
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "$<$<CONFIG:Debug>:${_qt_plugins_src_debug}/platforms>$<$<NOT:$<CONFIG:Debug>>:${_qt_plugins_src_release}/platforms>"
-        $<TARGET_FILE_DIR:${PROJECT_NAME}>/platforms
-      COMMENT "Copy Qt plugins (platforms) to runtime folder"
-    )
-  endif()
-
-  if(DEFINED _vcpkg_root AND _vcpkg_root)
-    set(_vcpkg_bin_release "${_vcpkg_root}/bin")
-    set(_vcpkg_bin_debug   "${_vcpkg_root}/debug/bin")
-
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E echo "Copying vcpkg bin/ -> runtime folder"
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "$<$<CONFIG:Debug>:${_vcpkg_bin_debug}>$<$<NOT:$<CONFIG:Debug>>:${_vcpkg_bin_release}>"
-        $<TARGET_FILE_DIR:${PROJECT_NAME}>
-      COMMENT "Copy matching vcpkg runtime DLLs to target folder"
-    )
-  endif()
-endif()
-

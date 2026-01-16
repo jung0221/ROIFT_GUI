@@ -74,7 +74,7 @@ Mask3DView::Mask3DView(QWidget *parent)
 void Mask3DView::buildPipeline()
 {
     m_renderWindow = vtkSmartPointer<vtkGenericOpenGLRenderWindow>::New();
-    m_vtkWidget->SetRenderWindow(m_renderWindow);
+    m_vtkWidget->setRenderWindow(m_renderWindow);
 
     m_renderer = vtkSmartPointer<vtkRenderer>::New();
     m_renderer->SetBackground(0.012, 0.012, 0.012);
