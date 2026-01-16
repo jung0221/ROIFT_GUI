@@ -7,6 +7,9 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+# build output folder. Set cmake -S . -B build -DROIFT_COPY_RUNTIME=OFF to avoid copying files on every --build.
+option(ROIFT_COPY_RUNTIME "Copy Qt plugins and vcpkg runtime DLLs to the build output folder" ON)
+
 # Windows instalation
 if(WIN32)
     if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)

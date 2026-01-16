@@ -19,6 +19,7 @@ int main(int argc, char **argv)
     QApplication app(argc, argv);
     std::string path;
     std::string seedsPath;
+    bool startFullscreen = false;
     for (int i = 1; i < argc; ++i)
     {
         std::string a = argv[i];
@@ -79,6 +80,10 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
+        else if (a == "--fullscreen" || a == "-f")
+        {
+            startFullscreen = true;
+        }
         else if (path.empty())
         {
             // first positional argument
@@ -109,8 +114,21 @@ int main(int argc, char **argv)
         }
     }
     QScreen *screen = QGuiApplication::primaryScreen();
-    w.setGeometry(screen->availableGeometry());
-    w.show();
+    if (startFullscreen)
+    {
+        w.showFullScreen();
+    }
+    else
+    {
+        // start with a sensible default window size centered on the primary screen
+        QRect avail = screen->availableGeometry();
+        QSize desired(1200, 800);
+        int wdt = std::min(desired.width(), avail.width());
+        int hgt = std::min(desired.height(), avail.height());
+        w.resize(wdt, hgt);
+        w.move(avail.x() + (avail.width() - wdt) / 2, avail.y() + (avail.height() - hgt) / 2);
+        w.show();
+    }
 
     return app.exec();
 }

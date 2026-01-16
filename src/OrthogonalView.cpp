@@ -24,10 +24,10 @@ void OrthogonalView::paintEvent(QPaintEvent *event) {
     p.fillRect(rect(), Qt::black);
     if (!m_image.isNull()) {
         // scale to fit while keeping aspect, then apply user zoom
-        QImage fit = m_image.scaled(size(), Qt::KeepAspectRatio);
+        QImage fit = m_image.scaled(size(), Qt::KeepAspectRatio, Qt::FastTransformation);
         int w = int(fit.width() * m_userZoom);
         int h = int(fit.height() * m_userZoom);
-        QImage scaled = m_image.scaled(w, h, Qt::KeepAspectRatio);
+        QImage scaled = m_image.scaled(w, h, Qt::KeepAspectRatio, Qt::FastTransformation);
         float scale = float(scaled.width()) / float(m_image.width());
         int x = (width() - scaled.width()) / 2 + m_pan.x();
         int y = (height() - scaled.height()) / 2 + m_pan.y();

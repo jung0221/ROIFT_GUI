@@ -33,9 +33,13 @@ public:
     float getGlobalMin() const;
     float getGlobalMax() const;
 
+    bool isMask() const { return m_isMask; }
+
 private:
     ImageType::Pointer m_image;
     ImageType::RegionType m_region;
     float m_min = 0.0f;
     float m_max = 1.0f;
+    bool m_isMask = false;
+    itk::ImageIOBase::IOComponentType m_component = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
 };
