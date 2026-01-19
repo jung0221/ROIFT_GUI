@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QSlider>
+#include <QCheckBox>
 #include <QSpinBox>
 #include <QLabel>
 #include <vector>
@@ -12,11 +13,16 @@
 #include "RangeSlider.h"
 
 class QDoubleSpinBox;
+class QCheckBox;
 
-struct Seed { int x,y,z,label,internal; };
+struct Seed
+{
+    int x, y, z, label, internal;
+};
 class Mask3DView;
 
-class ManualSeedSelector : public QMainWindow {
+class ManualSeedSelector : public QMainWindow
+{
     Q_OBJECT
 public:
     ManualSeedSelector(const std::string &niftiPath, QWidget *parent = nullptr);
@@ -32,11 +38,29 @@ public:
     // initialize sliders and views after an image has been loaded
     void initializeImageWidgets();
     // expose current seeds for external helpers (read-only)
-    const std::vector<Seed>& getSeeds() const { return m_seeds; }
+    const std::vector<Seed> &getSeeds() const { return m_seeds; }
     // expose image path
     std::string getImagePath() const { return m_path; }
     // convenience wrapper to load a mask and update views (used by segmentation runner)
-    bool applyMaskFromPath(const std::string &path) { bool ok = loadMaskFromFile(path); if (ok) updateViews(); return ok; }
+    bool applyMaskFromPath(const std::string &path)
+    {
+        bool ok = loadMaskFromFile(path);
+        if (ok)
+            updateViews();
+        return ok;
+    }
+
+    // Expose segmentation parameters
+    double getPolarity() const { return m_polSlider ? m_polSlider->value() / 100.0 : 1.0; }
+    int getNiter() const { return m_niterSpin ? m_niterSpin->value() : 1; }
+    int getPercentile() const { return m_percSlider ? m_percSlider->value() : 0; }
+    bool getSegmentAll() const { return m_segmentAllBox ? m_segmentAllBox->isChecked() : false; }
+    bool getPolaritySweep() const { return m_polSweepBox ? m_polSweepBox->isChecked() : false; }
+    bool getUseGPU() const { return m_useGPUBox ? m_useGPUBox->isChecked() : false; }
+    double getWindowLevel() const { return m_windowLevelSpin ? m_windowLevelSpin->value() : 0.0; }
+    double getWindowWidth() const { return m_windowWidthSpin ? m_windowWidthSpin->value() : 1.0; }
+    double getImageMin() const { return m_image.getGlobalMin(); }
+    double getImageMax() const { return m_image.getGlobalMax(); }
 
 private slots:
     void openImage();
@@ -56,10 +80,9 @@ private slots:
     void paintAxialMask(int x, int y);
     void paintSagittalMask(int x, int y);
     void paintCoronalMask(int x, int y);
-    void applyBrushToMask(const std::array<int,3> &center, const std::pair<int,int> &axes, int radius, int labelValue, bool erase=false);
+    void applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, int radius, int labelValue, bool erase = false);
     void resetWindowToFullRange();
     void applyWindowFromValues(float low, float high, bool fromSlider);
-    
 
 private:
     void setupUi();
@@ -89,7 +112,7 @@ private:
     QPushButton *m_btnUndoThreshold = nullptr;
     bool m_mouseDown = false;
     int m_dragButton = 0;
-    std::vector<std::array<int,3>> m_colorLUT;
+    std::vector<std::array<int, 3>> m_colorLUT;
     // mask buffer: linearized X * Y * Z, 0 means empty, positive integers are label values
     std::vector<int> m_maskData;
     int m_maskMode = 0;
@@ -110,4 +133,14 @@ private:
     float m_windowGlobalMin = 0.0f;
     float m_windowGlobalMax = 1.0f;
     bool m_blockWindowSignals = false;
+
+    // Segmentation UI elements
+    QSlider *m_polSlider = nullptr;
+    QLabel *m_polValue = nullptr;
+    QSpinBox *m_niterSpin = nullptr;
+    QSlider *m_percSlider = nullptr;
+    QLabel *m_percValue = nullptr;
+    QCheckBox *m_segmentAllBox = nullptr;
+    QCheckBox *m_polSweepBox = nullptr;
+    QCheckBox *m_useGPUBox = nullptr;
 };

@@ -13,13 +13,12 @@ QT_FORWARD_DECLARE_CLASS(QSlider)
 
 class QVTKOpenGLNativeWidget;
 class vtkActor;
-class vtkDecimatePro;
-class vtkDiscreteMarchingCubes;
+class vtkFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
 class vtkLookupTable;
 class vtkPolyDataMapper;
 class vtkRenderer;
-class vtkSmoothPolyDataFilter;
+class vtkWindowedSincPolyDataFilter;
 
 class Mask3DView : public QWidget
 {
@@ -52,9 +51,8 @@ private:
     vtkSmartPointer<vtkRenderer> m_renderer;
     vtkSmartPointer<vtkActor> m_actor;
     vtkSmartPointer<vtkPolyDataMapper> m_mapper;
-    vtkSmartPointer<vtkDiscreteMarchingCubes> m_marchingCubes;
-    vtkSmartPointer<vtkDecimatePro> m_decimate;
-    vtkSmartPointer<vtkSmoothPolyDataFilter> m_smoother;
+    vtkSmartPointer<vtkFlyingEdges3D> m_flyingEdges;
+    vtkSmartPointer<vtkWindowedSincPolyDataFilter> m_smoother;
     vtkSmartPointer<vtkLookupTable> m_lookupTable;
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
 

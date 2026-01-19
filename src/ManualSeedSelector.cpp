@@ -37,6 +37,7 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QSlider>
+#include <QGroupBox>
 #include <QKeyEvent>
 #include <fstream>
 #include <iostream>
@@ -183,11 +184,9 @@ void ManualSeedSelector::setupUi()
     QPushButton *btnNiftiOptions = new QPushButton("NIfTI Options");
     m_btnUndoThreshold = new QPushButton("Undo Threshold");
     m_btnUndoThreshold->setEnabled(false);
-    QPushButton *btnSegment = new QPushButton("Segment (ROIFT)");
     QPushButton *btnSeedOptions = new QPushButton("Seed Options");
     btnRow->addWidget(btnNiftiOptions);
     btnRow->addWidget(m_btnUndoThreshold);
-    btnRow->addWidget(btnSegment);
     btnRow->addWidget(btnSeedOptions);
     QPushButton *btnMaskOptions = new QPushButton("Mask Options");
     btnRow->addWidget(btnMaskOptions);
@@ -231,12 +230,85 @@ void ManualSeedSelector::setupUi()
     connect(btnResetZoom, &QPushButton::clicked, [this]()
             { m_axialView->resetView(); m_sagittalView->resetView(); m_coronalView->resetView(); });
     main->addWidget(btnResetZoom);
-    main->addWidget(new QLabel("Axial"));
-    main->addWidget(m_axialSlider);
-    main->addWidget(new QLabel("Sagittal"));
-    main->addWidget(m_sagittalSlider);
-    main->addWidget(new QLabel("Coronal"));
-    main->addWidget(m_coronalSlider);
+
+    // Axial slider row
+    QHBoxLayout *axialRow = new QHBoxLayout();
+    axialRow->addWidget(new QLabel("Axial"));
+    axialRow->addWidget(m_axialSlider, 1);
+    main->addLayout(axialRow);
+
+    // Sagittal slider row
+    QHBoxLayout *sagittalRow = new QHBoxLayout();
+    sagittalRow->addWidget(new QLabel("Sagittal"));
+    sagittalRow->addWidget(m_sagittalSlider, 1);
+    main->addLayout(sagittalRow);
+
+    // Coronal slider row
+    QHBoxLayout *coronalRow = new QHBoxLayout();
+    coronalRow->addWidget(new QLabel("Coronal"));
+    coronalRow->addWidget(m_coronalSlider, 1);
+    main->addLayout(coronalRow);
+
+    // Segmentation controls in a horizontal layout
+    QHBoxLayout *segControlsRow = new QHBoxLayout();
+
+    // Parameters group
+    QGroupBox *paramsGroup = new QGroupBox("Segmentation Parameters");
+    QGridLayout *paramsLayout = new QGridLayout(paramsGroup);
+
+    paramsLayout->addWidget(new QLabel("Polarity:"), 0, 0);
+    m_polSlider = new QSlider(Qt::Horizontal);
+    m_polSlider->setRange(-100, 100);
+    m_polSlider->setValue(100);
+    paramsLayout->addWidget(m_polSlider, 0, 1);
+    m_polValue = new QLabel("1.00");
+    paramsLayout->addWidget(m_polValue, 0, 2);
+
+    paramsLayout->addWidget(new QLabel("Relax iters:"), 1, 0);
+    m_niterSpin = new QSpinBox();
+    m_niterSpin->setRange(1, 10000);
+    m_niterSpin->setValue(1);
+    paramsLayout->addWidget(m_niterSpin, 1, 1, 1, 2);
+
+    paramsLayout->addWidget(new QLabel("Percentile:"), 2, 0);
+    m_percSlider = new QSlider(Qt::Horizontal);
+    m_percSlider->setRange(0, 100);
+    m_percSlider->setValue(0);
+    paramsLayout->addWidget(m_percSlider, 2, 1);
+    m_percValue = new QLabel("0");
+    paramsLayout->addWidget(m_percValue, 2, 2);
+
+    segControlsRow->addWidget(paramsGroup);
+
+    // Options group
+    QGroupBox *optionsGroup = new QGroupBox("Processing Options");
+    QVBoxLayout *optionsLayout = new QVBoxLayout(optionsGroup);
+
+    m_segmentAllBox = new QCheckBox("Segment all labels");
+    optionsLayout->addWidget(m_segmentAllBox);
+
+    m_polSweepBox = new QCheckBox("Polarity sweep (-1.0 to 1.0)");
+    optionsLayout->addWidget(m_polSweepBox);
+
+    m_useGPUBox = new QCheckBox("Use GPU (--delta)");
+    optionsLayout->addWidget(m_useGPUBox);
+
+    QPushButton *btnRunSegment = new QPushButton("Run Segmentation");
+    optionsLayout->addWidget(btnRunSegment);
+
+    segControlsRow->addWidget(optionsGroup);
+
+    main->addLayout(segControlsRow);
+
+    // Connect segmentation signals
+    connect(m_polSlider, &QSlider::valueChanged, m_polValue, [this](int v)
+            { m_polValue->setText(QString::number(v / 100.0, 'f', 2)); });
+    connect(m_percSlider, &QSlider::valueChanged, m_percValue, [this](int v)
+            { m_percValue->setText(QString::number(v)); });
+    connect(m_segmentAllBox, &QCheckBox::toggled, m_polSweepBox, [this](bool on)
+            { m_polSweepBox->setChecked(false); m_polSweepBox->setEnabled(!on); });
+    connect(btnRunSegment, &QPushButton::clicked, [this]()
+            { SegmentationRunner::runSegmentation(this); });
 
     // status label showing current mouse x,y,z and intensity
     m_statusLabel = new QLabel("x: - y: - z: - val: -");
@@ -395,8 +467,6 @@ void ManualSeedSelector::setupUi()
     connect(m_axialSlider, &QSlider::valueChanged, this, &ManualSeedSelector::updateViews);
     connect(m_sagittalSlider, &QSlider::valueChanged, this, &ManualSeedSelector::updateViews);
     connect(m_coronalSlider, &QSlider::valueChanged, this, &ManualSeedSelector::updateViews);
-    connect(btnSegment, &QPushButton::clicked, [this]()
-            { SegmentationRunner::showSegmentationDialog(this); });
 
     // update color indicator when label changes
     connect(m_labelSelector, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this, [this](int v)
@@ -412,15 +482,13 @@ void ManualSeedSelector::setupUi()
         if (m_blockWindowSignals) return;
         double width = m_windowWidthSpin->value();
         double half = width * 0.5;
-        applyWindowFromValues(static_cast<float>(level - half), static_cast<float>(level + half), false);
-    });
+        applyWindowFromValues(static_cast<float>(level - half), static_cast<float>(level + half), false); });
     connect(m_windowWidthSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), this, [this](double width)
             {
         if (m_blockWindowSignals) return;
         double level = m_windowLevelSpin->value();
         double half = width * 0.5;
-        applyWindowFromValues(static_cast<float>(level - half), static_cast<float>(level + half), false);
-    });
+        applyWindowFromValues(static_cast<float>(level - half), static_cast<float>(level + half), false); });
     connect(btnWindowReset, &QPushButton::clicked, this, &ManualSeedSelector::resetWindowToFullRange);
 }
 

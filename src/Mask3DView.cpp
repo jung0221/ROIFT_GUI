@@ -13,8 +13,7 @@
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkActor.h>
-#include <vtkDecimatePro.h>
-#include <vtkDiscreteMarchingCubes.h>
+#include <vtkFlyingEdges3D.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
 #include <vtkLight.h>
@@ -22,7 +21,7 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkRenderer.h>
-#include <vtkSmoothPolyDataFilter.h>
+#include <vtkWindowedSincPolyDataFilter.h>
 #include <vtkSmartPointer.h>
 
 #include <set>
@@ -79,6 +78,8 @@ void Mask3DView::buildPipeline()
     m_renderer = vtkSmartPointer<vtkRenderer>::New();
     m_renderer->SetBackground(0.012, 0.012, 0.012);
     m_renderer->GradientBackgroundOn();
+
+    // Add lights for better visualization
     vtkSmartPointer<vtkLight> keyLight = vtkSmartPointer<vtkLight>::New();
     keyLight->SetLightTypeToSceneLight();
     keyLight->SetColor(1.0, 0.9, 0.8);
@@ -86,6 +87,7 @@ void Mask3DView::buildPipeline()
     keyLight->SetPosition(1.0, 1.0, 1.0);
     keyLight->SetFocalPoint(0.0, 0.0, 0.0);
     m_renderer->AddLight(keyLight);
+
     vtkSmartPointer<vtkLight> fillLight = vtkSmartPointer<vtkLight>::New();
     fillLight->SetLightTypeToSceneLight();
     fillLight->SetColor(0.5, 0.6, 0.8);
@@ -119,24 +121,24 @@ void Mask3DView::buildPipeline()
     m_mapper->SetColorModeToMapScalars();
     m_actor->SetMapper(m_mapper);
 
-    m_marchingCubes = vtkSmartPointer<vtkDiscreteMarchingCubes>::New();
-    m_marchingCubes->SetComputeNormals(true);
-    m_marchingCubes->SetComputeScalars(true);
-    m_marchingCubes->SetComputeGradients(true);
+    // FlyingEdges3D - GPU-accelerated alternative to Marching Cubes
+    m_flyingEdges = vtkSmartPointer<vtkFlyingEdges3D>::New();
+    m_flyingEdges->SetComputeNormals(true);
+    m_flyingEdges->SetComputeScalars(true);
+    m_flyingEdges->SetComputeGradients(true);
+    m_flyingEdges->InterpolateAttributesOn();
 
-    m_decimate = vtkSmartPointer<vtkDecimatePro>::New();
-    m_decimate->SetTargetReduction(0.55);
-    m_decimate->PreserveTopologyOn();
-    m_decimate->SetMaximumError(0.0005);
-
-    m_smoother = vtkSmartPointer<vtkSmoothPolyDataFilter>::New();
-    m_smoother->SetNumberOfIterations(20);
-    m_smoother->SetRelaxationFactor(0.12);
-    m_smoother->FeatureEdgeSmoothingOff();
+    // WindowedSinc smoother - GPU-friendly, better than Laplacian
+    m_smoother = vtkSmartPointer<vtkWindowedSincPolyDataFilter>::New();
+    m_smoother->SetNumberOfIterations(15);
     m_smoother->BoundarySmoothingOn();
+    m_smoother->FeatureEdgeSmoothingOff();
+    m_smoother->SetFeatureAngle(120.0);
+    m_smoother->SetPassBand(0.1);
+    m_smoother->NonManifoldSmoothingOn();
+    m_smoother->NormalizeCoordinatesOn();
 
-    m_decimate->SetInputConnection(m_marchingCubes->GetOutputPort());
-    m_smoother->SetInputConnection(m_decimate->GetOutputPort());
+    m_smoother->SetInputConnection(m_flyingEdges->GetOutputPort());
     m_mapper->SetInputConnection(m_smoother->GetOutputPort());
 }
 
@@ -191,16 +193,16 @@ void Mask3DView::setMaskData(const std::vector<int> &mask, unsigned int sizeX, u
             m_labelColors[lbl] = colorForLabel(lbl);
     }
 
-    m_marchingCubes->SetInputData(image);
-    m_marchingCubes->SetNumberOfContours(static_cast<int>(m_activeLabels.size()));
+    m_flyingEdges->SetInputData(image);
+    m_flyingEdges->SetNumberOfContours(static_cast<int>(m_activeLabels.size()));
     for (int i = 0; i < static_cast<int>(m_activeLabels.size()); ++i)
-        m_marchingCubes->SetValue(i, m_activeLabels[static_cast<size_t>(i)]);
+        m_flyingEdges->SetValue(i, m_activeLabels[static_cast<size_t>(i)]);
 
-    m_marchingCubes->Modified();
+    m_flyingEdges->Modified();
     m_actor->SetVisibility(m_visibilityCheck ? m_visibilityCheck->isChecked() : true);
     rebuildLookupTable();
     updateLabelControls();
-    setStatusText(QString("Labels visíveis: %1").arg(m_activeLabels.size()));
+    setStatusText(QString("Labels visíveis: %1 (GPU)").arg(m_activeLabels.size()));
     m_renderer->ResetCamera();
     if (m_renderWindow)
         m_renderWindow->Render();

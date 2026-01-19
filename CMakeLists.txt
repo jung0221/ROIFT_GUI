@@ -48,6 +48,22 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
+if(WIN32)
+  get_target_property(_qt_qmake_exe Qt6::qmake IMPORTED_LOCATION)
+  get_filename_component(_qt_bin_dir "${_qt_qmake_exe}" DIRECTORY)
+  find_program(WINDEPLOYQT_EXECUTABLE
+    NAMES windeployqt
+    HINTS "${_qt_bin_dir}"
+    NO_DEFAULT_PATH
+  )
+
+  if(NOT WINDEPLOYQT_EXECUTABLE)
+    message(FATAL_ERROR "windeployqt not found (Qt bin dir: ${_qt_bin_dir})")
+  else()
+    message(STATUS "Found windeployqt: ${WINDEPLOYQT_EXECUTABLE}")
+  endif()
+endif()
+
 # Find ITK
 find_package(ITK REQUIRED)
 add_compile_definitions(HAVE_ITK=1)
@@ -114,3 +130,15 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
   AUTOUIC ON
   AUTORCC ON
 )
+
+# Deploy Qt runtime files (DLLs and plugins)
+if(WIN32 AND WINDEPLOYQT_EXECUTABLE AND ROIFT_COPY_RUNTIME)
+  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+      --no-translations
+      --no-system-d3d-compiler
+      --no-opengl-sw
+      "$<TARGET_FILE:${PROJECT_NAME}>"
+    COMMENT "Running windeployqt to deploy Qt runtime files..."
+  )
+endif()

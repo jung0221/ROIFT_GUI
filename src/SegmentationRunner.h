@@ -4,9 +4,13 @@
 
 class ManualSeedSelector;
 
-namespace SegmentationRunner {
+namespace SegmentationRunner
+{
     // Show the segmentation dialog and run ROIFT (single or per-label batch).
     // The function uses public APIs on ManualSeedSelector to read seeds, image path
     // and to apply/load generated masks.
     void showSegmentationDialog(ManualSeedSelector *parent);
+
+    // Run segmentation using parameters from the main window UI
+    void runSegmentation(ManualSeedSelector *parent);
 }
