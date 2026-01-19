@@ -1141,7 +1141,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
         int maxParallel = useGPU ? 1 : std::min(5, std::max(1, QThread::idealThreadCount()));
 
         qDebug() << "[DEBUG] Showing skip labels dialog...";
-        
+
         // Show dialog to select labels to skip
         QDialog skipDialog(parent);
         skipDialog.setWindowTitle("Select labels to skip");
@@ -1170,7 +1170,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
             return;
         }
         qDebug() << "[DEBUG] Skip dialog accepted";
-        
+
         // Build labels vector excluding any skipped labels from skipList (checked = skip)
         std::unordered_set<int> skipSet;
         for (int i = 0; i < skipList->count(); ++i)
@@ -1181,7 +1181,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
                 skipSet.insert(it->text().toInt());
             }
         }
-        
+
         std::vector<int> labels;
         labels.reserve(uniq.size());
         for (int v : uniq)
@@ -1189,7 +1189,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
             if (skipSet.find(v) == skipSet.end())
                 labels.push_back(v);
         }
-        
+
         if (labels.empty())
         {
             QMessageBox::information(parent, "ROIFT", "No labels selected for segmentation after applying skip list.");

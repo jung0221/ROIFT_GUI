@@ -144,9 +144,104 @@ ManualSeedSelector::~ManualSeedSelector()
 
 void ManualSeedSelector::setupUi()
 {
+    // Set modern dark theme
+    setStyleSheet(R"(
+        QMainWindow, QWidget {
+            background-color: #1e1e1e;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 11px;
+        }
+        QPushButton {
+            background-color: #3c3c3c;
+            border: 1px solid #555555;
+            border-radius: 4px;
+            padding: 6px 12px;
+            min-width: 80px;
+        }
+        QPushButton:hover {
+            background-color: #4a4a4a;
+            border-color: #0078d4;
+        }
+        QPushButton:pressed {
+            background-color: #0078d4;
+        }
+        QPushButton:disabled {
+            background-color: #2d2d2d;
+            color: #666666;
+        }
+        QGroupBox {
+            border: 1px solid #444444;
+            border-radius: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+            font-weight: bold;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+            color: #0078d4;
+        }
+        QSlider::groove:horizontal {
+            border: 1px solid #555555;
+            height: 6px;
+            background: #2d2d2d;
+            border-radius: 3px;
+        }
+        QSlider::handle:horizontal {
+            background: #0078d4;
+            border: 1px solid #0078d4;
+            width: 14px;
+            margin: -4px 0;
+            border-radius: 7px;
+        }
+        QSlider::handle:horizontal:hover {
+            background: #1084d8;
+        }
+        QSpinBox, QDoubleSpinBox {
+            background-color: #2d2d2d;
+            border: 1px solid #555555;
+            border-radius: 3px;
+            padding: 3px;
+        }
+        QSpinBox:focus, QDoubleSpinBox:focus {
+            border-color: #0078d4;
+        }
+        QCheckBox {
+            spacing: 8px;
+        }
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            border: 1px solid #555555;
+            background-color: #2d2d2d;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #0078d4;
+            border-color: #0078d4;
+        }
+        QLabel {
+            color: #c0c0c0;
+        }
+        QToolTip {
+            background-color: #2d2d2d;
+            color: #e0e0e0;
+            border: 1px solid #555555;
+            padding: 4px;
+            border-radius: 3px;
+        }
+    )");
+
+    setWindowTitle("ROIFT GUI - Segmentation Tool");
+    resize(1400, 900);
+
     QWidget *central = new QWidget();
     setCentralWidget(central);
     QVBoxLayout *main = new QVBoxLayout(central);
+    main->setSpacing(8);
+    main->setContentsMargins(8, 8, 8, 8);
 
     // 2 x 2 View
     QGridLayout *viewGrid = new QGridLayout();
@@ -180,120 +275,203 @@ void ManualSeedSelector::setupUi()
     viewContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     main->addWidget(viewContainer, 1);
 
+    // Toolbar with main actions
     QHBoxLayout *btnRow = new QHBoxLayout();
-    QPushButton *btnNiftiOptions = new QPushButton("NIfTI Options");
-    m_btnUndoThreshold = new QPushButton("Undo Threshold");
+    btnRow->setSpacing(8);
+
+    QPushButton *btnNiftiOptions = new QPushButton("📂 NIfTI");
+    btnNiftiOptions->setToolTip("Open/Save NIfTI images and apply threshold (Ctrl+O)");
+    btnNiftiOptions->setShortcut(QKeySequence("Ctrl+O"));
+
+    m_btnUndoThreshold = new QPushButton("↩ Undo");
+    m_btnUndoThreshold->setToolTip("Undo last threshold operation (Ctrl+Z)");
+    m_btnUndoThreshold->setShortcut(QKeySequence("Ctrl+Z"));
     m_btnUndoThreshold->setEnabled(false);
-    QPushButton *btnSeedOptions = new QPushButton("Seed Options");
+
+    QPushButton *btnSeedOptions = new QPushButton("🌱 Seeds");
+    btnSeedOptions->setToolTip("Manage seed points: add, remove, save, load (Ctrl+E)");
+    btnSeedOptions->setShortcut(QKeySequence("Ctrl+E"));
+
+    QPushButton *btnMaskOptions = new QPushButton("🎭 Mask");
+    btnMaskOptions->setToolTip("Mask painting options: draw, erase, opacity (Ctrl+M)");
+    btnMaskOptions->setShortcut(QKeySequence("Ctrl+M"));
+
     btnRow->addWidget(btnNiftiOptions);
     btnRow->addWidget(m_btnUndoThreshold);
     btnRow->addWidget(btnSeedOptions);
-    QPushButton *btnMaskOptions = new QPushButton("Mask Options");
     btnRow->addWidget(btnMaskOptions);
-    btnRow->addWidget(new QLabel("Label:"));
+
+    btnRow->addSpacing(20);
+
+    QLabel *labelLbl = new QLabel("Label:");
+    labelLbl->setToolTip("Current label for seeds and mask painting");
+    btnRow->addWidget(labelLbl);
+
     m_labelSelector = new QSpinBox();
     m_labelSelector->setRange(1, 255);
+    m_labelSelector->setToolTip("Select label (1-255) for seeds and mask");
     btnRow->addWidget(m_labelSelector);
+
     // color indicator square for the currently selected label
     m_labelColorIndicator = new QLabel();
     m_labelColorIndicator->setFixedSize(20, 20);
     m_labelColorIndicator->setFrameStyle(QFrame::Box | QFrame::Plain);
+    m_labelColorIndicator->setToolTip("Color for current label");
     btnRow->addWidget(m_labelColorIndicator);
+
+    btnRow->addStretch();
     main->addLayout(btnRow);
 
     // Window/Level controls (WL/WW) with dual-handle slider
-    QHBoxLayout *windowRow = new QHBoxLayout();
-    windowRow->addWidget(new QLabel("Window (WL/WW)"));
+    QGroupBox *windowGroup = new QGroupBox("Window/Level Adjustment");
+    QHBoxLayout *windowRow = new QHBoxLayout(windowGroup);
+    windowRow->setSpacing(8);
+
     m_windowSlider = new RangeSlider(Qt::Horizontal);
-    m_windowSlider->setToolTip("Drag the two handles to adjust the Window Level and Window Width.");
+    m_windowSlider->setToolTip("Drag handles to adjust brightness/contrast. Left=dark, Right=bright");
     m_windowSlider->setMinimumHeight(30);
-    windowRow->addWidget(m_windowSlider, 1);
-    windowRow->addWidget(new QLabel("WL"));
+    windowRow->addWidget(m_windowSlider, 2);
+
+    QLabel *wlLabel = new QLabel("WL:");
+    wlLabel->setToolTip("Window Level (center of visible range)");
+    windowRow->addWidget(wlLabel);
     m_windowLevelSpin = new QDoubleSpinBox();
     m_windowLevelSpin->setDecimals(1);
     m_windowLevelSpin->setSingleStep(10.0);
+    m_windowLevelSpin->setToolTip("Window Level - center brightness value");
     windowRow->addWidget(m_windowLevelSpin);
-    windowRow->addWidget(new QLabel("WW"));
+
+    QLabel *wwLabel = new QLabel("WW:");
+    wwLabel->setToolTip("Window Width (visible range width)");
+    windowRow->addWidget(wwLabel);
     m_windowWidthSpin = new QDoubleSpinBox();
     m_windowWidthSpin->setDecimals(1);
     m_windowWidthSpin->setSingleStep(10.0);
+    m_windowWidthSpin->setToolTip("Window Width - contrast range");
     windowRow->addWidget(m_windowWidthSpin);
-    QPushButton *btnWindowReset = new QPushButton("Reset Window");
+
+    QPushButton *btnWindowReset = new QPushButton("Reset");
+    btnWindowReset->setToolTip("Reset window to full image range");
+    btnWindowReset->setMinimumWidth(60);
     windowRow->addWidget(btnWindowReset);
-    main->addLayout(windowRow);
+    main->addWidget(windowGroup);
 
     m_axialSlider = new QSlider(Qt::Horizontal);
+    m_axialSlider->setToolTip("Navigate through axial slices (Up/Down arrows)");
     m_sagittalSlider = new QSlider(Qt::Horizontal);
+    m_sagittalSlider->setToolTip("Navigate through sagittal slices (Left/Right arrows)");
     m_coronalSlider = new QSlider(Qt::Horizontal);
-    // Reset zoom button (replaces zoom slider)
-    QPushButton *btnResetZoom = new QPushButton("Reset Zoom");
+    m_coronalSlider->setToolTip("Navigate through coronal slices");
+
+    // Slice navigation group
+    QGroupBox *sliceGroup = new QGroupBox("Slice Navigation");
+    QGridLayout *sliceLayout = new QGridLayout(sliceGroup);
+    sliceLayout->setSpacing(4);
+
+    // Reset zoom button
+    QPushButton *btnResetZoom = new QPushButton("🔄 Reset Zoom");
+    btnResetZoom->setToolTip("Reset all views to default zoom (Ctrl+R)");
+    btnResetZoom->setShortcut(QKeySequence("Ctrl+R"));
     connect(btnResetZoom, &QPushButton::clicked, [this]()
             { m_axialView->resetView(); m_sagittalView->resetView(); m_coronalView->resetView(); });
-    main->addWidget(btnResetZoom);
+    sliceLayout->addWidget(btnResetZoom, 0, 0, 1, 2);
 
-    // Axial slider row
-    QHBoxLayout *axialRow = new QHBoxLayout();
-    axialRow->addWidget(new QLabel("Axial"));
-    axialRow->addWidget(m_axialSlider, 1);
-    main->addLayout(axialRow);
+    m_axialLabel = new QLabel("Axial: 0/0");
+    sliceLayout->addWidget(m_axialLabel, 1, 0);
+    sliceLayout->addWidget(m_axialSlider, 1, 1);
 
-    // Sagittal slider row
-    QHBoxLayout *sagittalRow = new QHBoxLayout();
-    sagittalRow->addWidget(new QLabel("Sagittal"));
-    sagittalRow->addWidget(m_sagittalSlider, 1);
-    main->addLayout(sagittalRow);
+    m_sagittalLabel = new QLabel("Sagittal: 0/0");
+    sliceLayout->addWidget(m_sagittalLabel, 2, 0);
+    sliceLayout->addWidget(m_sagittalSlider, 2, 1);
 
-    // Coronal slider row
-    QHBoxLayout *coronalRow = new QHBoxLayout();
-    coronalRow->addWidget(new QLabel("Coronal"));
-    coronalRow->addWidget(m_coronalSlider, 1);
-    main->addLayout(coronalRow);
+    m_coronalLabel = new QLabel("Coronal: 0/0");
+    sliceLayout->addWidget(m_coronalLabel, 3, 0);
+    sliceLayout->addWidget(m_coronalSlider, 3, 1);
+
+    sliceLayout->setColumnStretch(1, 1);
+    main->addWidget(sliceGroup);
 
     // Segmentation controls in a horizontal layout
     QHBoxLayout *segControlsRow = new QHBoxLayout();
+    segControlsRow->setSpacing(12);
 
     // Parameters group
-    QGroupBox *paramsGroup = new QGroupBox("Segmentation Parameters");
+    QGroupBox *paramsGroup = new QGroupBox("⚙️ Segmentation Parameters");
     QGridLayout *paramsLayout = new QGridLayout(paramsGroup);
+    paramsLayout->setSpacing(6);
 
-    paramsLayout->addWidget(new QLabel("Polarity:"), 0, 0);
+    QLabel *polLabel = new QLabel("Polarity:");
+    polLabel->setToolTip("Controls boundary direction: +1 = bright inside, -1 = dark inside");
+    paramsLayout->addWidget(polLabel, 0, 0);
     m_polSlider = new QSlider(Qt::Horizontal);
     m_polSlider->setRange(-100, 100);
     m_polSlider->setValue(100);
+    m_polSlider->setToolTip("Polarity: +1.0 for bright objects, -1.0 for dark objects");
     paramsLayout->addWidget(m_polSlider, 0, 1);
     m_polValue = new QLabel("1.00");
+    m_polValue->setMinimumWidth(40);
     paramsLayout->addWidget(m_polValue, 0, 2);
 
-    paramsLayout->addWidget(new QLabel("Relax iters:"), 1, 0);
+    QLabel *niterLabel = new QLabel("Relax iters:");
+    niterLabel->setToolTip("Number of relaxation iterations for smoother boundaries");
+    paramsLayout->addWidget(niterLabel, 1, 0);
     m_niterSpin = new QSpinBox();
     m_niterSpin->setRange(1, 10000);
     m_niterSpin->setValue(1);
+    m_niterSpin->setToolTip("Higher values = smoother but slower");
     paramsLayout->addWidget(m_niterSpin, 1, 1, 1, 2);
 
-    paramsLayout->addWidget(new QLabel("Percentile:"), 2, 0);
+    QLabel *percLabel = new QLabel("Percentile:");
+    percLabel->setToolTip("Arc-weight percentile threshold for boundary detection");
+    paramsLayout->addWidget(percLabel, 2, 0);
     m_percSlider = new QSlider(Qt::Horizontal);
     m_percSlider->setRange(0, 100);
     m_percSlider->setValue(0);
+    m_percSlider->setToolTip("0 = no threshold, higher = stricter boundary");
     paramsLayout->addWidget(m_percSlider, 2, 1);
     m_percValue = new QLabel("0");
+    m_percValue->setMinimumWidth(40);
     paramsLayout->addWidget(m_percValue, 2, 2);
 
     segControlsRow->addWidget(paramsGroup);
 
     // Options group
-    QGroupBox *optionsGroup = new QGroupBox("Processing Options");
+    QGroupBox *optionsGroup = new QGroupBox("🔧 Processing Options");
     QVBoxLayout *optionsLayout = new QVBoxLayout(optionsGroup);
+    optionsLayout->setSpacing(6);
 
-    m_segmentAllBox = new QCheckBox("Segment all labels");
+    m_segmentAllBox = new QCheckBox("🎯 Segment all labels");
+    m_segmentAllBox->setToolTip("Process all seed labels in batch (select labels to skip)");
     optionsLayout->addWidget(m_segmentAllBox);
 
-    m_polSweepBox = new QCheckBox("Polarity sweep (-1.0 to 1.0)");
+    m_polSweepBox = new QCheckBox("🔄 Polarity sweep");
+    m_polSweepBox->setToolTip("Test polarity range from -1.0 to +1.0 and select best result");
     optionsLayout->addWidget(m_polSweepBox);
 
-    m_useGPUBox = new QCheckBox("Use GPU (--delta)");
+    m_useGPUBox = new QCheckBox("🚀 Use GPU (CUDA)");
+    m_useGPUBox->setToolTip("Use GPU acceleration for faster processing (requires CUDA)");
     optionsLayout->addWidget(m_useGPUBox);
 
-    QPushButton *btnRunSegment = new QPushButton("Run Segmentation");
+    optionsLayout->addSpacing(8);
+
+    QPushButton *btnRunSegment = new QPushButton("▶ Run Segmentation");
+    btnRunSegment->setToolTip("Start segmentation with current parameters (Ctrl+S)");
+    btnRunSegment->setShortcut(QKeySequence("Ctrl+S"));
+    btnRunSegment->setStyleSheet(R"(
+        QPushButton {
+            background-color: #0e639c;
+            color: white;
+            font-weight: bold;
+            padding: 8px 16px;
+        }
+        QPushButton:hover {
+            background-color: #1177bb;
+        }
+        QPushButton:pressed {
+            background-color: #0d5a8a;
+        }
+    )");
+    optionsLayout->addWidget(btnRunSegment);
     optionsLayout->addWidget(btnRunSegment);
 
     segControlsRow->addWidget(optionsGroup);
@@ -310,8 +488,17 @@ void ManualSeedSelector::setupUi()
     connect(btnRunSegment, &QPushButton::clicked, [this]()
             { SegmentationRunner::runSegmentation(this); });
 
-    // status label showing current mouse x,y,z and intensity
-    m_statusLabel = new QLabel("x: - y: - z: - val: -");
+    // Status bar with voxel info
+    m_statusLabel = new QLabel("📍 Ready - Load an image to begin");
+    m_statusLabel->setStyleSheet(R"(
+        QLabel {
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+    )");
     main->addWidget(m_statusLabel);
 
     // NIfTI Options dialog: Open / Save / Threshold
@@ -467,6 +654,14 @@ void ManualSeedSelector::setupUi()
     connect(m_axialSlider, &QSlider::valueChanged, this, &ManualSeedSelector::updateViews);
     connect(m_sagittalSlider, &QSlider::valueChanged, this, &ManualSeedSelector::updateViews);
     connect(m_coronalSlider, &QSlider::valueChanged, this, &ManualSeedSelector::updateViews);
+
+    // Update slice labels when sliders change
+    connect(m_axialSlider, &QSlider::valueChanged, this, [this](int v)
+            { m_axialLabel->setText(QString("Axial: %1/%2").arg(v).arg(m_axialSlider->maximum())); });
+    connect(m_sagittalSlider, &QSlider::valueChanged, this, [this](int v)
+            { m_sagittalLabel->setText(QString("Sagittal: %1/%2").arg(v).arg(m_sagittalSlider->maximum())); });
+    connect(m_coronalSlider, &QSlider::valueChanged, this, [this](int v)
+            { m_coronalLabel->setText(QString("Coronal: %1/%2").arg(v).arg(m_coronalSlider->maximum())); });
 
     // update color indicator when label changes
     connect(m_labelSelector, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), this, [this](int v)

@@ -103,6 +103,9 @@ private:
     QSlider *m_axialSlider;
     QSlider *m_sagittalSlider;
     QSlider *m_coronalSlider;
+    QLabel *m_axialLabel;
+    QLabel *m_sagittalLabel;
+    QLabel *m_coronalLabel;
     QSpinBox *m_labelSelector;
     QLabel *m_labelColorIndicator;
     QLabel *m_statusLabel;
