@@ -5,11 +5,10 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QLabel>
+#include <QPushButton>
 #include <vector>
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
-#include "SeedOptionsDialog.h"
-#include "MaskOptionsDialog.h"
 #include "RangeSlider.h"
 
 class QDoubleSpinBox;
@@ -124,10 +123,19 @@ private:
     // seed interaction mode: 0=idle,1=draw,2=erase
     int m_seedMode = 1;
     int m_seedBrushRadius = 5;
-    SeedOptionsDialog *m_seedDialog = nullptr;
-    MaskOptionsDialog *m_maskDialog = nullptr;
+    
+    // Tabbed UI: inline controls instead of dialogs
+    QPushButton *m_btnSeedDraw = nullptr;
+    QPushButton *m_btnSeedErase = nullptr;
+    QPushButton *m_btnMaskDraw = nullptr;
+    QPushButton *m_btnMaskErase = nullptr;
+    QSpinBox *m_seedBrushSpin = nullptr;
+    QSpinBox *m_maskBrushSpin = nullptr;
+    QSlider *m_maskOpacitySlider = nullptr;
+    
     Mask3DView *m_mask3DView = nullptr;
     bool m_mask3DDirty = false;
+    bool m_enable3DView = false;
     RangeSlider *m_windowSlider = nullptr;
     QDoubleSpinBox *m_windowLevelSpin = nullptr;
     QDoubleSpinBox *m_windowWidthSpin = nullptr;
