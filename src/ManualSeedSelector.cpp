@@ -77,6 +77,17 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
         }
         else
         {
+            // Add initial image to the list
+            ImageData imgData;
+            imgData.imagePath = niftiPath;
+            imgData.color = getColorForImageIndex(0);
+            m_images.push_back(imgData);
+            
+            std::string filename = std::filesystem::path(niftiPath).filename().string();
+            m_niftiList->addItem(QString::fromStdString(filename));
+            m_niftiList->setCurrentRow(0);
+            m_currentImageIndex = 0;
+            
             // Clear any previously loaded mask data when a new image is loaded
             if (!m_maskData.empty())
             {
@@ -394,7 +405,7 @@ void ManualSeedSelector::setupUi()
 
     // View controls group
     QGroupBox *viewGroup = new QGroupBox("View");
-    QVBoxLayout *viewLayout = new QVBoxLayout(viewGroup);
+    QHBoxLayout *viewLayout = new QHBoxLayout(viewGroup);
 
     QPushButton *btnResetWindow = new QPushButton("Reset WL");
     btnResetWindow->setToolTip("Reset window to full range");
@@ -423,7 +434,7 @@ void ManualSeedSelector::setupUi()
 
     // Mode group
     QGroupBox *seedModeGroup = new QGroupBox("Drawing Mode");
-    QVBoxLayout *seedModeLayout = new QVBoxLayout(seedModeGroup);
+    QHBoxLayout *seedModeLayout = new QHBoxLayout(seedModeGroup);
 
     m_btnSeedDraw = new QPushButton("Draw");
     m_btnSeedDraw->setCheckable(true);
@@ -498,7 +509,7 @@ void ManualSeedSelector::setupUi()
 
     // Mode group
     QGroupBox *maskModeGroup = new QGroupBox("Drawing Mode");
-    QVBoxLayout *maskModeLayout = new QVBoxLayout(maskModeGroup);
+    QHBoxLayout *maskModeLayout = new QHBoxLayout(maskModeGroup);
 
     m_btnMaskDraw = new QPushButton("Draw");
     m_btnMaskDraw->setCheckable(true);
@@ -530,30 +541,57 @@ void ManualSeedSelector::setupUi()
     QGroupBox *maskBrushGroup = new QGroupBox("Brush & Opacity");
     QGridLayout *maskBrushLayout = new QGridLayout(maskBrushGroup);
     maskBrushLayout->setSpacing(4);
+    maskBrushLayout->setContentsMargins(8, 6, 8, 6);
+    maskBrushLayout->setVerticalSpacing(6);
+
 
     maskBrushLayout->addWidget(new QLabel("Radius:"), 0, 0);
-    m_maskBrushSpin = new QSpinBox();
+    m_maskBrushSpin = new QSlider(Qt::Horizontal);
     m_maskBrushSpin->setRange(1, 50);
     m_maskBrushSpin->setValue(5);
+    m_maskBrushSpin->setSingleStep(1);
+    m_maskBrushSpin->setPageStep(10);
+    m_maskBrushSpin->setSizePolicy(QSizePolicy::Expanding,
+                                   QSizePolicy::Fixed);
     m_maskBrushSpin->setToolTip("Mask brush radius");
-    connect(m_maskBrushSpin, QOverload<int>::of(&QSpinBox::valueChanged), [this](int r) {
+
+    QLabel *radiusValue = new QLabel("5");
+    radiusValue->setMinimumWidth(36);
+    radiusValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+    connect(m_maskBrushSpin, &QSlider::valueChanged, [this, radiusValue](int r) {
         m_maskBrushRadius = r;
+    radiusValue->setText(QString("%1").arg(r));
     });
     maskBrushLayout->addWidget(m_maskBrushSpin, 0, 1);
+    maskBrushLayout->addWidget(radiusValue, 0, 2);
+
+
 
     maskBrushLayout->addWidget(new QLabel("Opacity:"), 1, 0);
     m_maskOpacitySlider = new QSlider(Qt::Horizontal);
     m_maskOpacitySlider->setRange(0, 100);
     m_maskOpacitySlider->setValue(50);
+    m_maskOpacitySlider->setSingleStep(1);
+    m_maskOpacitySlider->setPageStep(10);
+    m_maskOpacitySlider->setSizePolicy(QSizePolicy::Expanding,
+                                   QSizePolicy::Fixed);
     m_maskOpacitySlider->setToolTip("Mask overlay opacity");
-    connect(m_maskOpacitySlider, &QSlider::valueChanged, [this](int v) {
+
+    QLabel *opacityValue = new QLabel("50%");
+    opacityValue->setMinimumWidth(36);
+    opacityValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+    connect(m_maskOpacitySlider, &QSlider::valueChanged, [this, opacityValue](int v) {
         m_maskOpacity = float(v) / 100.0f;
+        opacityValue->setText(QString("%1%").arg(v));
         updateViews();
     });
     maskBrushLayout->addWidget(m_maskOpacitySlider, 1, 1);
+    maskBrushLayout->addWidget(opacityValue, 1, 2);
 
     maskBrushLayout->addWidget(new QLabel("Show 3D:"), 2, 0);
-    QCheckBox *chkShow3D = new QCheckBox();
+    QCheckBox *chkShow3D = new QCheckBox("Show 3D mask");
     chkShow3D->setToolTip("Enable 3D mask visualization (may slow down drawing)");
     chkShow3D->setChecked(false);
     connect(chkShow3D, &QCheckBox::toggled, [this](bool checked) {
@@ -563,7 +601,7 @@ void ManualSeedSelector::setupUi()
             m_mask3DDirty = false;
         }
     });
-    maskBrushLayout->addWidget(chkShow3D, 2, 1);
+    maskBrushLayout->addWidget(chkShow3D, 2, 0, 1, 3);
 
     maskLayout->addWidget(maskBrushGroup);
 
@@ -626,11 +664,14 @@ void ManualSeedSelector::setupUi()
     paramsGrid->addWidget(m_polValue, 0, 2);
 
     paramsGrid->addWidget(new QLabel("Relax iters:"), 1, 0);
-    m_niterSpin = new QSpinBox();
-    m_niterSpin->setRange(1, 10000);
-    m_niterSpin->setValue(1);
-    m_niterSpin->setToolTip("Relaxation iterations");
-    paramsGrid->addWidget(m_niterSpin, 1, 1, 1, 2);
+    m_niterSlider = new QSlider(Qt::Horizontal);
+    m_niterSlider->setRange(0, 100);
+    m_niterSlider->setValue(0);
+    m_niterSlider->setToolTip("Relaxation iterations");
+    paramsGrid->addWidget(m_niterSlider, 1, 1);
+    m_niterValue = new QLabel("0");
+    m_niterValue->setMinimumWidth(40);
+    paramsGrid->addWidget(m_niterValue, 1, 2);
 
     paramsGrid->addWidget(new QLabel("Percentile:"), 2, 0);
     m_percSlider = new QSlider(Qt::Horizontal);
@@ -644,6 +685,9 @@ void ManualSeedSelector::setupUi()
 
     connect(m_polSlider, &QSlider::valueChanged, [this](int v) {
         m_polValue->setText(QString::number(v / 100.0, 'f', 2));
+    });
+    connect(m_niterSlider, &QSlider::valueChanged, [this](int v) {
+        m_niterValue->setText(QString::number(v));
     });
     connect(m_percSlider, &QSlider::valueChanged, [this](int v) {
         m_percValue->setText(QString::number(v));
@@ -664,7 +708,7 @@ void ManualSeedSelector::setupUi()
     m_polSweepBox->setToolTip("Test polarity range -1.0 to +1.0");
     optionsLayout->addWidget(m_polSweepBox);
 
-    m_useGPUBox = new QCheckBox("Use GPU (CUDA)");
+    m_useGPUBox = new QCheckBox("Use GPU");
     m_useGPUBox->setToolTip("Use GPU acceleration");
     optionsLayout->addWidget(m_useGPUBox);
 
@@ -785,9 +829,91 @@ void ManualSeedSelector::setupUi()
     QVBoxLayout *niftiListLayout = new QVBoxLayout(niftiListGroup);
     niftiListLayout->setSpacing(4);
 
-    QListWidget *niftiList = new QListWidget();
-    niftiList->setMaximumHeight(80);
-    niftiListLayout->addWidget(niftiList);
+    m_niftiList = new QListWidget();
+    m_niftiList->setMaximumHeight(80);
+    m_niftiList->setToolTip("Click to select which image to display");
+    niftiListLayout->addWidget(m_niftiList);
+
+    QHBoxLayout *niftiButtonsLayout = new QHBoxLayout();
+    QPushButton *btnAddNifti = new QPushButton("Add");
+    btnAddNifti->setToolTip("Add NIfTI images to the list");
+    btnAddNifti->setMaximumWidth(60);
+    connect(btnAddNifti, &QPushButton::clicked, this, &ManualSeedSelector::openImage);
+    
+    QPushButton *btnRemoveNifti = new QPushButton("Remove");
+    btnRemoveNifti->setToolTip("Remove selected NIfTI image from list");
+    btnRemoveNifti->setMaximumWidth(60);
+    connect(btnRemoveNifti, &QPushButton::clicked, [this]() {
+        int currentRow = m_niftiList->currentRow();
+        if (currentRow >= 0 && currentRow < static_cast<int>(m_images.size())) {
+            m_images.erase(m_images.begin() + currentRow);
+            delete m_niftiList->takeItem(currentRow);
+            if (currentRow == m_currentImageIndex) {
+                m_currentImageIndex = -1;
+                m_image = NiftiImage();
+                m_path.clear();
+                updateMaskSeedLists();
+                updateViews();
+            } else if (m_currentImageIndex > currentRow) {
+                m_currentImageIndex--;
+            }
+        }
+    });
+    
+    niftiButtonsLayout->addWidget(btnAddNifti);
+    niftiButtonsLayout->addWidget(btnRemoveNifti);
+    niftiButtonsLayout->addStretch();
+    niftiListLayout->addLayout(niftiButtonsLayout);
+
+    // Connect item selection to load the image
+    connect(m_niftiList, &QListWidget::currentRowChanged, [this](int row) {
+        if (row >= 0 && row < static_cast<int>(m_images.size())) {
+            m_currentImageIndex = row;
+            const std::string &path = m_images[row].imagePath;
+            if (m_image.load(path)) {
+                m_path = path;
+                
+                // Clear mask and seed data when switching images
+                m_maskData.clear();
+                m_seeds.clear();
+                m_mask3DDirty = true;
+                
+                // Update slider ranges
+                m_axialSlider->setRange(0, static_cast<int>(m_image.getSizeZ()) - 1);
+                m_axialSlider->setValue(static_cast<int>(m_image.getSizeZ()) / 2);
+                m_sagittalSlider->setRange(0, static_cast<int>(m_image.getSizeX()) - 1);
+                m_sagittalSlider->setValue(static_cast<int>(m_image.getSizeX()) / 2);
+                m_coronalSlider->setRange(0, static_cast<int>(m_image.getSizeY()) - 1);
+                m_coronalSlider->setValue(static_cast<int>(m_image.getSizeY()) / 2);
+                
+                // Window/level setup
+                float gmin = m_image.getGlobalMin();
+                float gmax = m_image.getGlobalMax();
+                m_windowGlobalMin = gmin;
+                m_windowGlobalMax = gmax;
+                if (m_windowSlider) {
+                    m_windowSlider->setRange(static_cast<int>(std::floor(gmin)), static_cast<int>(std::ceil(gmax)));
+                    m_windowSlider->setLowerValue(static_cast<int>(gmin));
+                    m_windowSlider->setUpperValue(static_cast<int>(gmax));
+                }
+                if (m_windowLevelSpin) {
+                    m_windowLevelSpin->setRange(static_cast<double>(gmin), static_cast<double>(gmax));
+                    m_windowLevelSpin->setValue(0.5 * (gmin + gmax));
+                }
+                if (m_windowWidthSpin) {
+                    m_windowWidthSpin->setRange(1.0, static_cast<double>(gmax - gmin));
+                    m_windowWidthSpin->setValue(static_cast<double>(gmax - gmin));
+                }
+                m_windowLow = gmin;
+                m_windowHigh = gmax;
+                
+                // Update mask and seed lists for this image
+                updateMaskSeedLists();
+                updateViews();
+                m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(path)));
+            }
+        }
+    });
 
     sidebarLayout->addWidget(niftiListGroup);
 
@@ -796,9 +922,43 @@ void ManualSeedSelector::setupUi()
     QVBoxLayout *maskListLayout = new QVBoxLayout(maskListGroup);
     maskListLayout->setSpacing(4);
 
-    QListWidget *maskList = new QListWidget();
-    maskList->setMaximumHeight(80);
-    maskListLayout->addWidget(maskList);
+    m_maskList = new QListWidget();
+    m_maskList->setMaximumHeight(80);
+    m_maskList->setToolTip("Click to load mask - Colors indicate which image they belong to");
+    maskListLayout->addWidget(m_maskList);
+
+    QPushButton *btnLoadMask = new QPushButton("Load Mask for Current Image");
+    btnLoadMask->setToolTip("Load a mask file and associate it with the current image");
+    connect(btnLoadMask, &QPushButton::clicked, [this]() {
+        if (m_currentImageIndex < 0) {
+            QMessageBox::warning(this, "Load Mask", "Please select an image first.");
+            return;
+        }
+        QStringList files = QFileDialog::getOpenFileNames(this, "Open Masks", "", "NIfTI files (*.nii *.nii.gz)");
+        for (const QString &f : files) {
+            std::string path = f.toStdString();
+            m_images[m_currentImageIndex].maskPaths.push_back(path);
+        }
+        updateMaskSeedLists();
+    });
+    maskListLayout->addWidget(btnLoadMask);
+
+    // Connect item selection to load the mask
+    connect(m_maskList, &QListWidget::itemClicked, [this](QListWidgetItem *item) {
+        if (!item || m_currentImageIndex < 0) return;
+        
+        // Find which mask was clicked
+        for (size_t i = 0; i < m_images[m_currentImageIndex].maskPaths.size(); ++i) {
+            std::string filename = std::filesystem::path(m_images[m_currentImageIndex].maskPaths[i]).filename().string();
+            if (item->text().toStdString() == filename) {
+                if (loadMaskFromFile(m_images[m_currentImageIndex].maskPaths[i])) {
+                    updateViews();
+                    m_statusLabel->setText(QString("Loaded mask: %1").arg(item->text()));
+                }
+                break;
+            }
+        }
+    });
 
     sidebarLayout->addWidget(maskListGroup);
 
@@ -807,9 +967,43 @@ void ManualSeedSelector::setupUi()
     QVBoxLayout *seedListLayout = new QVBoxLayout(seedListGroup);
     seedListLayout->setSpacing(4);
 
-    QListWidget *seedList = new QListWidget();
-    seedList->setMaximumHeight(80);
-    seedListLayout->addWidget(seedList);
+    m_seedList = new QListWidget();
+    m_seedList->setMaximumHeight(80);
+    m_seedList->setToolTip("Click to load seeds - Colors indicate which image they belong to");
+    seedListLayout->addWidget(m_seedList);
+
+    QPushButton *btnLoadSeeds = new QPushButton("Load Seeds for Current Image");
+    btnLoadSeeds->setToolTip("Load seed files and associate them with the current image");
+    connect(btnLoadSeeds, &QPushButton::clicked, [this]() {
+        if (m_currentImageIndex < 0) {
+            QMessageBox::warning(this, "Load Seeds", "Please select an image first.");
+            return;
+        }
+        QStringList files = QFileDialog::getOpenFileNames(this, "Open Seeds", "", "Text files (*.txt)");
+        for (const QString &f : files) {
+            std::string path = f.toStdString();
+            m_images[m_currentImageIndex].seedPaths.push_back(path);
+        }
+        updateMaskSeedLists();
+    });
+    seedListLayout->addWidget(btnLoadSeeds);
+
+    // Connect item selection to load the seeds
+    connect(m_seedList, &QListWidget::itemClicked, [this](QListWidgetItem *item) {
+        if (!item || m_currentImageIndex < 0) return;
+        
+        // Find which seed was clicked
+        for (size_t i = 0; i < m_images[m_currentImageIndex].seedPaths.size(); ++i) {
+            std::string filename = std::filesystem::path(m_images[m_currentImageIndex].seedPaths[i]).filename().string();
+            if (item->text().toStdString() == filename) {
+                if (loadSeedsFromFile(m_images[m_currentImageIndex].seedPaths[i])) {
+                    updateViews();
+                    m_statusLabel->setText(QString("Loaded seeds: %1").arg(item->text()));
+                }
+                break;
+            }
+        }
+    });
 
     sidebarLayout->addWidget(seedListGroup);
 
@@ -921,55 +1115,30 @@ void ManualSeedSelector::setupUi()
 
 void ManualSeedSelector::openImage()
 {
-    QString f = QFileDialog::getOpenFileName(this, "Open NIfTI", "", "NIfTI files (*.nii *.nii.gz)");
-    if (f.isEmpty())
+    QStringList files = QFileDialog::getOpenFileNames(this, "Open NIfTI Images", "", "NIfTI files (*.nii *.nii.gz)");
+    if (files.isEmpty())
         return;
-    if (!m_image.load(f.toStdString()))
+    
+    // Add all selected files to the list
+    for (const QString &f : files)
     {
-        QMessageBox::warning(this, "Open NIfTI", "Failed to load image.");
-        return;
+        std::string path = f.toStdString();
+        
+        ImageData imgData;
+        imgData.imagePath = path;
+        imgData.color = getColorForImageIndex(static_cast<int>(m_images.size()));
+        m_images.push_back(imgData);
+        
+        std::string filename = std::filesystem::path(path).filename().string();
+        m_niftiList->addItem(QString::fromStdString(filename));
     }
-    m_path = f.toStdString();
-
-    // Clear mask buffer when loading a new image
-    m_maskData.clear();
-    m_mask3DDirty = true;
-
-    // Update slider ranges
-    m_axialSlider->setRange(0, static_cast<int>(m_image.getSizeZ()) - 1);
-    m_axialSlider->setValue(static_cast<int>(m_image.getSizeZ()) / 2);
-
-    m_sagittalSlider->setRange(0, static_cast<int>(m_image.getSizeX()) - 1);
-    m_sagittalSlider->setValue(static_cast<int>(m_image.getSizeX()) / 2);
-
-    m_coronalSlider->setRange(0, static_cast<int>(m_image.getSizeY()) - 1);
-    m_coronalSlider->setValue(static_cast<int>(m_image.getSizeY()) / 2);
-
-    // Window/level setup
-    float gmin = m_image.getGlobalMin();
-    float gmax = m_image.getGlobalMax();
-    m_windowGlobalMin = gmin;
-    m_windowGlobalMax = gmax;
-    if (m_windowSlider)
+    
+    // Automatically select and load the first newly added image
+    if (!files.isEmpty() && m_niftiList->count() > 0)
     {
-        m_windowSlider->setRange(static_cast<int>(std::floor(gmin)), static_cast<int>(std::ceil(gmax)));
-        m_windowSlider->setLowerValue(static_cast<int>(gmin));
-        m_windowSlider->setUpperValue(static_cast<int>(gmax));
+        int newIndex = m_niftiList->count() - files.size();
+        m_niftiList->setCurrentRow(newIndex);
     }
-    if (m_windowLevelSpin)
-    {
-        m_windowLevelSpin->setRange(static_cast<double>(gmin), static_cast<double>(gmax));
-        m_windowLevelSpin->setValue(0.5 * (gmin + gmax));
-    }
-    if (m_windowWidthSpin)
-    {
-        m_windowWidthSpin->setRange(1.0, static_cast<double>(gmax - gmin));
-        m_windowWidthSpin->setValue(static_cast<double>(gmax - gmin));
-    }
-    m_windowLow = gmin;
-    m_windowHigh = gmax;
-
-    updateViews();
 }
 
 bool ManualSeedSelector::saveImageToFile(const std::string &path)
@@ -1742,4 +1911,50 @@ bool ManualSeedSelector::eventFilter(QObject *obj, QEvent *event)
         }
     }
     return QMainWindow::eventFilter(obj, event);
+}
+QColor ManualSeedSelector::getColorForImageIndex(int index)
+{
+    // Generate distinct colors for each image
+    static const QColor colors[] = {
+        QColor(100, 180, 255),  // Light blue
+        QColor(255, 150, 100),  // Orange
+        QColor(150, 255, 150),  // Light green
+        QColor(255, 100, 255),  // Magenta
+        QColor(255, 255, 100),  // Yellow
+        QColor(150, 150, 255),  // Purple
+        QColor(100, 255, 255),  // Cyan
+        QColor(255, 150, 150),  // Pink
+    };
+    return colors[index % 8];
+}
+
+void ManualSeedSelector::updateMaskSeedLists()
+{
+    // Clear lists
+    m_maskList->clear();
+    m_seedList->clear();
+    
+    if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
+        return;
+    
+    const ImageData &currentImage = m_images[m_currentImageIndex];
+    QColor color = currentImage.color;
+    
+    // Populate mask list with masks for current image
+    for (const auto &maskPath : currentImage.maskPaths)
+    {
+        std::string filename = std::filesystem::path(maskPath).filename().string();
+        QListWidgetItem *item = new QListWidgetItem(QString::fromStdString(filename));
+        item->setForeground(QBrush(color));
+        m_maskList->addItem(item);
+    }
+    
+    // Populate seed list with seeds for current image
+    for (const auto &seedPath : currentImage.seedPaths)
+    {
+        std::string filename = std::filesystem::path(seedPath).filename().string();
+        QListWidgetItem *item = new QListWidgetItem(QString::fromStdString(filename));
+        item->setForeground(QBrush(color));
+        m_seedList->addItem(item);
+    }
 }

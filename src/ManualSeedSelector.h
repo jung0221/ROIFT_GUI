@@ -6,6 +6,7 @@
 #include <QSpinBox>
 #include <QLabel>
 #include <QPushButton>
+#include <QColor>
 #include <vector>
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
@@ -13,6 +14,7 @@
 
 class QDoubleSpinBox;
 class QCheckBox;
+class QListWidget;
 
 struct Seed
 {
@@ -51,7 +53,7 @@ public:
 
     // Expose segmentation parameters
     double getPolarity() const { return m_polSlider ? m_polSlider->value() / 100.0 : 1.0; }
-    int getNiter() const { return m_niterSpin ? m_niterSpin->value() : 1; }
+    int getNiter() const { return m_niterSlider ? m_niterSlider->value() : 1; }
     int getPercentile() const { return m_percSlider ? m_percSlider->value() : 0; }
     bool getSegmentAll() const { return m_segmentAllBox ? m_segmentAllBox->isChecked() : false; }
     bool getPolaritySweep() const { return m_polSweepBox ? m_polSweepBox->isChecked() : false; }
@@ -130,7 +132,7 @@ private:
     QPushButton *m_btnMaskDraw = nullptr;
     QPushButton *m_btnMaskErase = nullptr;
     QSpinBox *m_seedBrushSpin = nullptr;
-    QSpinBox *m_maskBrushSpin = nullptr;
+    QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
     
     Mask3DView *m_mask3DView = nullptr;
@@ -148,10 +150,28 @@ private:
     // Segmentation UI elements
     QSlider *m_polSlider = nullptr;
     QLabel *m_polValue = nullptr;
-    QSpinBox *m_niterSpin = nullptr;
+    QSlider *m_niterSlider = nullptr;
+    QLabel *m_niterValue = nullptr;
     QSlider *m_percSlider = nullptr;
     QLabel *m_percValue = nullptr;
     QCheckBox *m_segmentAllBox = nullptr;
     QCheckBox *m_polSweepBox = nullptr;
     QCheckBox *m_useGPUBox = nullptr;
+
+    // Multiple files support with image-specific masks and seeds
+    struct ImageData {
+        std::string imagePath;
+        std::vector<std::string> maskPaths;
+        std::vector<std::string> seedPaths;
+        QColor color;  // Color to identify this image's items
+    };
+    
+    QListWidget *m_niftiList = nullptr;
+    QListWidget *m_maskList = nullptr;
+    QListWidget *m_seedList = nullptr;
+    std::vector<ImageData> m_images;
+    int m_currentImageIndex = -1;
+    
+    void updateMaskSeedLists();
+    QColor getColorForImageIndex(int index);
 };
