@@ -125,7 +125,7 @@ private:
     // seed interaction mode: 0=idle,1=draw,2=erase
     int m_seedMode = 1;
     int m_seedBrushRadius = 5;
-    
+
     // Tabbed UI: inline controls instead of dialogs
     QPushButton *m_btnSeedDraw = nullptr;
     QPushButton *m_btnSeedErase = nullptr;
@@ -134,7 +134,7 @@ private:
     QSpinBox *m_seedBrushSpin = nullptr;
     QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
-    
+
     Mask3DView *m_mask3DView = nullptr;
     bool m_mask3DDirty = false;
     bool m_enable3DView = false;
@@ -159,19 +159,20 @@ private:
     QCheckBox *m_useGPUBox = nullptr;
 
     // Multiple files support with image-specific masks and seeds
-    struct ImageData {
+    struct ImageData
+    {
         std::string imagePath;
         std::vector<std::string> maskPaths;
         std::vector<std::string> seedPaths;
-        QColor color;  // Color to identify this image's items
+        QColor color; // Color to identify this image's items
     };
-    
+
     QListWidget *m_niftiList = nullptr;
     QListWidget *m_maskList = nullptr;
     QListWidget *m_seedList = nullptr;
     std::vector<ImageData> m_images;
     int m_currentImageIndex = -1;
-    
+
     void updateMaskSeedLists();
     QColor getColorForImageIndex(int index);
 };
