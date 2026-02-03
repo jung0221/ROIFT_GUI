@@ -5,29 +5,50 @@ Required tools and libraries to build `ROIFT_GUI` on Windows:
 - CMake (3.16+ recommended)
 - A C++17-capable compiler (MSVC / Visual Studio)
 
-## Build using the prebuilt vcpkg artifacts
+## Build using an external vcpkg installation
 
-This repository includes a prebuilt archive of the vcpkg artifacts (ITK, Qt6, curl, etc.) to simplify building on Windows. The restore script will unpack the prebuilt libraries and DLLs into the repository so you don't need a networked vcpkg installation.
+To install all dependencies, using vcpkg is recommended. This approach allows vcpkg to automatically download and install dependencies listed in `vcpkg.json`.
 
-1. Restore the prebuilt artifacts (run in `cmd.exe`, from the repository root):
+### Step 1: Clone vcpkg (if you don't have it already)
 
 ```bat
-.\scripts\restore_prebuilt.cmd
+:: Choose a location for vcpkg, e.g., D:\vcpkg or C:\dev\vcpkg
+cd D:\
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg
+
+:: Bootstrap vcpkg (run once to set it up)
+.\bootstrap-vcpkg.bat
 ```
 
-2. Configure and build (out-of-source, example for x64 Release):
+After bootstrapping, you'll have a working vcpkg installation at `<YOUR_VCPKG_PATH>` (e.g., `D:\vcpkg`).
+
+### Step 2: Configure CMake with vcpkg toolchain
+
+Set an environment variable or replace `<YOUR_VCPKG_PATH>` with your actual vcpkg root directory (e.g., `D:\vcpkg`):
 
 ```bat
-:: Configure the build
-cmake -S . -B build -A x64
+:: From the ROIFT_GUI repository root
+cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=<YOUR_VCPKG_PATH>\scripts\buildsystems\vcpkg.cmake
+```
 
-:: Build the Release configuration
+Example with a specific path:
+
+```bat
+cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=D:\vcpkg\scripts\buildsystems\vcpkg.cmake
+```
+
+### Step 3: Build the project
+
+```bat
 cmake --build build --config Release
 ```
 
-Notes:
+For a faster build, you can specify the number of parallel jobs:
 
-- The prebuilt artifacts include both library files and runtime DLLs. The project's CMake setup copies only the matching configuration's DLLs (Release vs Debug) next to the built executables to avoid mixing CRTs.
+```bat
+cmake --build build --config Release --parallel 4
+```
 
 ## Produced binaries and locations
 
