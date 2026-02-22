@@ -1,6 +1,9 @@
 #pragma once
 
 #include <QWidget>
+#include <QPoint>
+#include <QRect>
+#include <QVector>
 #include <vector>
 #include <map>
 #include <vtkSmartPointer.h>
@@ -15,10 +18,22 @@ class QVTKOpenGLNativeWidget;
 class vtkActor;
 class vtkFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
+class vtkGlyph3DMapper;
 class vtkLookupTable;
+class vtkPolyData;
 class vtkPolyDataMapper;
 class vtkRenderer;
 class vtkWindowedSincPolyDataFilter;
+class QRubberBand;
+
+struct SeedRenderData
+{
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    int label = 1;
+    int seedIndex = -1;
+};
 
 class Mask3DView : public QWidget
 {
@@ -26,7 +41,12 @@ class Mask3DView : public QWidget
 public:
     explicit Mask3DView(QWidget *parent = nullptr);
     void setMaskData(const std::vector<int> &mask, unsigned int sizeX, unsigned int sizeY, unsigned int sizeZ);
+    void setSeedData(const std::vector<SeedRenderData> &seeds);
     void clearMask();
+    void setSeedRectangleEraseEnabled(bool enabled);
+
+signals:
+    void eraseSeedsInRectangle(const QVector<int> &seedIndices);
 
 private slots:
     void onVisibilityToggled(bool checked);
@@ -35,6 +55,8 @@ private slots:
     void onColorButtonClicked();
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    QVector<int> collectSeedIndicesInRect(const QRect &rect) const;
     void buildPipeline();
     void rebuildLookupTable();
     void updateLabelControls();
@@ -50,6 +72,9 @@ private:
 
     vtkSmartPointer<vtkRenderer> m_renderer;
     vtkSmartPointer<vtkActor> m_actor;
+    vtkSmartPointer<vtkActor> m_seedActor;
+    vtkSmartPointer<vtkGlyph3DMapper> m_seedMapper;
+    vtkSmartPointer<vtkPolyData> m_seedPolyData;
     vtkSmartPointer<vtkPolyDataMapper> m_mapper;
     vtkSmartPointer<vtkFlyingEdges3D> m_flyingEdges;
     vtkSmartPointer<vtkWindowedSincPolyDataFilter> m_smoother;
@@ -57,6 +82,12 @@ private:
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
 
     float m_opacity = 0.4f;
+    std::vector<SeedRenderData> m_seedRenderData;
     std::vector<int> m_activeLabels;
     std::map<int, QColor> m_labelColors;
+    bool m_seedCameraFramed = false;
+    bool m_seedRectEraseEnabled = false;
+    bool m_selectingRect = false;
+    QPoint m_rectStart;
+    QRubberBand *m_selectionBand = nullptr;
 };

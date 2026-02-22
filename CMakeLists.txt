@@ -48,6 +48,15 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
+# Try enabling Qt SVG only when it is available in the same Qt installation
+# used for Qt6::Widgets, avoiding mismatched modules from other prefixes.
+if(DEFINED Qt6_DIR)
+  set(_qt_svg_dir "${Qt6_DIR}/../Qt6Svg")
+  if(EXISTS "${_qt_svg_dir}/Qt6SvgConfig.cmake")
+    find_package(Qt6Svg QUIET PATHS "${Qt6_DIR}/.." NO_DEFAULT_PATH)
+  endif()
+endif()
+
 if(WIN32)
   get_target_property(_qt_qmake_exe Qt6::qmake IMPORTED_LOCATION)
   get_filename_component(_qt_bin_dir "${_qt_qmake_exe}" DIRECTORY)
@@ -114,6 +123,13 @@ target_link_libraries(${PROJECT_NAME}
     ${ITK_LIBRARIES}
     ${VTK_LIBRARIES}
 )
+
+if(TARGET Qt6::Svg)
+  target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Svg)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE ROIFT_HAS_QT_SVG=1)
+else()
+  message(WARNING "Qt6 Svg module not found. NIfTI icon buttons will use non-SVG fallbacks.")
+endif()
 
 if(DEFINED _vcpkg_root AND _vcpkg_root)
   # Ensure the vcpkg library directories are on the linker's search path so

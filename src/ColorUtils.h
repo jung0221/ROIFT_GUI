@@ -5,7 +5,9 @@
 
 inline QColor colorForLabel(int lbl)
 {
-    int v = std::max(1, std::min(254, lbl));
+    int v = std::max(0, std::min(255, lbl));
+    if (v == 0)
+        return QColor(200, 200, 200);
     const int MOD = 251;
     int r = (v * 67) % MOD;
     int g = (v * 131) % MOD;

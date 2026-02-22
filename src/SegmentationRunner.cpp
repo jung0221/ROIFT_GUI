@@ -256,7 +256,9 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
         candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
         candidates << appDir.filePath("roift/oiftrelax_gpu");
         candidates << appDir.filePath("../roift/oiftrelax_gpu");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
@@ -488,7 +490,9 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
     candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
     candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
     candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
+    candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
     candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
+    candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
     candidates << appDir.filePath("roift/oiftrelax_gpu");
     candidates << appDir.filePath("../roift/oiftrelax_gpu");
     candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
@@ -833,7 +837,9 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
         candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
         candidates << appDir.filePath("roift/oiftrelax_gpu");
         candidates << appDir.filePath("../roift/oiftrelax_gpu");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
@@ -967,7 +973,9 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
         candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
         candidates << appDir.filePath("roift/oiftrelax_gpu");
         candidates << appDir.filePath("../roift/oiftrelax_gpu");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
@@ -1117,7 +1125,9 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
         candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
         candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
+        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
         candidates << appDir.filePath("roift/oiftrelax_gpu");
         candidates << appDir.filePath("../roift/oiftrelax_gpu");
         candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");

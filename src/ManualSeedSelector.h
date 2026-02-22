@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QColor>
+#include <QStringList>
 #include <vector>
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
@@ -15,10 +16,12 @@
 class QDoubleSpinBox;
 class QCheckBox;
 class QListWidget;
+class QTabWidget;
 
 struct Seed
 {
     int x, y, z, label, internal;
+    bool fromFile = false;
 };
 class Mask3DView;
 
@@ -65,6 +68,7 @@ public:
 
 private slots:
     void openImage();
+    void openImagesFromCsv();
     void saveSeeds();
     void loadSeeds();
     bool saveImageToFile(const std::string &path);
@@ -86,8 +90,31 @@ private slots:
     void applyWindowFromValues(float low, float high, bool fromSlider);
 
 private:
+    enum class SlicePlane
+    {
+        Axial,
+        Sagittal,
+        Coronal
+    };
+
     void setupUi();
+    int addImagesToList(const QStringList &paths, int *duplicateCount = nullptr, int *missingCount = nullptr);
+    QStringList extractNiftiPathsFromCsv(const QString &csvPath, QString *errorMessage = nullptr);
+    void autoDetectAssociatedFilesForImage(int imageIndex);
     bool handleSliceKey(QKeyEvent *event);
+    bool isSeedsTabActive() const;
+    bool isMaskTabActive() const;
+    struct SliceDragState
+    {
+        bool active = false;
+        int startCoord = 0;
+        int startValue = 0;
+    };
+    void beginSliceDrag(SliceDragState &state, int coord, QSlider *slider);
+    void updateSliceDrag(SliceDragState &state, int coord, int coordRange, QSlider *slider);
+    void endSliceDrag(SliceDragState &state);
+    const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
+    void updateHoverStatus(SlicePlane plane, int x, int y, int z);
     void addSeed(int x, int y, int z);
     void eraseNear(int x, int y, int z, int r);
     void update3DMaskView();
@@ -116,6 +143,9 @@ private:
     QPushButton *m_btnUndoThreshold = nullptr;
     bool m_mouseDown = false;
     int m_dragButton = 0;
+    SliceDragState m_axialSliceDrag;
+    SliceDragState m_sagittalSliceDrag;
+    SliceDragState m_coronalSliceDrag;
     std::vector<std::array<int, 3>> m_colorLUT;
     // mask buffer: linearized X * Y * Z, 0 means empty, positive integers are label values
     std::vector<int> m_maskData;
@@ -134,6 +164,7 @@ private:
     QSpinBox *m_seedBrushSpin = nullptr;
     QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
+    QCheckBox *m_show3DCheck = nullptr;
 
     Mask3DView *m_mask3DView = nullptr;
     bool m_mask3DDirty = false;
@@ -170,6 +201,9 @@ private:
     QListWidget *m_niftiList = nullptr;
     QListWidget *m_maskList = nullptr;
     QListWidget *m_seedList = nullptr;
+    QTabWidget *m_ribbonTabs = nullptr;
+    int m_seedTabIndex = -1;
+    int m_maskTabIndex = -1;
     std::vector<ImageData> m_images;
     int m_currentImageIndex = -1;
 

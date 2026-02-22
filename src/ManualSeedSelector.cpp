@@ -48,14 +48,23 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <fstream>
 #include <iostream>
 #include <set>
 #include <unordered_set>
+#include <utility>
 #include <filesystem>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QProcess>
+#include <QTextStream>
+#include <QVector>
+#if defined(ROIFT_HAS_QT_SVG)
+#include <QSvgRenderer>
+#endif
 
 #include <itkImage.h>
 #include <itkImageFileReader.h>
@@ -64,6 +73,275 @@
 #include <itkImageFileWriter.h>
 #include <itkNiftiImageIO.h>
 #include <zlib.h>
+
+namespace
+{
+enum class NiftiButtonIcon
+{
+    Add,
+    AddCsv,
+    ExportCsv,
+    Remove,
+    RemoveAll
+};
+
+QIcon makeFallbackButtonIcon(NiftiButtonIcon type, const QSize &size)
+{
+    if (size.width() <= 0 || size.height() <= 0)
+        return QIcon();
+
+    auto renderIcon = [type](int edge) -> QPixmap
+    {
+        QPixmap pixmap(edge, edge);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+        const QColor strokeColor(216, 216, 216);
+        const qreal strokeWidth = std::max(1.4, edge * 0.095);
+        QPen pen(strokeColor, strokeWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        painter.setPen(pen);
+
+        const qreal w = static_cast<qreal>(edge);
+        const qreal h = static_cast<qreal>(edge);
+
+        switch (type)
+        {
+        case NiftiButtonIcon::Add:
+            painter.drawLine(QPointF(0.22 * w, 0.50 * h), QPointF(0.78 * w, 0.50 * h));
+            painter.drawLine(QPointF(0.50 * w, 0.22 * h), QPointF(0.50 * w, 0.78 * h));
+            break;
+        case NiftiButtonIcon::AddCsv:
+        {
+            QRectF pageRect(0.15 * w, 0.14 * h, 0.46 * w, 0.72 * h);
+            painter.drawRoundedRect(pageRect, 1.1, 1.1);
+            painter.drawLine(QPointF(0.46 * w, 0.14 * h), QPointF(0.61 * w, 0.29 * h));
+            painter.drawLine(QPointF(0.66 * w, 0.58 * h), QPointF(0.86 * w, 0.58 * h));
+            painter.drawLine(QPointF(0.76 * w, 0.48 * h), QPointF(0.76 * w, 0.68 * h));
+            break;
+        }
+        case NiftiButtonIcon::ExportCsv:
+        {
+            QRectF pageRect(0.14 * w, 0.14 * h, 0.50 * w, 0.72 * h);
+            painter.drawRoundedRect(pageRect, 1.1, 1.1);
+            painter.drawLine(QPointF(0.46 * w, 0.14 * h), QPointF(0.64 * w, 0.32 * h));
+            painter.drawLine(QPointF(0.77 * w, 0.40 * h), QPointF(0.77 * w, 0.72 * h));
+            painter.drawLine(QPointF(0.67 * w, 0.62 * h), QPointF(0.77 * w, 0.72 * h));
+            painter.drawLine(QPointF(0.87 * w, 0.62 * h), QPointF(0.77 * w, 0.72 * h));
+            break;
+        }
+        case NiftiButtonIcon::Remove:
+            painter.drawLine(QPointF(0.22 * w, 0.50 * h), QPointF(0.78 * w, 0.50 * h));
+            break;
+        case NiftiButtonIcon::RemoveAll:
+            painter.drawEllipse(QRectF(0.18 * w, 0.18 * h, 0.64 * w, 0.64 * h));
+            painter.drawLine(QPointF(0.34 * w, 0.34 * h), QPointF(0.66 * w, 0.66 * h));
+            painter.drawLine(QPointF(0.66 * w, 0.34 * h), QPointF(0.34 * w, 0.66 * h));
+            break;
+        }
+
+        return pixmap;
+    };
+
+    const int edge = std::max(size.width(), size.height());
+    const int medium = std::max(edge + 6, static_cast<int>(std::round(edge * 1.5)));
+    const int large = std::max(edge + 12, edge * 2);
+
+    QIcon icon;
+    icon.addPixmap(renderIcon(edge));
+    icon.addPixmap(renderIcon(medium));
+    icon.addPixmap(renderIcon(large));
+    return icon;
+}
+
+QIcon makeMonochromeIcon(const char *svgData, const QSize &size, const QIcon &fallback = QIcon())
+{
+#if defined(ROIFT_HAS_QT_SVG)
+    if (!svgData || size.isEmpty())
+        return fallback;
+
+    QSvgRenderer renderer(QByteArray(svgData));
+    if (!renderer.isValid())
+        return fallback;
+
+    auto renderSvg = [&renderer](int edge) -> QPixmap
+    {
+        QPixmap pixmap(edge, edge);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        renderer.render(&painter, QRectF(0, 0, edge, edge));
+        return pixmap;
+    };
+
+    const int edge = std::max(size.width(), size.height());
+    const int medium = std::max(edge + 6, static_cast<int>(std::round(edge * 1.5)));
+    const int large = std::max(edge + 12, edge * 2);
+
+    QIcon icon;
+    icon.addPixmap(renderSvg(edge));
+    icon.addPixmap(renderSvg(medium));
+    icon.addPixmap(renderSvg(large));
+    return icon;
+#else
+    Q_UNUSED(svgData);
+    Q_UNUSED(size);
+    return fallback;
+#endif
+}
+
+constexpr const char *kAddIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M12 5.2V18.8M5.2 12H18.8" stroke="#d8d8d8" stroke-width="1.8" stroke-linecap="round"/>
+</svg>
+)svg";
+
+constexpr const char *kAddCsvIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M7 3.8H13L17 7.8V20.2H7V3.8Z" stroke="#d8d8d8" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M13 3.8V7.8H17" stroke="#d8d8d8" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M12 11.5V16.8M9.3 14.15H14.7" stroke="#d8d8d8" stroke-width="1.6" stroke-linecap="round"/>
+</svg>
+)svg";
+
+constexpr const char *kRemoveIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <circle cx="12" cy="12" r="8.1" stroke="#d8d8d8" stroke-width="1.4"/>
+  <path d="M8.2 12H15.8" stroke="#d8d8d8" stroke-width="1.8" stroke-linecap="round"/>
+</svg>
+)svg";
+
+constexpr const char *kExportCsvIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M5.4 3.9H12.4L16.6 8.1V19.8H5.4V3.9Z" stroke="#d8d8d8" stroke-width="1.35" stroke-linejoin="round"/>
+  <path d="M12.4 3.9V8.1H16.6" stroke="#d8d8d8" stroke-width="1.35" stroke-linejoin="round"/>
+  <path d="M18.2 10.6V16.7" stroke="#d8d8d8" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M16.2 14.9L18.2 16.9L20.2 14.9" stroke="#d8d8d8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+)svg";
+
+constexpr const char *kRemoveAllIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M8.6 8.2H15.4M10 8.2V6.7C10 6.31 10.31 6 10.7 6H13.3C13.69 6 14 6.31 14 6.7V8.2M9 10V16.5C9 16.89 9.31 17.2 9.7 17.2H14.3C14.69 17.2 15 16.89 15 16.5V10"
+        stroke="#d8d8d8" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M6.4 10H17.6" stroke="#d8d8d8" stroke-width="1.4" stroke-linecap="round"/>
+  <path d="M6.7 18.6H17.3" stroke="#d8d8d8" stroke-width="1.4" stroke-linecap="round"/>
+</svg>
+)svg";
+
+QString normalizeCsvCell(QString value)
+{
+    value = value.trimmed();
+    if (value.size() >= 2 && value.startsWith('"') && value.endsWith('"'))
+        value = value.mid(1, value.size() - 2);
+    return value.trimmed();
+}
+
+QString csvEscapeCell(const QString &value)
+{
+    QString escaped = value;
+    escaped.replace('"', "\"\"");
+    if (escaped.contains(',') || escaped.contains('"') || escaped.contains('\n') || escaped.contains('\r'))
+        escaped = "\"" + escaped + "\"";
+    return escaped;
+}
+
+QStringList parseCsvRow(const QString &line)
+{
+    QStringList fields;
+    QString current;
+    bool inQuotes = false;
+
+    for (int i = 0; i < line.size(); ++i)
+    {
+        const QChar ch = line[i];
+        if (ch == '"')
+        {
+            if (inQuotes && i + 1 < line.size() && line[i + 1] == '"')
+            {
+                current += '"';
+                ++i;
+            }
+            else
+            {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+
+        if (ch == ',' && !inQuotes)
+        {
+            fields.push_back(normalizeCsvCell(current));
+            current.clear();
+            continue;
+        }
+
+        current += ch;
+    }
+
+    fields.push_back(normalizeCsvCell(current));
+    return fields;
+}
+
+bool isNiftiPathCell(const QString &value)
+{
+    const QString lower = normalizeCsvCell(value).toLower();
+    return lower.endsWith(".nii") || lower.endsWith(".nii.gz");
+}
+
+bool isNiftiMaskFilenameCandidate(const QString &fileName)
+{
+    const QString lower = fileName.trimmed().toLower();
+    if (!(lower.endsWith(".nii") || lower.endsWith(".nii.gz")))
+        return false;
+
+    return lower.startsWith("left_lung") ||
+           lower.startsWith("right_lung") ||
+           lower.startsWith("trachea") ||
+           lower.startsWith("ribs");
+}
+
+bool isSeedFilenameCandidate(const QString &fileName)
+{
+    return fileName.trimmed().toLower().endsWith(".txt");
+}
+
+int chooseNiftiColumn(const QStringList &headers, const std::vector<int> &niftiCounts)
+{
+    int selected = -1;
+    int bestScore = -1;
+
+    for (int i = 0; i < headers.size(); ++i)
+    {
+        if (i < 0 || i >= static_cast<int>(niftiCounts.size()) || niftiCounts[i] <= 0)
+            continue;
+
+        const QString header = headers[i].trimmed().toLower();
+        int score = niftiCounts[i] * 10;
+
+        if (header == "path" || header == "filepath" || header == "file_path" || header == "image_path" || header == "nifti_path")
+            score += 1000;
+        if (header.contains("path"))
+            score += 400;
+        if (header.contains("nifti"))
+            score += 250;
+        if (header.contains("image"))
+            score += 150;
+        if (header.contains("file"))
+            score += 100;
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            selected = i;
+        }
+    }
+
+    return selected;
+}
+} // namespace
 
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
     : QMainWindow(parent), m_path(niftiPath)
@@ -299,8 +577,15 @@ void ManualSeedSelector::setupUi()
             background-color: #2d2d2d;
             color: #e0e0e0;
             border: 1px solid #555555;
-            padding: 4px;
-            border-radius: 3px;
+            font-size: 8px;
+            padding: 1px 2px;
+            border-radius: 2px;
+        }
+        QSplitter::handle {
+            background-color: #3a3a3a;
+        }
+        QSplitter::handle:hover {
+            background-color: #0078d4;
         }
     )");
 
@@ -313,8 +598,8 @@ void ManualSeedSelector::setupUi()
     mainLayout->setSpacing(6);
     mainLayout->setContentsMargins(6, 6, 6, 6);
 
-    QTabWidget *ribbon = new QTabWidget();
-    ribbon->setMaximumHeight(120);
+    m_ribbonTabs = new QTabWidget();
+    m_ribbonTabs->setMaximumHeight(120);
 
     QWidget *filesTab = new QWidget();
     QHBoxLayout *filesLayout = new QHBoxLayout(filesTab);
@@ -332,6 +617,11 @@ void ManualSeedSelector::setupUi()
     connect(btnOpen, &QPushButton::clicked, this, &ManualSeedSelector::openImage);
     niftiLayout->addWidget(btnOpen);
 
+    QPushButton *btnOpenCsv = new QPushButton("Open CSV");
+    btnOpenCsv->setToolTip("Open a CSV and add NIfTI paths listed in it");
+    connect(btnOpenCsv, &QPushButton::clicked, this, &ManualSeedSelector::openImagesFromCsv);
+    niftiLayout->addWidget(btnOpenCsv);
+
     QPushButton *btnSave = new QPushButton("Save");
     btnSave->setToolTip("Save current image as NIfTI");
     connect(btnSave, &QPushButton::clicked, this, [this]()
@@ -344,38 +634,13 @@ void ManualSeedSelector::setupUi()
     filesLayout->addWidget(niftiGroup);
     filesLayout->addStretch();
 
-    ribbon->addTab(filesTab, "Files");
+    m_ribbonTabs->addTab(filesTab, "Files");
 
-    // --- TAB 1: VIEW (Navigation & Window/Level) ---
+    // --- TAB 1: VIEW (Window/Level & View controls) ---
     QWidget *sliderTab = new QWidget();
     QHBoxLayout *sliderLayout = new QHBoxLayout(sliderTab);
     sliderLayout->setSpacing(10);
     sliderLayout->setContentsMargins(8, 6, 8, 6);
-
-    // Slice Navigation group
-    QGroupBox *sliceGroup = new QGroupBox("Slice Navigation");
-    QGridLayout *sliceGrid = new QGridLayout(sliceGroup);
-    sliceGrid->setSpacing(4);
-
-    m_axialSlider = new QSlider(Qt::Horizontal);
-    m_axialSlider->setToolTip("Axial slice (W/S keys)");
-    m_sagittalSlider = new QSlider(Qt::Horizontal);
-    m_sagittalSlider->setToolTip("Sagittal slice (A/D keys)");
-    m_coronalSlider = new QSlider(Qt::Horizontal);
-    m_coronalSlider->setToolTip("Coronal slice (Q/E keys)");
-
-    m_axialLabel = new QLabel("Axial: 0/0");
-    m_sagittalLabel = new QLabel("Sagittal: 0/0");
-    m_coronalLabel = new QLabel("Coronal: 0/0");
-
-    sliceGrid->addWidget(m_axialLabel, 0, 0);
-    sliceGrid->addWidget(m_axialSlider, 0, 1);
-    sliceGrid->addWidget(m_sagittalLabel, 1, 0);
-    sliceGrid->addWidget(m_sagittalSlider, 1, 1);
-    sliceGrid->addWidget(m_coronalLabel, 2, 0);
-    sliceGrid->addWidget(m_coronalSlider, 2, 1);
-    sliceGrid->setColumnStretch(1, 1);
-    sliderLayout->addWidget(sliceGroup, 1);
 
     // Window/Level group
     QGroupBox *windowGroup = new QGroupBox("Window/Level");
@@ -424,7 +689,7 @@ void ManualSeedSelector::setupUi()
 
     sliderLayout->addWidget(viewGroup);
 
-    ribbon->addTab(sliderTab, "View");
+    m_ribbonTabs->addTab(sliderTab, "View");
 
     // --- TAB 2: SEEDS ---
     QWidget *seedsTab = new QWidget();
@@ -451,7 +716,10 @@ void ManualSeedSelector::setupUi()
     seedModeButtons->addButton(m_btnSeedDraw, 1);  // mode 1 = draw
     seedModeButtons->addButton(m_btnSeedErase, 2); // mode 2 = erase
     connect(seedModeButtons, QOverload<int>::of(&QButtonGroup::idClicked), [this](int id)
-            { m_seedMode = id; });
+            {
+        m_seedMode = id;
+        if (m_mask3DView)
+            m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2); });
     m_seedMode = 1; // default: draw
 
     seedsLayout->addWidget(seedModeGroup);
@@ -497,7 +765,7 @@ void ManualSeedSelector::setupUi()
     seedsLayout->addWidget(seedFileGroup);
     seedsLayout->addStretch();
 
-    ribbon->addTab(seedsTab, "Seeds");
+    m_seedTabIndex = m_ribbonTabs->addTab(seedsTab, "Seeds");
 
     // --- TAB 3: MASK ---
     QWidget *maskTab = new QWidget();
@@ -535,7 +803,7 @@ void ManualSeedSelector::setupUi()
     maskLayout->addWidget(maskModeGroup);
 
     // Brush group
-    QGroupBox *maskBrushGroup = new QGroupBox("Brush & Opacity");
+    QGroupBox *maskBrushGroup = new QGroupBox("Brush");
     QGridLayout *maskBrushLayout = new QGridLayout(maskBrushGroup);
     maskBrushLayout->setSpacing(4);
     maskBrushLayout->setContentsMargins(8, 6, 8, 6);
@@ -584,19 +852,6 @@ void ManualSeedSelector::setupUi()
     maskBrushLayout->addWidget(m_maskOpacitySlider, 1, 1);
     maskBrushLayout->addWidget(opacityValue, 1, 2);
 
-    maskBrushLayout->addWidget(new QLabel("Show 3D:"), 2, 0);
-    QCheckBox *chkShow3D = new QCheckBox("Show 3D mask");
-    chkShow3D->setToolTip("Enable 3D mask visualization (may slow down drawing)");
-    chkShow3D->setChecked(false);
-    connect(chkShow3D, &QCheckBox::toggled, [this](bool checked)
-            {
-        m_enable3DView = checked;
-        if (checked && m_mask3DDirty) {
-            update3DMaskView();
-            m_mask3DDirty = false;
-        } });
-    maskBrushLayout->addWidget(chkShow3D, 2, 0, 1, 3);
-
     maskLayout->addWidget(maskBrushGroup);
 
     // File operations group
@@ -634,7 +889,7 @@ void ManualSeedSelector::setupUi()
     maskLayout->addWidget(maskFileGroup);
     maskLayout->addStretch();
 
-    ribbon->addTab(maskTab, "Mask");
+    m_maskTabIndex = m_ribbonTabs->addTab(maskTab, "Mask");
 
     // --- TAB 4: SEGMENTATION ---
     QWidget *segTab = new QWidget();
@@ -738,15 +993,17 @@ void ManualSeedSelector::setupUi()
     segLayout->addWidget(runGroup);
     segLayout->addStretch();
 
-    ribbon->addTab(segTab, "Segmentation");
+    m_ribbonTabs->addTab(segTab, "Segmentation");
 
-    mainLayout->addWidget(ribbon);
+    mainLayout->addWidget(m_ribbonTabs);
 
     // =====================================================
-    // MAIN CONTENT: View Grid + Right Sidebar
+    // MAIN CONTENT: View Grid + Right Sidebar (resizable)
     // =====================================================
-    QHBoxLayout *contentLayout = new QHBoxLayout();
-    contentLayout->setSpacing(6);
+    QSplitter *contentSplitter = new QSplitter(Qt::Horizontal);
+    contentSplitter->setChildrenCollapsible(false);
+    contentSplitter->setHandleWidth(8);
+    contentSplitter->setToolTip("Drag this divider to resize the right panel.");
 
     // =====================================================
     // CENTER: 2x2 View Grid
@@ -756,6 +1013,18 @@ void ManualSeedSelector::setupUi()
     m_sagittalView = new OrthogonalView();
     m_coronalView = new OrthogonalView();
     m_mask3DView = new Mask3DView();
+
+    // Slice navigation now lives inside each view panel so it is always visible.
+    m_axialSlider = new QSlider(Qt::Horizontal);
+    m_axialSlider->setToolTip("Axial slice (W/S keys)");
+    m_sagittalSlider = new QSlider(Qt::Horizontal);
+    m_sagittalSlider->setToolTip("Sagittal slice (A/D keys)");
+    m_coronalSlider = new QSlider(Qt::Horizontal);
+    m_coronalSlider->setToolTip("Coronal slice (Q/E keys)");
+
+    m_axialLabel = new QLabel("Axial: 0/0");
+    m_sagittalLabel = new QLabel("Sagittal: 0/0");
+    m_coronalLabel = new QLabel("Coronal: 0/0");
 
     for (OrthogonalView *view : {m_axialView, m_sagittalView, m_coronalView})
     {
@@ -768,10 +1037,45 @@ void ManualSeedSelector::setupUi()
     m_coronalView->setMinimumSize(320, 280);
     m_mask3DView->setMinimumSize(320, 240);
 
-    viewGrid->addWidget(m_axialView, 0, 0);
-    viewGrid->addWidget(m_sagittalView, 0, 1);
-    viewGrid->addWidget(m_coronalView, 1, 0);
-    viewGrid->addWidget(m_mask3DView, 1, 1);
+    auto createSlicePanel = [](const QString &title, OrthogonalView *view, QLabel *label, QSlider *slider) -> QWidget *
+    {
+        QWidget *panel = new QWidget();
+        QVBoxLayout *panelLayout = new QVBoxLayout(panel);
+        panelLayout->setContentsMargins(0, 0, 0, 0);
+        panelLayout->setSpacing(4);
+
+        label->setText(title + ": 0/0");
+        label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+        slider->setRange(0, 0);
+        slider->setValue(0);
+        slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+        panelLayout->addWidget(view, 1);
+        panelLayout->addWidget(label);
+        panelLayout->addWidget(slider);
+        return panel;
+    };
+
+    QWidget *axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider);
+    QWidget *sagittalPanel = createSlicePanel("Sagittal", m_sagittalView, m_sagittalLabel, m_sagittalSlider);
+    QWidget *coronalPanel = createSlicePanel("Coronal", m_coronalView, m_coronalLabel, m_coronalSlider);
+    QWidget *renderPanel = new QWidget();
+    QGridLayout *renderPanelLayout = new QGridLayout(renderPanel);
+    renderPanelLayout->setContentsMargins(0, 0, 0, 0);
+    renderPanelLayout->setSpacing(0);
+    renderPanelLayout->addWidget(m_mask3DView, 0, 0);
+    m_show3DCheck = new QCheckBox("Show 3D");
+    m_show3DCheck->setToolTip("Enable 3D visualization for masks and seeds");
+    m_show3DCheck->setChecked(false);
+    m_show3DCheck->setStyleSheet("QCheckBox { background-color: rgba(0, 0, 0, 150); padding: 2px 6px; border-radius: 4px; }");
+    renderPanelLayout->addWidget(m_show3DCheck, 0, 0, Qt::AlignRight | Qt::AlignBottom);
+
+    viewGrid->addWidget(axialPanel, 0, 0);
+    viewGrid->addWidget(sagittalPanel, 0, 1);
+    viewGrid->addWidget(coronalPanel, 1, 0);
+    viewGrid->addWidget(renderPanel, 1, 1);
     viewGrid->setColumnStretch(0, 1);
     viewGrid->setColumnStretch(1, 1);
     viewGrid->setRowStretch(0, 1);
@@ -781,59 +1085,138 @@ void ManualSeedSelector::setupUi()
     QWidget *viewContainer = new QWidget();
     viewContainer->setLayout(viewGrid);
     viewContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    contentLayout->addWidget(viewContainer, 1);
+    viewContainer->setMinimumWidth(640);
+    contentSplitter->addWidget(viewContainer);
 
     // =====================================================
     // RIGHT SIDEBAR: File Management
     // =====================================================
     QWidget *sidebar = new QWidget();
-    sidebar->setMaximumWidth(250);
     sidebar->setMinimumWidth(200);
+    sidebar->setMaximumWidth(520);
     QVBoxLayout *sidebarLayout = new QVBoxLayout(sidebar);
-    sidebarLayout->setSpacing(8);
+    sidebarLayout->setSpacing(4);
     sidebarLayout->setContentsMargins(4, 4, 4, 4);
+    QSplitter *sidebarSplitter = new QSplitter(Qt::Vertical, sidebar);
+    sidebarSplitter->setChildrenCollapsible(false);
+    sidebarSplitter->setHandleWidth(6);
+    sidebarSplitter->setToolTip("Drag handles to resize each right-side block.");
 
     // Label selector at top
     QGroupBox *labelGroup = new QGroupBox("Label");
+    labelGroup->setMinimumHeight(90);
     QHBoxLayout *labelLayout = new QHBoxLayout(labelGroup);
     labelLayout->setSpacing(6);
 
     m_labelSelector = new QSpinBox();
-    m_labelSelector->setRange(1, 255);
-    m_labelSelector->setToolTip("Select label (1-255) for seeds and mask");
+    m_labelSelector->setRange(0, 255);
+    m_labelSelector->setToolTip("Select label (0-255) for seeds and mask");
     labelLayout->addWidget(m_labelSelector);
 
     m_labelColorIndicator = new QLabel();
     m_labelColorIndicator->setFixedSize(24, 24);
     m_labelColorIndicator->setFrameStyle(QFrame::Box | QFrame::Plain);
     m_labelColorIndicator->setToolTip("Color for current label");
-    updateLabelColor(1);
+    updateLabelColor(0);
     labelLayout->addWidget(m_labelColorIndicator);
 
     connect(m_labelSelector, QOverload<int>::of(&QSpinBox::valueChanged), this, &ManualSeedSelector::updateLabelColor);
 
-    sidebarLayout->addWidget(labelGroup);
+    sidebarSplitter->addWidget(labelGroup);
 
     // NIfTI Images section
     QGroupBox *niftiListGroup = new QGroupBox("NIfTI Images");
+    niftiListGroup->setMinimumHeight(150);
     QVBoxLayout *niftiListLayout = new QVBoxLayout(niftiListGroup);
     niftiListLayout->setSpacing(4);
 
     m_niftiList = new QListWidget();
-    m_niftiList->setMaximumHeight(80);
+    m_niftiList->setMinimumHeight(70);
+    m_niftiList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_niftiList->setToolTip("Click to select which image to display");
     niftiListLayout->addWidget(m_niftiList);
 
     QHBoxLayout *niftiButtonsLayout = new QHBoxLayout();
-    QPushButton *btnAddNifti = new QPushButton("Add");
-    btnAddNifti->setToolTip("Add NIfTI images to the list");
-    btnAddNifti->setMaximumWidth(60);
-    connect(btnAddNifti, &QPushButton::clicked, this, &ManualSeedSelector::openImage);
+    niftiButtonsLayout->setContentsMargins(0, 3, 0, 0);
+    niftiButtonsLayout->setSpacing(10);
 
-    QPushButton *btnRemoveNifti = new QPushButton("Remove");
-    btnRemoveNifti->setToolTip("Remove selected NIfTI image from list");
-    btnRemoveNifti->setMaximumWidth(60);
-    connect(btnRemoveNifti, &QPushButton::clicked, [this]()
+    auto configureNiftiIconButton = [](QToolButton *button)
+    {
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setAutoRaise(true);
+        button->setFixedSize(20, 20);
+        button->setIconSize(QSize(18, 18));
+        button->setCursor(Qt::PointingHandCursor);
+        button->setStyleSheet(R"(
+            QToolButton {
+                background: transparent;
+                border: none;
+                padding: 0px;
+            }
+            QToolButton:hover {
+                background: transparent;
+                border: none;
+            }
+            QToolButton:pressed {
+                background: transparent;
+                border: none;
+            }
+            QToolButton:focus {
+                outline: none;
+                border: none;
+            }
+        )");
+    };
+
+    QToolButton *btnAddNifti = new QToolButton();
+    btnAddNifti->setIcon(makeMonochromeIcon(kAddIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Add, QSize(16, 16))));
+    btnAddNifti->setToolTip("Add");
+    configureNiftiIconButton(btnAddNifti);
+    connect(btnAddNifti, &QToolButton::clicked, this, &ManualSeedSelector::openImage);
+
+    QToolButton *btnAddNiftiCsv = new QToolButton();
+    btnAddNiftiCsv->setIcon(makeMonochromeIcon(kAddCsvIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::AddCsv, QSize(16, 16))));
+    btnAddNiftiCsv->setToolTip("Add CSV");
+    configureNiftiIconButton(btnAddNiftiCsv);
+    connect(btnAddNiftiCsv, &QToolButton::clicked, this, &ManualSeedSelector::openImagesFromCsv);
+
+    QToolButton *btnExportNiftiCsv = new QToolButton();
+    btnExportNiftiCsv->setIcon(makeMonochromeIcon(kExportCsvIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::ExportCsv, QSize(16, 16))));
+    btnExportNiftiCsv->setToolTip("Export CSV");
+    configureNiftiIconButton(btnExportNiftiCsv);
+    connect(btnExportNiftiCsv, &QToolButton::clicked, [this]()
+            {
+        if (m_images.empty()) {
+            QMessageBox::information(this, "Export CSV", "There are no NIfTI paths to export.");
+            return;
+        }
+
+        QString outputPath = QFileDialog::getSaveFileName(this, "Export NIfTI Paths CSV", "", "CSV files (*.csv);;All files (*)");
+        if (outputPath.isEmpty())
+            return;
+        if (!outputPath.toLower().endsWith(".csv"))
+            outputPath += ".csv";
+
+        QFile outputFile(outputPath);
+        if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::warning(this, "Export CSV", QString("Failed to save CSV:\n%1").arg(outputPath));
+            return;
+        }
+
+        QTextStream stream(&outputFile);
+        stream << "nifti_path\n";
+        for (const ImageData &imageData : m_images)
+            stream << csvEscapeCell(QString::fromStdString(imageData.imagePath)) << '\n';
+
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Exported %1 NIfTI path(s) to %2").arg(m_images.size()).arg(outputPath));
+    });
+
+    QToolButton *btnRemoveNifti = new QToolButton();
+    btnRemoveNifti->setIcon(makeMonochromeIcon(kRemoveIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Remove, QSize(16, 16))));
+    btnRemoveNifti->setToolTip("Remove");
+    configureNiftiIconButton(btnRemoveNifti);
+    connect(btnRemoveNifti, &QToolButton::clicked, [this]()
             {
         int currentRow = m_niftiList->currentRow();
         if (currentRow >= 0 && currentRow < static_cast<int>(m_images.size())) {
@@ -850,9 +1233,54 @@ void ManualSeedSelector::setupUi()
             }
         } });
 
+    QToolButton *btnRemoveAllNifti = new QToolButton();
+    btnRemoveAllNifti->setIcon(makeMonochromeIcon(kRemoveAllIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::RemoveAll, QSize(16, 16))));
+    btnRemoveAllNifti->setToolTip("Remove All");
+    configureNiftiIconButton(btnRemoveAllNifti);
+    connect(btnRemoveAllNifti, &QToolButton::clicked, [this]()
+            {
+        if (m_images.empty())
+            return;
+
+        QMessageBox::StandardButton answer = QMessageBox::question(
+            this,
+            "Confirm Remove All",
+            "Are you sure you want to remove all NIfTI images from the list?",
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+
+        m_images.clear();
+        m_niftiList->clear();
+        m_currentImageIndex = -1;
+        m_image = NiftiImage();
+        m_path.clear();
+        m_maskData.clear();
+        m_seeds.clear();
+        m_mask3DDirty = true;
+
+        m_axialSlider->setRange(0, 0);
+        m_sagittalSlider->setRange(0, 0);
+        m_coronalSlider->setRange(0, 0);
+
+        m_axialView->setImage(QImage());
+        m_sagittalView->setImage(QImage());
+        m_coronalView->setImage(QImage());
+
+        updateMaskSeedLists();
+        updateViews();
+        if (m_statusLabel)
+            m_statusLabel->setText("All NIfTI images removed.");
+    });
+
+    niftiButtonsLayout->addStretch(1);
     niftiButtonsLayout->addWidget(btnAddNifti);
+    niftiButtonsLayout->addWidget(btnAddNiftiCsv);
+    niftiButtonsLayout->addWidget(btnExportNiftiCsv);
     niftiButtonsLayout->addWidget(btnRemoveNifti);
-    niftiButtonsLayout->addStretch();
+    niftiButtonsLayout->addWidget(btnRemoveAllNifti);
+    niftiButtonsLayout->addStretch(1);
     niftiListLayout->addLayout(niftiButtonsLayout);
 
     // Connect item selection to load the image
@@ -863,6 +1291,7 @@ void ManualSeedSelector::setupUi()
             const std::string &path = m_images[row].imagePath;
             if (m_image.load(path)) {
                 m_path = path;
+                autoDetectAssociatedFilesForImage(row);
                 
                 // Clear mask and seed data when switching images
                 m_maskData.clear();
@@ -905,15 +1334,17 @@ void ManualSeedSelector::setupUi()
             }
         } });
 
-    sidebarLayout->addWidget(niftiListGroup);
+    sidebarSplitter->addWidget(niftiListGroup);
 
     // Masks section
     QGroupBox *maskListGroup = new QGroupBox("Masks");
+    maskListGroup->setMinimumHeight(140);
     QVBoxLayout *maskListLayout = new QVBoxLayout(maskListGroup);
     maskListLayout->setSpacing(4);
 
     m_maskList = new QListWidget();
-    m_maskList->setMaximumHeight(80);
+    m_maskList->setMinimumHeight(70);
+    m_maskList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_maskList->setToolTip("Click to load mask - Colors indicate which image they belong to");
     maskListLayout->addWidget(m_maskList);
 
@@ -950,15 +1381,17 @@ void ManualSeedSelector::setupUi()
             }
         } });
 
-    sidebarLayout->addWidget(maskListGroup);
+    sidebarSplitter->addWidget(maskListGroup);
 
     // Seed Groups section
     QGroupBox *seedListGroup = new QGroupBox("Seed Groups");
+    seedListGroup->setMinimumHeight(140);
     QVBoxLayout *seedListLayout = new QVBoxLayout(seedListGroup);
     seedListLayout->setSpacing(4);
 
     m_seedList = new QListWidget();
-    m_seedList->setMaximumHeight(80);
+    m_seedList->setMinimumHeight(70);
+    m_seedList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_seedList->setToolTip("Click to load seeds - Colors indicate which image they belong to");
     seedListLayout->addWidget(m_seedList);
 
@@ -995,13 +1428,20 @@ void ManualSeedSelector::setupUi()
             }
         } });
 
-    sidebarLayout->addWidget(seedListGroup);
+    sidebarSplitter->addWidget(seedListGroup);
+    sidebarSplitter->setStretchFactor(0, 0);
+    sidebarSplitter->setStretchFactor(1, 1);
+    sidebarSplitter->setStretchFactor(2, 1);
+    sidebarSplitter->setStretchFactor(3, 1);
+    sidebarSplitter->setSizes({100, 300, 220, 220});
+    sidebarLayout->addWidget(sidebarSplitter, 1);
 
-    sidebarLayout->addStretch();
+    contentSplitter->addWidget(sidebar);
+    contentSplitter->setStretchFactor(0, 1);
+    contentSplitter->setStretchFactor(1, 0);
+    contentSplitter->setSizes({1040, 280});
 
-    contentLayout->addWidget(sidebar);
-
-    mainLayout->addLayout(contentLayout, 1);
+    mainLayout->addWidget(contentSplitter, 1);
 
     // =====================================================
     // BOTTOM: Status bar
@@ -1058,45 +1498,126 @@ void ManualSeedSelector::setupUi()
         float hi = static_cast<float>(level + width / 2.0);
         applyWindowFromValues(lo, hi, false); });
 
+    connect(m_show3DCheck, &QCheckBox::toggled, [this](bool checked)
+            {
+        m_enable3DView = checked;
+        if (checked && m_mask3DDirty)
+        {
+            update3DMaskView();
+            m_mask3DDirty = false;
+        } });
+
     // Mouse events for views
     connect(m_axialView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
-        if (m_maskMode != 0 && b == Qt::LeftButton)
+        if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
             paintAxialMask(x, y);
+        else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
+            beginSliceDrag(m_axialSliceDrag, y, m_axialSlider);
         else
             onAxialClicked(x, y, b); });
     connect(m_axialView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
-        if ((buttons & Qt::LeftButton) && m_maskMode != 0)
+        updateHoverStatus(SlicePlane::Axial, x, y, m_axialSlider->value());
+        if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
             paintAxialMask(x, y);
-        else if ((buttons & Qt::LeftButton) && m_seedMode == 1)
-            addSeed(x, y, m_axialSlider->value()); });
+        else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 1)
+            addSeed(x, y, m_axialSlider->value());
+        else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 2)
+            eraseNear(x, y, m_axialSlider->value(), m_seedBrushRadius);
+        else if (!isSeedsTabActive() && !isMaskTabActive() && (buttons & Qt::LeftButton))
+            updateSliceDrag(m_axialSliceDrag, y, static_cast<int>(m_image.getSizeY()), m_axialSlider);
+        else
+            endSliceDrag(m_axialSliceDrag); });
+    connect(m_axialView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
+            {
+        endSliceDrag(m_axialSliceDrag); });
 
     connect(m_sagittalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
-        if (m_maskMode != 0 && b == Qt::LeftButton)
+        if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
             paintSagittalMask(x, y);
+        else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
+            beginSliceDrag(m_sagittalSliceDrag, y, m_sagittalSlider);
         else
             onSagittalClicked(x, y, b); });
     connect(m_sagittalView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
-        if ((buttons & Qt::LeftButton) && m_maskMode != 0)
+        updateHoverStatus(SlicePlane::Sagittal, m_sagittalSlider->value(), x, y);
+        if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
             paintSagittalMask(x, y);
-        else if ((buttons & Qt::LeftButton) && m_seedMode == 1)
-            addSeed(m_sagittalSlider->value(), x, y); });
+        else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 1)
+            addSeed(m_sagittalSlider->value(), x, y);
+        else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 2)
+            eraseNear(m_sagittalSlider->value(), x, y, m_seedBrushRadius);
+        else if (!isSeedsTabActive() && !isMaskTabActive() && (buttons & Qt::LeftButton))
+            updateSliceDrag(m_sagittalSliceDrag, y, static_cast<int>(m_image.getSizeZ()), m_sagittalSlider);
+        else
+            endSliceDrag(m_sagittalSliceDrag); });
+    connect(m_sagittalView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
+            {
+        endSliceDrag(m_sagittalSliceDrag); });
 
     connect(m_coronalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
-        if (m_maskMode != 0 && b == Qt::LeftButton)
+        if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
             paintCoronalMask(x, y);
+        else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
+            beginSliceDrag(m_coronalSliceDrag, y, m_coronalSlider);
         else
             onCoronalClicked(x, y, b); });
     connect(m_coronalView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
-        if ((buttons & Qt::LeftButton) && m_maskMode != 0)
+        updateHoverStatus(SlicePlane::Coronal, x, m_coronalSlider->value(), y);
+        if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
             paintCoronalMask(x, y);
-        else if ((buttons & Qt::LeftButton) && m_seedMode == 1)
-            addSeed(x, m_coronalSlider->value(), y); });
+        else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 1)
+            addSeed(x, m_coronalSlider->value(), y);
+        else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 2)
+            eraseNear(x, m_coronalSlider->value(), y, m_seedBrushRadius);
+        else if (!isSeedsTabActive() && !isMaskTabActive() && (buttons & Qt::LeftButton))
+            updateSliceDrag(m_coronalSliceDrag, y, static_cast<int>(m_image.getSizeZ()), m_coronalSlider);
+        else
+            endSliceDrag(m_coronalSliceDrag); });
+    connect(m_coronalView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
+            {
+        endSliceDrag(m_coronalSliceDrag); });
+
+    connect(m_ribbonTabs, &QTabWidget::currentChanged, this, [this](int)
+            {
+        if (m_mask3DView)
+            m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2); });
+
+    connect(m_mask3DView, &Mask3DView::eraseSeedsInRectangle, this, [this](const QVector<int> &seedIndices)
+            {
+        if (seedIndices.isEmpty() || m_seeds.empty())
+            return;
+
+        std::vector<char> removeMask(m_seeds.size(), 0);
+        bool hasRemovals = false;
+        for (int idx : seedIndices)
+        {
+            if (idx >= 0 && idx < static_cast<int>(m_seeds.size()) && !removeMask[static_cast<size_t>(idx)])
+            {
+                removeMask[static_cast<size_t>(idx)] = 1;
+                hasRemovals = true;
+            }
+        }
+        if (!hasRemovals)
+            return;
+
+        std::vector<Seed> kept;
+        kept.reserve(m_seeds.size());
+        for (size_t i = 0; i < m_seeds.size(); ++i)
+        {
+            if (!removeMask[i])
+                kept.push_back(m_seeds[i]);
+        }
+        m_seeds.swap(kept);
+        updateViews(); });
+
+    if (m_mask3DView)
+        m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
 }
 
 // =============================================================================
@@ -1109,26 +1630,285 @@ void ManualSeedSelector::openImage()
     if (files.isEmpty())
         return;
 
-    // Add all selected files to the list
-    for (const QString &f : files)
+    int duplicateCount = 0;
+    int missingCount = 0;
+    const int added = addImagesToList(files, &duplicateCount, &missingCount);
+
+    if (m_statusLabel)
     {
-        std::string path = f.toStdString();
+        QString status = QString("Added %1 NIfTI image(s)").arg(added);
+        if (duplicateCount > 0)
+            status += QString(", %1 duplicate(s) skipped").arg(duplicateCount);
+        if (missingCount > 0)
+            status += QString(", %1 missing file(s) skipped").arg(missingCount);
+        m_statusLabel->setText(status);
+    }
+}
 
-        ImageData imgData;
-        imgData.imagePath = path;
-        imgData.color = getColorForImageIndex(static_cast<int>(m_images.size()));
-        m_images.push_back(imgData);
+void ManualSeedSelector::openImagesFromCsv()
+{
+    const QString csvPath = QFileDialog::getOpenFileName(this, "Open CSV with NIfTI paths", "", "CSV files (*.csv);;All files (*)");
+    if (csvPath.isEmpty())
+        return;
 
-        std::string filename = std::filesystem::path(path).filename().string();
-        m_niftiList->addItem(QString::fromStdString(filename));
+    QString errorMessage;
+    const QStringList paths = extractNiftiPathsFromCsv(csvPath, &errorMessage);
+    if (paths.isEmpty())
+    {
+        QMessageBox::warning(this, "Open CSV", errorMessage.isEmpty() ? "No valid NIfTI paths were found in the selected CSV." : errorMessage);
+        return;
     }
 
-    // Automatically select and load the first newly added image
-    if (!files.isEmpty() && m_niftiList->count() > 0)
+    int duplicateCount = 0;
+    int missingCount = 0;
+    const int added = addImagesToList(paths, &duplicateCount, &missingCount);
+
+    QString summary = QString("CSV processed successfully.\nDetected paths: %1\nAdded images: %2")
+                          .arg(paths.size())
+                          .arg(added);
+    if (duplicateCount > 0)
+        summary += QString("\nDuplicates skipped: %1").arg(duplicateCount);
+    if (missingCount > 0)
+        summary += QString("\nMissing files skipped: %1").arg(missingCount);
+
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("CSV imported: %1 added, %2 duplicate(s), %3 missing")
+                                   .arg(added)
+                                   .arg(duplicateCount)
+                                   .arg(missingCount));
+
+    if (added == 0)
+        QMessageBox::warning(this, "Open CSV", summary);
+    else
+        QMessageBox::information(this, "Open CSV", summary);
+}
+
+int ManualSeedSelector::addImagesToList(const QStringList &paths, int *duplicateCount, int *missingCount)
+{
+    if (duplicateCount)
+        *duplicateCount = 0;
+    if (missingCount)
+        *missingCount = 0;
+    if (paths.isEmpty())
+        return 0;
+
+    std::unordered_set<std::string> existing;
+    existing.reserve(m_images.size() + paths.size());
+    for (const ImageData &image : m_images)
     {
-        int newIndex = m_niftiList->count() - files.size();
-        m_niftiList->setCurrentRow(newIndex);
+        const QString normalized = QFileInfo(QString::fromStdString(image.imagePath)).absoluteFilePath();
+        existing.insert(normalized.toStdString());
     }
+
+    int firstAddedIndex = -1;
+    int added = 0;
+
+    for (const QString &entry : paths)
+    {
+        const QString cleaned = normalizeCsvCell(entry);
+        if (cleaned.isEmpty())
+            continue;
+
+        const QFileInfo fileInfo(cleaned);
+        const QString normalized = QDir::cleanPath(fileInfo.absoluteFilePath());
+        const std::string key = normalized.toStdString();
+
+        if (existing.find(key) != existing.end())
+        {
+            if (duplicateCount)
+                ++(*duplicateCount);
+            continue;
+        }
+        if (!QFileInfo::exists(normalized))
+        {
+            if (missingCount)
+                ++(*missingCount);
+            continue;
+        }
+
+        ImageData imageData;
+        imageData.imagePath = key;
+        imageData.color = getColorForImageIndex(static_cast<int>(m_images.size()));
+        m_images.push_back(std::move(imageData));
+
+        const QString filename = QFileInfo(normalized).fileName();
+        m_niftiList->addItem(filename.isEmpty() ? normalized : filename);
+        if (firstAddedIndex < 0)
+            firstAddedIndex = m_niftiList->count() - 1;
+
+        existing.insert(key);
+        ++added;
+    }
+
+    if (added > 0 && firstAddedIndex >= 0)
+        m_niftiList->setCurrentRow(firstAddedIndex);
+
+    return added;
+}
+
+QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath, QString *errorMessage)
+{
+    if (errorMessage)
+        errorMessage->clear();
+
+    QFile csvFile(csvPath);
+    if (!csvFile.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        if (errorMessage)
+            *errorMessage = QString("Failed to open CSV file:\n%1").arg(csvPath);
+        return {};
+    }
+
+    QTextStream stream(&csvFile);
+    QString headerLine;
+    while (!stream.atEnd() && headerLine.trimmed().isEmpty())
+        headerLine = stream.readLine();
+
+    if (headerLine.trimmed().isEmpty())
+    {
+        if (errorMessage)
+            *errorMessage = "CSV appears to be empty.";
+        return {};
+    }
+
+    const QStringList headers = parseCsvRow(headerLine);
+    if (headers.isEmpty())
+    {
+        if (errorMessage)
+            *errorMessage = "CSV header could not be parsed.";
+        return {};
+    }
+
+    std::vector<QStringList> rows;
+    rows.reserve(512);
+    std::vector<int> niftiCounts(headers.size(), 0);
+
+    while (!stream.atEnd())
+    {
+        QString line = stream.readLine();
+        if (line.trimmed().isEmpty())
+            continue;
+
+        QStringList columns = parseCsvRow(line);
+        if (columns.size() < headers.size())
+        {
+            while (columns.size() < headers.size())
+                columns.push_back(QString());
+        }
+        if (columns.size() > headers.size())
+            columns = columns.mid(0, headers.size());
+
+        for (int i = 0; i < columns.size(); ++i)
+        {
+            if (isNiftiPathCell(columns[i]))
+                ++niftiCounts[i];
+        }
+
+        rows.push_back(columns);
+    }
+
+    if (rows.empty())
+    {
+        if (errorMessage)
+            *errorMessage = "CSV has no data rows.";
+        return {};
+    }
+
+    const int pathColumn = chooseNiftiColumn(headers, niftiCounts);
+    if (pathColumn < 0)
+    {
+        if (errorMessage)
+            *errorMessage = "Could not find a column containing NIfTI paths (.nii/.nii.gz).";
+        return {};
+    }
+
+    const QDir baseDir = QFileInfo(csvPath).dir();
+    QStringList extractedPaths;
+    extractedPaths.reserve(static_cast<int>(rows.size()));
+    std::unordered_set<std::string> uniquePaths;
+    uniquePaths.reserve(rows.size());
+
+    for (const QStringList &row : rows)
+    {
+        if (pathColumn < 0 || pathColumn >= row.size())
+            continue;
+
+        const QString rawPath = normalizeCsvCell(row[pathColumn]);
+        if (!isNiftiPathCell(rawPath))
+            continue;
+
+        const QFileInfo rowPathInfo(rawPath);
+        const QString resolvedPath = rowPathInfo.isAbsolute()
+                                         ? QDir::cleanPath(rowPathInfo.filePath())
+                                         : QDir::cleanPath(baseDir.absoluteFilePath(rawPath));
+        const std::string key = resolvedPath.toStdString();
+        if (uniquePaths.insert(key).second)
+            extractedPaths.push_back(resolvedPath);
+    }
+
+    if (extractedPaths.isEmpty() && errorMessage)
+        *errorMessage = QString("Column '%1' was found, but no valid NIfTI paths were extracted.").arg(headers[pathColumn]);
+
+    return extractedPaths;
+}
+
+void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex)
+{
+    if (imageIndex < 0 || imageIndex >= static_cast<int>(m_images.size()))
+        return;
+
+    ImageData &imageData = m_images[imageIndex];
+    const QString imagePath = QDir::cleanPath(QFileInfo(QString::fromStdString(imageData.imagePath)).absoluteFilePath());
+    const QDir imageDir = QFileInfo(imagePath).dir();
+    if (!imageDir.exists())
+        return;
+
+    std::vector<std::string> detectedMaskPaths;
+    std::vector<std::string> detectedSeedPaths;
+    detectedMaskPaths.reserve(32);
+    detectedSeedPaths.reserve(32);
+
+    std::unordered_set<std::string> maskKeys;
+    std::unordered_set<std::string> seedKeys;
+    maskKeys.reserve(64);
+    seedKeys.reserve(64);
+
+    auto appendUniqueExistingPath = [](const std::string &rawPath, std::vector<std::string> &target, std::unordered_set<std::string> &keySet)
+    {
+        const QString absolutePath = QDir::cleanPath(QFileInfo(QString::fromStdString(rawPath)).absoluteFilePath());
+        if (!QFileInfo::exists(absolutePath))
+            return;
+        const std::string key = absolutePath.toStdString();
+        if (keySet.insert(key).second)
+            target.push_back(key);
+    };
+
+    const QFileInfoList files = imageDir.entryInfoList(QDir::Files | QDir::Readable | QDir::NoSymLinks, QDir::Name | QDir::IgnoreCase);
+    for (const QFileInfo &fileInfo : files)
+    {
+        const QString fileName = fileInfo.fileName();
+        const std::string absolutePath = QDir::cleanPath(fileInfo.absoluteFilePath()).toStdString();
+
+        if (isNiftiMaskFilenameCandidate(fileName))
+        {
+            if (maskKeys.insert(absolutePath).second)
+                detectedMaskPaths.push_back(absolutePath);
+        }
+        if (isSeedFilenameCandidate(fileName))
+        {
+            if (seedKeys.insert(absolutePath).second)
+                detectedSeedPaths.push_back(absolutePath);
+        }
+    }
+
+    // Preserve already-associated files (for example, manually loaded files outside the image folder).
+    for (const std::string &existingMaskPath : imageData.maskPaths)
+        appendUniqueExistingPath(existingMaskPath, detectedMaskPaths, maskKeys);
+    for (const std::string &existingSeedPath : imageData.seedPaths)
+        appendUniqueExistingPath(existingSeedPath, detectedSeedPaths, seedKeys);
+
+    imageData.maskPaths = std::move(detectedMaskPaths);
+    imageData.seedPaths = std::move(detectedSeedPaths);
 }
 
 bool ManualSeedSelector::saveImageToFile(const std::string &path)
@@ -1266,6 +2046,7 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
                 s.x = std::max(0, std::min(s.x, sx - 1));
                 s.y = std::max(0, std::min(s.y, sy - 1));
                 s.z = std::max(0, std::min(s.z, sz - 1));
+                s.fromFile = true;
                 m_seeds.push_back(s);
             }
             else
@@ -1297,6 +2078,7 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
         s.x = std::max(0, std::min(s.x, sx - 1));
         s.y = std::max(0, std::min(s.y, sy - 1));
         s.z = std::max(0, std::min(s.z, sz - 1));
+        s.fromFile = true;
         m_seeds.push_back(s);
     }
 
@@ -1322,8 +2104,146 @@ bool ManualSeedSelector::hasImage() const
     return m_image.getSizeX() > 0 && m_image.getSizeY() > 0 && m_image.getSizeZ() > 0;
 }
 
+bool ManualSeedSelector::isSeedsTabActive() const
+{
+    return m_ribbonTabs && m_seedTabIndex >= 0 && m_ribbonTabs->currentIndex() == m_seedTabIndex;
+}
+
+bool ManualSeedSelector::isMaskTabActive() const
+{
+    return m_ribbonTabs && m_maskTabIndex >= 0 && m_ribbonTabs->currentIndex() == m_maskTabIndex;
+}
+
+void ManualSeedSelector::beginSliceDrag(SliceDragState &state, int coord, QSlider *slider)
+{
+    if (!slider || coord < 0)
+    {
+        state.active = false;
+        return;
+    }
+    state.active = true;
+    state.startCoord = coord;
+    state.startValue = slider->value();
+}
+
+void ManualSeedSelector::updateSliceDrag(SliceDragState &state, int coord, int coordRange, QSlider *slider)
+{
+    if (!state.active || !slider || coord < 0 || coordRange <= 1)
+        return;
+
+    const int minValue = slider->minimum();
+    const int maxValue = slider->maximum();
+    if (maxValue <= minValue)
+        return;
+
+    const double normalizedDelta = static_cast<double>(coord - state.startCoord) / static_cast<double>(coordRange - 1);
+    const int scaledDelta = static_cast<int>(std::round(normalizedDelta * static_cast<double>(maxValue - minValue)));
+    const int targetValue = std::clamp(state.startValue + scaledDelta, minValue, maxValue);
+    if (targetValue != slider->value())
+        slider->setValue(targetValue);
+}
+
+void ManualSeedSelector::endSliceDrag(SliceDragState &state)
+{
+    state.active = false;
+}
+
+const Seed *ManualSeedSelector::findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const
+{
+    if (maxDistance < 0)
+        maxDistance = 0;
+    const int maxDistSquared = maxDistance * maxDistance;
+    const Seed *nearest = nullptr;
+    int nearestDistSquared = std::numeric_limits<int>::max();
+    for (const Seed &seed : m_seeds)
+    {
+        int d0 = 0;
+        int d1 = 0;
+        switch (plane)
+        {
+        case SlicePlane::Axial:
+            if (seed.z != z)
+                continue;
+            d0 = seed.x - x;
+            d1 = seed.y - y;
+            break;
+        case SlicePlane::Sagittal:
+            if (seed.x != x)
+                continue;
+            d0 = seed.y - y;
+            d1 = seed.z - z;
+            break;
+        case SlicePlane::Coronal:
+            if (seed.y != y)
+                continue;
+            d0 = seed.x - x;
+            d1 = seed.z - z;
+            break;
+        }
+
+        const int distSquared = d0 * d0 + d1 * d1;
+        if (distSquared > maxDistSquared || distSquared >= nearestDistSquared)
+            continue;
+
+        nearest = &seed;
+        nearestDistSquared = distSquared;
+        if (distSquared == 0)
+            break;
+    }
+    return nearest;
+}
+
+void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z)
+{
+    if (!m_statusLabel || !hasImage())
+        return;
+
+    if (x < 0 || y < 0 || z < 0)
+        return;
+
+    const int sizeX = static_cast<int>(m_image.getSizeX());
+    const int sizeY = static_cast<int>(m_image.getSizeY());
+    const int sizeZ = static_cast<int>(m_image.getSizeZ());
+    if (x >= sizeX || y >= sizeY || z >= sizeZ)
+        return;
+
+    const float voxelValue = m_image.getVoxelValue(static_cast<unsigned int>(x), static_cast<unsigned int>(y), static_cast<unsigned int>(z));
+    QString viewName;
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        viewName = "Axial";
+        break;
+    case SlicePlane::Sagittal:
+        viewName = "Sagittal";
+        break;
+    case SlicePlane::Coronal:
+        viewName = "Coronal";
+        break;
+    }
+
+    QString hoverText = QString("%1 | x:%2 y:%3 z:%4 | Voxel:%5")
+                            .arg(viewName)
+                            .arg(x)
+                            .arg(y)
+                            .arg(z)
+                            .arg(QString::number(static_cast<double>(voxelValue), 'f', 3));
+
+    const Seed *seed = findSeedNearCursor(x, y, z, plane, 1);
+    if (seed)
+    {
+        const QString seedType = (seed->internal != 0) ? "internal" : "external";
+        hoverText += QString(" | Seed: label %1 (%2)").arg(seed->label).arg(seedType);
+    }
+
+    m_statusLabel->setText(hoverText);
+}
+
 void ManualSeedSelector::onAxialClicked(int x, int y, Qt::MouseButton b)
 {
+    if (!isSeedsTabActive())
+        return;
+
     int z = m_axialSlider->value();
     if (b == Qt::LeftButton)
     {
@@ -1340,6 +2260,9 @@ void ManualSeedSelector::onAxialClicked(int x, int y, Qt::MouseButton b)
 
 void ManualSeedSelector::onSagittalClicked(int x, int y, Qt::MouseButton b)
 {
+    if (!isSeedsTabActive())
+        return;
+
     int x_loc = m_sagittalSlider->value();
     int y_loc = x;
     int z_loc = y;
@@ -1358,6 +2281,9 @@ void ManualSeedSelector::onSagittalClicked(int x, int y, Qt::MouseButton b)
 
 void ManualSeedSelector::onCoronalClicked(int x, int y, Qt::MouseButton b)
 {
+    if (!isSeedsTabActive())
+        return;
+
     int y_loc = m_coronalSlider->value();
     int x_loc = x;
     int z_loc = y;
@@ -1382,6 +2308,7 @@ void ManualSeedSelector::addSeed(int x, int y, int z)
     s.z = z;
     s.label = m_labelSelector->value();
     s.internal = 1;
+    s.fromFile = false;
     m_seeds.push_back(s);
     updateViews();
 }
@@ -1403,7 +2330,7 @@ void ManualSeedSelector::eraseNear(int x, int y, int z, int r)
 
 void ManualSeedSelector::updateLabelColor(int label)
 {
-    int l = std::max(1, std::min(254, label));
+    int l = std::max(0, std::min(255, label));
     QColor c = colorForLabel(l);
     QPixmap pm(m_labelColorIndicator->width(), m_labelColorIndicator->height());
     pm.fill(c);
@@ -1486,6 +2413,23 @@ void ManualSeedSelector::updateViews()
         update3DMaskView();
         m_mask3DDirty = false;
     }
+    else if (m_enable3DView && m_mask3DView)
+    {
+        std::vector<SeedRenderData> seedRenderData;
+        seedRenderData.reserve(m_seeds.size());
+        for (size_t i = 0; i < m_seeds.size(); ++i)
+        {
+            const Seed &s = m_seeds[i];
+            SeedRenderData d;
+            d.x = s.x;
+            d.y = s.y;
+            d.z = s.z;
+            d.label = s.label;
+            d.seedIndex = static_cast<int>(i);
+            seedRenderData.push_back(d);
+        }
+        m_mask3DView->setSeedData(seedRenderData);
+    }
 
     if (sizeX == 0 || sizeY == 0 || sizeZ == 0)
     {
@@ -1526,7 +2470,7 @@ void ManualSeedSelector::updateViews()
                 int lbl = m_maskData[idx3];
                 if (lbl != 0)
                 {
-                    int dl = std::max(1, std::min(254, lbl));
+                    int dl = std::max(0, std::min(255, lbl));
                     QColor col = colorForLabel(dl);
                     unsigned char r = static_cast<unsigned char>(col.red());
                     unsigned char g = static_cast<unsigned char>(col.green());
@@ -1555,7 +2499,7 @@ void ManualSeedSelector::updateViews()
                 int lbl = m_maskData[idx3];
                 if (lbl != 0)
                 {
-                    int dl = std::max(1, std::min(254, lbl));
+                    int dl = std::max(0, std::min(255, lbl));
                     QColor col = colorForLabel(dl);
                     unsigned char r = static_cast<unsigned char>(col.red());
                     unsigned char g = static_cast<unsigned char>(col.green());
@@ -1584,7 +2528,7 @@ void ManualSeedSelector::updateViews()
                 int lbl = m_maskData[idx3];
                 if (lbl != 0)
                 {
-                    int dl = std::max(1, std::min(254, lbl));
+                    int dl = std::max(0, std::min(255, lbl));
                     QColor col = colorForLabel(dl);
                     unsigned char r = static_cast<unsigned char>(col.red());
                     unsigned char g = static_cast<unsigned char>(col.green());
@@ -1607,10 +2551,11 @@ void ManualSeedSelector::updateViews()
         {
             if (s.z != z)
                 continue;
-            int lbl = std::max(1, std::min(254, s.label));
-            QColor qc = colorForLabel(lbl);
-            p.setPen(QPen(qc));
-            p.setBrush(qc);
+            int lbl = std::max(0, std::min(255, s.label));
+            const QColor fillColor = colorForLabel(lbl);
+            const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
+            p.setPen(QPen(outlineColor, 1.0));
+            p.setBrush(fillColor);
             p.drawEllipse(QPoint(int(s.x * scale), int(s.y * scale)), 2, 2);
         } });
 
@@ -1620,10 +2565,11 @@ void ManualSeedSelector::updateViews()
         {
             if (s.x != sagX)
                 continue;
-            int lbl = std::max(1, std::min(254, s.label));
-            QColor qc = colorForLabel(lbl);
-            p.setPen(QPen(qc));
-            p.setBrush(qc);
+            int lbl = std::max(0, std::min(255, s.label));
+            const QColor fillColor = colorForLabel(lbl);
+            const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
+            p.setPen(QPen(outlineColor, 1.0));
+            p.setBrush(fillColor);
             p.drawEllipse(QPoint(int(s.y * scale), int(s.z * scale)), 2, 2);
         } });
 
@@ -1633,10 +2579,11 @@ void ManualSeedSelector::updateViews()
         {
             if (s.y != corY)
                 continue;
-            int lbl = std::max(1, std::min(254, s.label));
-            QColor qc = colorForLabel(lbl);
-            p.setPen(QPen(qc));
-            p.setBrush(qc);
+            int lbl = std::max(0, std::min(255, s.label));
+            const QColor fillColor = colorForLabel(lbl);
+            const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
+            p.setPen(QPen(outlineColor, 1.0));
+            p.setBrush(fillColor);
             p.drawEllipse(QPoint(int(s.x * scale), int(s.z * scale)), 2, 2);
         } });
 }
@@ -1649,6 +2596,21 @@ void ManualSeedSelector::update3DMaskView()
     unsigned int sy = m_image.getSizeY();
     unsigned int sz = m_image.getSizeZ();
     m_mask3DView->setMaskData(m_maskData, sx, sy, sz);
+
+    std::vector<SeedRenderData> seedRenderData;
+    seedRenderData.reserve(m_seeds.size());
+    for (size_t i = 0; i < m_seeds.size(); ++i)
+    {
+        const Seed &s = m_seeds[i];
+        SeedRenderData d;
+        d.x = s.x;
+        d.y = s.y;
+        d.z = s.z;
+        d.label = s.label;
+        d.seedIndex = static_cast<int>(i);
+        seedRenderData.push_back(d);
+    }
+    m_mask3DView->setSeedData(seedRenderData);
 }
 
 // =============================================================================

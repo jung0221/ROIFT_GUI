@@ -6,6 +6,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
+#include <QMouseEvent>
+#include <QRubberBand>
 #include <QPushButton>
 #include <QSlider>
 #include <QColorDialog>
@@ -18,14 +20,21 @@
 #include <vtkImageData.h>
 #include <vtkLight.h>
 #include <vtkLookupTable.h>
+#include <vtkGlyph3DMapper.h>
+#include <vtkPointData.h>
+#include <vtkPoints.h>
 #include <vtkPolyDataMapper.h>
+#include <vtkPolyData.h>
 #include <vtkProperty.h>
 #include <vtkRenderer.h>
+#include <vtkSphereSource.h>
+#include <vtkUnsignedCharArray.h>
 #include <vtkWindowedSincPolyDataFilter.h>
 #include <vtkSmartPointer.h>
 
 #include <set>
 #include <algorithm>
+#include <cmath>
 
 Mask3DView::Mask3DView(QWidget *parent)
     : QWidget(parent)
@@ -40,34 +49,20 @@ Mask3DView::Mask3DView(QWidget *parent)
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setMinimumHeight(280);
     layout->addWidget(m_vtkWidget, 1);
+    m_vtkWidget->installEventFilter(this);
+    m_selectionBand = new QRubberBand(QRubberBand::Rectangle, m_vtkWidget);
 
-    auto *controls = new QHBoxLayout();
-    m_visibilityCheck = new QCheckBox("Mostrar máscara 3D");
-    m_visibilityCheck->setChecked(true);
-    m_opacitySlider = new QSlider(Qt::Horizontal);
-    m_opacitySlider->setRange(5, 100);
-    m_opacitySlider->setValue(int(m_opacity * 100.0f));
-    QLabel *opacityLabel = new QLabel("Opacidade");
-    m_labelCombo = new QComboBox();
-    m_colorButton = new QPushButton("Cor por label");
-
-    controls->addWidget(m_visibilityCheck);
-    controls->addWidget(opacityLabel);
-    controls->addWidget(m_opacitySlider);
-    controls->addWidget(m_labelCombo);
-    controls->addWidget(m_colorButton);
-    layout->addLayout(controls);
+    // Controls removed by request: keep the 3D canvas clean and read-only.
+    m_visibilityCheck = nullptr;
+    m_opacitySlider = nullptr;
+    m_labelCombo = nullptr;
+    m_colorButton = nullptr;
 
     m_statusLabel = new QLabel("Nenhuma máscara carregada");
     layout->addWidget(m_statusLabel);
 
     buildPipeline();
     clearMask();
-
-    connect(m_visibilityCheck, &QCheckBox::toggled, this, &Mask3DView::onVisibilityToggled);
-    connect(m_opacitySlider, &QSlider::valueChanged, this, &Mask3DView::onOpacityChanged);
-    connect(m_labelCombo, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this, &Mask3DView::onLabelSelectionChanged);
-    connect(m_colorButton, &QPushButton::clicked, this, &Mask3DView::onColorButtonClicked);
 }
 
 void Mask3DView::buildPipeline()
@@ -107,6 +102,28 @@ void Mask3DView::buildPipeline()
     m_actor->GetProperty()->SetSpecularPower(25.0);
     m_actor->GetProperty()->SetOpacity(m_opacity);
     m_renderer->AddActor(m_actor);
+
+    m_seedPolyData = vtkSmartPointer<vtkPolyData>::New();
+    vtkSmartPointer<vtkSphereSource> seedSphere = vtkSmartPointer<vtkSphereSource>::New();
+    seedSphere->SetRadius(1.6);
+    seedSphere->SetThetaResolution(10);
+    seedSphere->SetPhiResolution(10);
+
+    m_seedMapper = vtkSmartPointer<vtkGlyph3DMapper>::New();
+    m_seedMapper->SetInputData(m_seedPolyData);
+    m_seedMapper->SetSourceConnection(seedSphere->GetOutputPort());
+    m_seedMapper->SetScalarModeToUsePointData();
+    m_seedMapper->ScalarVisibilityOn();
+    m_seedMapper->SetColorModeToDirectScalars();
+
+    m_seedActor = vtkSmartPointer<vtkActor>::New();
+    m_seedActor->SetMapper(m_seedMapper);
+    m_seedActor->GetProperty()->SetAmbient(1.0);
+    m_seedActor->GetProperty()->SetDiffuse(0.0);
+    m_seedActor->GetProperty()->SetSpecular(0.0);
+    m_seedActor->PickableOff();
+    m_seedActor->VisibilityOff();
+    m_renderer->AddActor(m_seedActor);
 
     m_lookupTable = vtkSmartPointer<vtkLookupTable>::New();
     m_lookupTable->SetNumberOfTableValues(256);
@@ -204,6 +221,7 @@ void Mask3DView::setMaskData(const std::vector<int> &mask, unsigned int sizeX, u
     updateLabelControls();
     setStatusText(QString("Labels visíveis: %1 (GPU)").arg(m_activeLabels.size()));
     m_renderer->ResetCamera();
+    m_seedCameraFramed = true;
     if (m_renderWindow)
         m_renderWindow->Render();
 }
@@ -216,6 +234,166 @@ void Mask3DView::clearMask()
     setStatusText("Nenhuma máscara 3D disponível");
     if (m_renderWindow)
         m_renderWindow->Render();
+}
+
+void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
+{
+    if (!m_seedPolyData || !m_seedActor)
+        return;
+
+    m_seedRenderData = seeds;
+    const bool hadVisibleSeeds = (m_seedPolyData && m_seedPolyData->GetNumberOfPoints() > 0);
+
+    if (m_seedRenderData.empty())
+    {
+        m_seedPolyData->Initialize();
+        m_seedActor->VisibilityOff();
+        m_seedCameraFramed = false;
+        if (m_renderWindow)
+            m_renderWindow->Render();
+        return;
+    }
+
+    vtkSmartPointer<vtkPoints> points = vtkSmartPointer<vtkPoints>::New();
+    vtkSmartPointer<vtkUnsignedCharArray> colors = vtkSmartPointer<vtkUnsignedCharArray>::New();
+    colors->SetName("SeedColors");
+    colors->SetNumberOfComponents(3);
+    colors->SetNumberOfTuples(static_cast<vtkIdType>(m_seedRenderData.size()));
+
+    for (vtkIdType i = 0; i < static_cast<vtkIdType>(m_seedRenderData.size()); ++i)
+    {
+        const SeedRenderData &seed = m_seedRenderData[static_cast<size_t>(i)];
+        points->InsertNextPoint(static_cast<double>(seed.x), static_cast<double>(seed.y), static_cast<double>(seed.z));
+
+        const int label = std::max(0, std::min(255, seed.label));
+        const QColor c = colorForLabel(label);
+        const unsigned char rgb[3] = {
+            static_cast<unsigned char>(c.red()),
+            static_cast<unsigned char>(c.green()),
+            static_cast<unsigned char>(c.blue())};
+        colors->SetTypedTuple(i, rgb);
+    }
+
+    m_seedPolyData->SetPoints(points);
+    m_seedPolyData->GetPointData()->SetScalars(colors);
+    m_seedPolyData->Modified();
+    m_seedActor->VisibilityOn();
+    // Auto-frame seeds only once when they become visible without a mask.
+    if (!hadVisibleSeeds && !m_seedCameraFramed && m_actor && !m_actor->GetVisibility())
+    {
+        m_renderer->ResetCamera();
+        m_seedCameraFramed = true;
+    }
+
+    if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+void Mask3DView::setSeedRectangleEraseEnabled(bool enabled)
+{
+    m_seedRectEraseEnabled = enabled;
+    if (!enabled && m_selectionBand)
+    {
+        m_selectionBand->hide();
+        m_selectingRect = false;
+    }
+}
+
+bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched != m_vtkWidget || !m_seedRectEraseEnabled || !m_vtkWidget)
+        return QWidget::eventFilter(watched, event);
+
+    if (event->type() == QEvent::MouseButtonPress)
+    {
+        QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton)
+        {
+            m_selectingRect = true;
+            m_rectStart = mouseEvent->pos();
+            m_selectionBand->setGeometry(QRect(m_rectStart, QSize()));
+            m_selectionBand->show();
+            return true;
+        }
+    }
+    else if (event->type() == QEvent::MouseMove)
+    {
+        if (m_selectingRect)
+        {
+            QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+            m_selectionBand->setGeometry(QRect(m_rectStart, mouseEvent->pos()).normalized());
+            return true;
+        }
+    }
+    else if (event->type() == QEvent::MouseButtonRelease)
+    {
+        QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (m_selectingRect && mouseEvent->button() == Qt::LeftButton)
+        {
+            m_selectingRect = false;
+            const QRect selectionRect = QRect(m_rectStart, mouseEvent->pos()).normalized();
+            if (m_selectionBand)
+                m_selectionBand->hide();
+            if (selectionRect.width() > 2 && selectionRect.height() > 2)
+            {
+                // Ensure camera/projection matrices are current before projecting points.
+                if (m_renderWindow)
+                    m_renderWindow->Render();
+                const QVector<int> indices = collectSeedIndicesInRect(selectionRect);
+                if (!indices.isEmpty())
+                    emit eraseSeedsInRectangle(indices);
+            }
+            return true;
+        }
+    }
+
+    return QWidget::eventFilter(watched, event);
+}
+
+QVector<int> Mask3DView::collectSeedIndicesInRect(const QRect &rect) const
+{
+    QVector<int> indices;
+    if (!m_renderer || !m_renderWindow || !m_vtkWidget || m_seedRenderData.empty())
+        return indices;
+
+    const int widgetWidth = m_vtkWidget->width();
+    const int widgetHeight = m_vtkWidget->height();
+    const int *renderSize = m_renderWindow->GetSize();
+    const int renderWidth = renderSize ? renderSize[0] : 0;
+    const int renderHeight = renderSize ? renderSize[1] : 0;
+    if (widgetWidth <= 0 || widgetHeight <= 0 || renderWidth <= 0 || renderHeight <= 0)
+        return indices;
+
+    // Map Qt widget-space selection to the VTK framebuffer space.
+    const double scaleX = static_cast<double>(renderWidth) / static_cast<double>(widgetWidth);
+    const double scaleY = static_cast<double>(renderHeight) / static_cast<double>(widgetHeight);
+    QRectF rectPx(
+        rect.left() * scaleX,
+        rect.top() * scaleY,
+        rect.width() * scaleX,
+        rect.height() * scaleY);
+    rectPx = rectPx.normalized();
+    rectPx.adjust(-2.0, -2.0, 2.0, 2.0); // small tolerance near the border
+
+    for (const SeedRenderData &seed : m_seedRenderData)
+    {
+        m_renderer->SetWorldPoint(
+            static_cast<double>(seed.x),
+            static_cast<double>(seed.y),
+            static_cast<double>(seed.z),
+            1.0);
+        m_renderer->WorldToDisplay();
+        double displayPoint[3] = {0.0, 0.0, 0.0};
+        m_renderer->GetDisplayPoint(displayPoint);
+
+        // VTK display origin is bottom-left; Qt selection origin is top-left.
+        const double xPx = displayPoint[0];
+        const double yTopPx = static_cast<double>(renderHeight - 1) - displayPoint[1];
+        if (rectPx.contains(QPointF(xPx, yTopPx)) && seed.seedIndex >= 0)
+            indices.push_back(seed.seedIndex);
+    }
+
+    return indices;
 }
 
 void Mask3DView::rebuildLookupTable()
