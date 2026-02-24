@@ -19,6 +19,7 @@
 #include <QGridLayout>
 #include <QSizePolicy>
 #include <QApplication>
+#include <QClipboard>
 #include <QCursor>
 #include <QPushButton>
 #include <QFileDialog>
@@ -29,6 +30,7 @@
 #include <QPainter>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QTabWidget>
 #include <QGroupBox>
 #include <QCheckBox>
@@ -42,6 +44,7 @@
 #include <QToolButton>
 #include <QSplitter>
 #include <QListWidget>
+#include <QMenu>
 #include <QTreeWidget>
 
 #include <cstdint>
@@ -60,6 +63,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QProcessEnvironment>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTextStream>
 #include <QVector>
 #if defined(ROIFT_HAS_QT_SVG)
@@ -82,7 +88,9 @@ enum class NiftiButtonIcon
     AddCsv,
     ExportCsv,
     Remove,
-    RemoveAll
+    RemoveAll,
+    Load,
+    Refresh
 };
 
 QIcon makeFallbackButtonIcon(NiftiButtonIcon type, const QSize &size)
@@ -139,6 +147,21 @@ QIcon makeFallbackButtonIcon(NiftiButtonIcon type, const QSize &size)
             painter.drawLine(QPointF(0.34 * w, 0.34 * h), QPointF(0.66 * w, 0.66 * h));
             painter.drawLine(QPointF(0.66 * w, 0.34 * h), QPointF(0.34 * w, 0.66 * h));
             break;
+        case NiftiButtonIcon::Load:
+        {
+            painter.drawRoundedRect(QRectF(0.14 * w, 0.26 * h, 0.72 * w, 0.50 * h), 1.2, 1.2);
+            painter.drawLine(QPointF(0.50 * w, 0.18 * h), QPointF(0.50 * w, 0.56 * h));
+            painter.drawLine(QPointF(0.38 * w, 0.44 * h), QPointF(0.50 * w, 0.56 * h));
+            painter.drawLine(QPointF(0.62 * w, 0.44 * h), QPointF(0.50 * w, 0.56 * h));
+            break;
+        }
+        case NiftiButtonIcon::Refresh:
+        {
+            painter.drawArc(QRectF(0.18 * w, 0.18 * h, 0.64 * w, 0.64 * h), 35 * 16, 285 * 16);
+            painter.drawLine(QPointF(0.77 * w, 0.27 * h), QPointF(0.86 * w, 0.32 * h));
+            painter.drawLine(QPointF(0.77 * w, 0.27 * h), QPointF(0.79 * w, 0.37 * h));
+            break;
+        }
         }
 
         return pixmap;
@@ -231,6 +254,21 @@ constexpr const char *kRemoveAllIconSvg = R"svg(
 </svg>
 )svg";
 
+constexpr const char *kLoadIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M4.8 17.8V8.8C4.8 8.36 5.16 8 5.6 8H9.2L10.5 9.4H18.4C18.84 9.4 19.2 9.76 19.2 10.2V17.8C19.2 18.24 18.84 18.6 18.4 18.6H5.6C5.16 18.6 4.8 18.24 4.8 17.8Z"
+        stroke="#d8d8d8" stroke-width="1.35" stroke-linejoin="round"/>
+  <path d="M12 11.1V16.1M10 14.1L12 16.1L14 14.1" stroke="#d8d8d8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+)svg";
+
+constexpr const char *kRefreshIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M18.8 8.8A7 7 0 1 0 19 14.4" stroke="#d8d8d8" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M18.8 5.2V9.6H14.4" stroke="#d8d8d8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+)svg";
+
 QString normalizeCsvCell(QString value)
 {
     value = value.trimmed();
@@ -294,13 +332,7 @@ bool isNiftiPathCell(const QString &value)
 bool isNiftiMaskFilenameCandidate(const QString &fileName)
 {
     const QString lower = fileName.trimmed().toLower();
-    if (!(lower.endsWith(".nii") || lower.endsWith(".nii.gz")))
-        return false;
-
-    return lower.startsWith("left_lung") ||
-           lower.startsWith("right_lung") ||
-           lower.startsWith("trachea") ||
-           lower.startsWith("ribs");
+    return lower.endsWith(".nii.gz");
 }
 
 bool isSeedFilenameCandidate(const QString &fileName)
@@ -341,6 +373,174 @@ int chooseNiftiColumn(const QStringList &headers, const std::vector<int> &niftiC
 
     return selected;
 }
+
+QString findPathByAscending(const QString &startDir, const QString &relativePath, int maxLevels = 12)
+{
+    QDir dir(startDir);
+    if (!dir.exists())
+        return {};
+
+    for (int level = 0; level <= maxLevels; ++level)
+    {
+        const QString candidate = QDir::cleanPath(dir.filePath(relativePath));
+        if (QFileInfo::exists(candidate))
+            return QFileInfo(candidate).absoluteFilePath();
+        if (!dir.cdUp())
+            break;
+    }
+
+    return {};
+}
+
+QString resolveSuperResolutionScriptPath()
+{
+    const QString envPath = qEnvironmentVariable("ROIFT_SR_SCRIPT").trimmed();
+    if (!envPath.isEmpty())
+    {
+        const QString absPath = QFileInfo(envPath).absoluteFilePath();
+        if (QFileInfo::exists(absPath))
+            return absPath;
+    }
+
+    const QString relScript = QStringLiteral("src/super_resolution/super_resolve_nifti.py");
+
+    const QString fromCwd = findPathByAscending(QDir::currentPath(), relScript);
+    if (!fromCwd.isEmpty())
+        return fromCwd;
+
+    const QString fromAppDir = findPathByAscending(QCoreApplication::applicationDirPath(), relScript);
+    if (!fromAppDir.isEmpty())
+        return fromAppDir;
+
+    return {};
+}
+
+QString resolveSuperResolutionModelPath(const QString &scriptPath)
+{
+    const QString envPath = qEnvironmentVariable("ROIFT_SR_MODEL").trimmed();
+    if (!envPath.isEmpty())
+    {
+        const QString absPath = QFileInfo(envPath).absoluteFilePath();
+        if (QFileInfo::exists(absPath))
+            return absPath;
+    }
+
+    if (!scriptPath.isEmpty())
+    {
+        const QFileInfo scriptInfo(scriptPath);
+        const QString candidate = QDir(scriptInfo.absolutePath()).filePath("weights/RealESRGAN_x2plus.pth");
+        if (QFileInfo::exists(candidate))
+            return QFileInfo(candidate).absoluteFilePath();
+    }
+
+    const QString relModel = QStringLiteral("src/super_resolution/weights/RealESRGAN_x2plus.pth");
+    const QString fromCwd = findPathByAscending(QDir::currentPath(), relModel);
+    if (!fromCwd.isEmpty())
+        return fromCwd;
+
+    const QString fromAppDir = findPathByAscending(QCoreApplication::applicationDirPath(), relModel);
+    if (!fromAppDir.isEmpty())
+        return fromAppDir;
+
+    return {};
+}
+
+QString resolveMaskPostprocessScriptPath()
+{
+    const QString envPath = qEnvironmentVariable("ROIFT_MASK_PP_SCRIPT").trimmed();
+    if (!envPath.isEmpty())
+    {
+        const QString absPath = QFileInfo(envPath).absoluteFilePath();
+        if (QFileInfo::exists(absPath))
+            return absPath;
+    }
+
+    const QString relScript = QStringLiteral("src/seed_gen/ribs_segmentation/post_processing/postprocess_mask.py");
+
+    const QString fromCwd = findPathByAscending(QDir::currentPath(), relScript);
+    if (!fromCwd.isEmpty())
+        return fromCwd;
+
+    const QString fromAppDir = findPathByAscending(QCoreApplication::applicationDirPath(), relScript);
+    if (!fromAppDir.isEmpty())
+        return fromAppDir;
+
+    return {};
+}
+
+bool resolvePythonCommand(QString *program, QStringList *prefixArgs)
+{
+    if (!program || !prefixArgs)
+        return false;
+
+    prefixArgs->clear();
+
+    const QString envPython = qEnvironmentVariable("ROIFT_PYTHON").trimmed();
+    if (!envPython.isEmpty())
+    {
+        const QString envExec = QStandardPaths::findExecutable(envPython);
+        if (!envExec.isEmpty())
+        {
+            *program = envExec;
+            return true;
+        }
+        if (QFileInfo::exists(envPython))
+        {
+            *program = QFileInfo(envPython).absoluteFilePath();
+            return true;
+        }
+    }
+
+#if defined(Q_OS_WIN)
+    const QStringList pythonNames = {"python", "python3"};
+#else
+    const QStringList pythonNames = {"python3", "python"};
+#endif
+    for (const QString &name : pythonNames)
+    {
+        const QString execPath = QStandardPaths::findExecutable(name);
+        if (!execPath.isEmpty())
+        {
+            *program = execPath;
+            return true;
+        }
+    }
+
+#if defined(Q_OS_WIN)
+    const QString pyLauncher = QStandardPaths::findExecutable("py");
+    if (!pyLauncher.isEmpty())
+    {
+        *program = pyLauncher;
+        prefixArgs->push_back("-3");
+        return true;
+    }
+#endif
+
+    return false;
+}
+
+QString resolveProjectScriptPath(const QString &relativePath)
+{
+    const QString fromCwd = findPathByAscending(QDir::currentPath(), relativePath);
+    if (!fromCwd.isEmpty())
+        return fromCwd;
+
+    const QString fromAppDir = findPathByAscending(QCoreApplication::applicationDirPath(), relativePath);
+    if (!fromAppDir.isEmpty())
+        return fromAppDir;
+
+    return {};
+}
+
+QString stripNiftiSuffix(const QString &fileName)
+{
+    QString baseName = fileName;
+    if (baseName.endsWith(".nii.gz", Qt::CaseInsensitive))
+        baseName.chop(7);
+    else if (baseName.endsWith(".nii", Qt::CaseInsensitive))
+        baseName.chop(4);
+    return baseName;
+}
 } // namespace
 
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
@@ -362,7 +562,9 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
             m_images.push_back(imgData);
 
             std::string filename = std::filesystem::path(niftiPath).filename().string();
-            m_niftiList->addItem(QString::fromStdString(filename));
+            QListWidgetItem *niftiItem = new QListWidgetItem(QString::fromStdString(filename));
+            niftiItem->setData(Qt::UserRole, QFileInfo(QString::fromStdString(niftiPath)).absoluteFilePath());
+            m_niftiList->addItem(niftiItem);
             m_niftiList->setCurrentRow(0);
             m_currentImageIndex = 0;
 
@@ -373,6 +575,9 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
                 m_maskData.clear();
                 m_mask3DDirty = true;
             }
+            m_maskSpacingX = m_image.getSpacingX();
+            m_maskSpacingY = m_image.getSpacingY();
+            m_maskSpacingZ = m_image.getSpacingZ();
             // Update slider ranges
             m_axialSlider->setRange(0, static_cast<int>(m_image.getSizeZ()) - 1);
             m_axialSlider->setValue(static_cast<int>(m_image.getSizeZ()) / 2);
@@ -413,6 +618,57 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
 }
 
 ManualSeedSelector::~ManualSeedSelector() = default;
+
+bool ManualSeedSelector::applyMaskFromPath(const std::string &path)
+{
+    const bool ok = loadMaskFromFile(path);
+    if (!ok)
+        return false;
+
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        const std::string absolutePath =
+            QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath()).toStdString();
+        auto &maskPaths = m_images[m_currentImageIndex].maskPaths;
+        if (std::find(maskPaths.begin(), maskPaths.end(), absolutePath) == maskPaths.end())
+            maskPaths.push_back(absolutePath);
+    }
+
+    refreshAssociatedFilesForCurrentImage();
+    updateViews();
+    return true;
+}
+
+void ManualSeedSelector::refreshAssociatedFilesForCurrentImage()
+{
+    if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
+    {
+        updateMaskSeedLists();
+        return;
+    }
+
+    autoDetectAssociatedFilesForImage(m_currentImageIndex);
+    updateMaskSeedLists();
+}
+
+int ManualSeedSelector::addImagesFromPaths(const QStringList &paths)
+{
+    int duplicateCount = 0;
+    int missingCount = 0;
+    const int added = addImagesToList(paths, &duplicateCount, &missingCount);
+
+    if (m_statusLabel)
+    {
+        QString status = QString("Added %1 image(s)").arg(added);
+        if (duplicateCount > 0)
+            status += QString(", %1 duplicate(s) skipped").arg(duplicateCount);
+        if (missingCount > 0)
+            status += QString(", %1 missing path(s) skipped").arg(missingCount);
+        m_statusLabel->setText(status);
+    }
+
+    return added;
+}
 
 void ManualSeedSelector::setupUi()
 {
@@ -632,6 +888,22 @@ void ManualSeedSelector::setupUi()
     niftiLayout->addWidget(btnSave);
 
     filesLayout->addWidget(niftiGroup);
+
+    QGroupBox *srGroup = new QGroupBox("Super Resolution");
+    QHBoxLayout *srLayout = new QHBoxLayout(srGroup);
+    srLayout->setSpacing(8);
+    QPushButton *btnRunSuperResolution = new QPushButton("Run SR");
+    btnRunSuperResolution->setToolTip("Run super resolution on the current image using super_resolve_nifti.py");
+    connect(btnRunSuperResolution, &QPushButton::clicked, this, &ManualSeedSelector::runSuperResolution);
+    srLayout->addWidget(btnRunSuperResolution);
+
+    QPushButton *btnPostprocessMask = new QPushButton("Postprocess Mask");
+    btnPostprocessMask->setToolTip("Post-process the selected mask to remove isolated artifacts");
+    connect(btnPostprocessMask, &QPushButton::clicked, this, &ManualSeedSelector::runMaskPostProcessing);
+    srLayout->addWidget(btnPostprocessMask);
+
+    filesLayout->addWidget(srGroup);
+
     filesLayout->addStretch();
 
     m_ribbonTabs->addTab(filesTab, "Files");
@@ -738,6 +1010,18 @@ void ManualSeedSelector::setupUi()
             { m_seedBrushRadius = r; });
     seedBrushLayout->addWidget(m_seedBrushSpin, 0, 1);
 
+    seedBrushLayout->addWidget(new QLabel("Display spacing:"), 1, 0);
+    m_seedDisplaySpacingSpin = new QSpinBox();
+    m_seedDisplaySpacingSpin->setRange(1, 20);
+    m_seedDisplaySpacingSpin->setValue(m_seedDisplayMinPixelSpacing);
+    m_seedDisplaySpacingSpin->setSuffix(" px");
+    m_seedDisplaySpacingSpin->setToolTip("Visual declutter only. 1 px shows all seeds.");
+    connect(m_seedDisplaySpacingSpin, QOverload<int>::of(&QSpinBox::valueChanged), [this](int spacing)
+            {
+        m_seedDisplayMinPixelSpacing = std::max(1, spacing);
+        updateViews(); });
+    seedBrushLayout->addWidget(m_seedDisplaySpacingSpin, 1, 1);
+
     seedsLayout->addWidget(seedBrushGroup);
 
     // File operations group
@@ -763,8 +1047,22 @@ void ManualSeedSelector::setupUi()
     seedFileLayout->addWidget(btnSeedClear);
 
     seedsLayout->addWidget(seedFileGroup);
-    seedsLayout->addStretch();
 
+    QGroupBox *seedGenerationGroup = new QGroupBox("Generate Seeds");
+    QHBoxLayout *seedGenerationLayout = new QHBoxLayout(seedGenerationGroup);
+    seedGenerationLayout->setSpacing(8);
+    QPushButton *btnRunLunasSeeds = new QPushButton("LUNAS");
+    btnRunLunasSeeds->setToolTip("Run src/lunas.py with --only-seeds");
+    connect(btnRunLunasSeeds, &QPushButton::clicked, this, &ManualSeedSelector::runLunasSeedGeneration);
+    seedGenerationLayout->addWidget(btnRunLunasSeeds);
+
+    QPushButton *btnRunRibsSeeds = new QPushButton("Ribs");
+    btnRunRibsSeeds->setToolTip("Run src/segment_ribs.py with --only-seeds");
+    connect(btnRunRibsSeeds, &QPushButton::clicked, this, &ManualSeedSelector::runRibsSeedGeneration);
+    seedGenerationLayout->addWidget(btnRunRibsSeeds);
+    seedsLayout->addWidget(seedGenerationGroup);
+
+    seedsLayout->addStretch();
     m_seedTabIndex = m_ribbonTabs->addTab(seedsTab, "Seeds");
 
     // --- TAB 3: MASK ---
@@ -987,7 +1285,9 @@ void ManualSeedSelector::setupUi()
         }
     )");
     connect(btnRunSegment, &QPushButton::clicked, [this]()
-            { SegmentationRunner::runSegmentation(this); });
+            {
+        SegmentationRunner::runSegmentation(this);
+        refreshAssociatedFilesForCurrentImage(); });
     runLayout->addWidget(btnRunSegment);
 
     segLayout->addWidget(runGroup);
@@ -1037,6 +1337,23 @@ void ManualSeedSelector::setupUi()
     m_coronalView->setMinimumSize(320, 280);
     m_mask3DView->setMinimumSize(320, 240);
 
+    const QString toggleCheckStyle = "QCheckBox { background-color: rgba(0, 0, 0, 150); padding: 2px 6px; border-radius: 4px; }";
+    auto createToggleCheck = [&toggleCheckStyle](const QString &text, const QString &tooltip, bool checked) -> QCheckBox *
+    {
+        QCheckBox *check = new QCheckBox(text);
+        check->setToolTip(tooltip);
+        check->setChecked(checked);
+        check->setStyleSheet(toggleCheckStyle);
+        return check;
+    };
+
+    QCheckBox *axialMaskCheck = nullptr;
+    QCheckBox *axialSeedsCheck = nullptr;
+    QCheckBox *sagittalMaskCheck = nullptr;
+    QCheckBox *sagittalSeedsCheck = nullptr;
+    QCheckBox *coronalMaskCheck = nullptr;
+    QCheckBox *coronalSeedsCheck = nullptr;
+
     auto createSlicePanel = [](const QString &title, OrthogonalView *view, QLabel *label, QSlider *slider) -> QWidget *
     {
         QWidget *panel = new QWidget();
@@ -1058,19 +1375,65 @@ void ManualSeedSelector::setupUi()
         return panel;
     };
 
+    auto addSliceToggleRow = [&](QWidget *panel, const QString &viewName,
+                                 bool maskEnabled, bool seedsEnabled,
+                                 QCheckBox **maskOut, QCheckBox **seedsOut)
+    {
+        auto *panelLayout = qobject_cast<QVBoxLayout *>(panel->layout());
+        if (!panelLayout)
+            return;
+
+        QWidget *toggleRow = new QWidget(panel);
+        QHBoxLayout *toggleRowLayout = new QHBoxLayout(toggleRow);
+        toggleRowLayout->setContentsMargins(0, 0, 0, 0);
+        toggleRowLayout->setSpacing(6);
+        toggleRowLayout->addStretch();
+
+        QCheckBox *showMask = createToggleCheck("Show Mask", QString("Show mask overlay in %1 view").arg(viewName), maskEnabled);
+        QCheckBox *showSeeds = createToggleCheck("Show Seeds", QString("Show seeds in %1 view").arg(viewName), seedsEnabled);
+
+        toggleRowLayout->addWidget(showMask);
+        toggleRowLayout->addWidget(showSeeds);
+
+        panelLayout->addWidget(toggleRow);
+        if (maskOut)
+            *maskOut = showMask;
+        if (seedsOut)
+            *seedsOut = showSeeds;
+    };
+
     QWidget *axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider);
     QWidget *sagittalPanel = createSlicePanel("Sagittal", m_sagittalView, m_sagittalLabel, m_sagittalSlider);
     QWidget *coronalPanel = createSlicePanel("Coronal", m_coronalView, m_coronalLabel, m_coronalSlider);
+    addSliceToggleRow(axialPanel, "axial", m_enableAxialMask, m_enableAxialSeeds,
+                      &axialMaskCheck, &axialSeedsCheck);
+    addSliceToggleRow(sagittalPanel, "sagittal", m_enableSagittalMask, m_enableSagittalSeeds,
+                      &sagittalMaskCheck, &sagittalSeedsCheck);
+    addSliceToggleRow(coronalPanel, "coronal", m_enableCoronalMask, m_enableCoronalSeeds,
+                      &coronalMaskCheck, &coronalSeedsCheck);
+
+    m_showMaskCheck = axialMaskCheck;
+
     QWidget *renderPanel = new QWidget();
     QGridLayout *renderPanelLayout = new QGridLayout(renderPanel);
     renderPanelLayout->setContentsMargins(0, 0, 0, 0);
     renderPanelLayout->setSpacing(0);
     renderPanelLayout->addWidget(m_mask3DView, 0, 0);
+    QWidget *renderTogglePanel = new QWidget(renderPanel);
+    QHBoxLayout *renderToggleLayout = new QHBoxLayout(renderTogglePanel);
+    renderToggleLayout->setContentsMargins(0, 0, 0, 0);
+    renderToggleLayout->setSpacing(6);
+
     m_show3DCheck = new QCheckBox("Show 3D");
-    m_show3DCheck->setToolTip("Enable 3D visualization for masks and seeds");
+    m_show3DCheck->setToolTip("Enable 3D mask visualization");
     m_show3DCheck->setChecked(false);
-    m_show3DCheck->setStyleSheet("QCheckBox { background-color: rgba(0, 0, 0, 150); padding: 2px 6px; border-radius: 4px; }");
-    renderPanelLayout->addWidget(m_show3DCheck, 0, 0, Qt::AlignRight | Qt::AlignBottom);
+    m_show3DCheck->setStyleSheet(toggleCheckStyle);
+    renderToggleLayout->addWidget(m_show3DCheck);
+
+    m_showSeedsCheck = createToggleCheck("Show Seeds", "Show seed points in 3D and slice views", true);
+    renderToggleLayout->addWidget(m_showSeedsCheck);
+
+    renderPanelLayout->addWidget(renderTogglePanel, 0, 0, Qt::AlignRight | Qt::AlignBottom);
 
     viewGrid->addWidget(axialPanel, 0, 0);
     viewGrid->addWidget(sagittalPanel, 0, 1);
@@ -1226,6 +1589,9 @@ void ManualSeedSelector::setupUi()
                 m_currentImageIndex = -1;
                 m_image = NiftiImage();
                 m_path.clear();
+                m_maskSpacingX = 1.0;
+                m_maskSpacingY = 1.0;
+                m_maskSpacingZ = 1.0;
                 updateMaskSeedLists();
                 updateViews();
             } else if (m_currentImageIndex > currentRow) {
@@ -1258,6 +1624,9 @@ void ManualSeedSelector::setupUi()
         m_path.clear();
         m_maskData.clear();
         m_seeds.clear();
+        m_maskSpacingX = 1.0;
+        m_maskSpacingY = 1.0;
+        m_maskSpacingZ = 1.0;
         m_mask3DDirty = true;
 
         m_axialSlider->setRange(0, 0);
@@ -1287,24 +1656,50 @@ void ManualSeedSelector::setupUi()
     connect(m_niftiList, &QListWidget::currentRowChanged, [this](int row)
             {
         if (row >= 0 && row < static_cast<int>(m_images.size())) {
-            m_currentImageIndex = row;
+            // Persist current slice positions before switching images.
+            if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size())) {
+                m_images[m_currentImageIndex].lastAxialSlice = m_axialSlider->value();
+                m_images[m_currentImageIndex].lastSagittalSlice = m_sagittalSlider->value();
+                m_images[m_currentImageIndex].lastCoronalSlice = m_coronalSlider->value();
+            }
+
             const std::string &path = m_images[row].imagePath;
             if (m_image.load(path)) {
+                m_currentImageIndex = row;
                 m_path = path;
                 autoDetectAssociatedFilesForImage(row);
                 
                 // Clear mask and seed data when switching images
                 m_maskData.clear();
                 m_seeds.clear();
+                m_maskSpacingX = m_image.getSpacingX();
+                m_maskSpacingY = m_image.getSpacingY();
+                m_maskSpacingZ = m_image.getSpacingZ();
                 m_mask3DDirty = true;
                 
-                // Update slider ranges
-                m_axialSlider->setRange(0, static_cast<int>(m_image.getSizeZ()) - 1);
-                m_axialSlider->setValue(static_cast<int>(m_image.getSizeZ()) / 2);
-                m_sagittalSlider->setRange(0, static_cast<int>(m_image.getSizeX()) - 1);
-                m_sagittalSlider->setValue(static_cast<int>(m_image.getSizeX()) / 2);
-                m_coronalSlider->setRange(0, static_cast<int>(m_image.getSizeY()) - 1);
-                m_coronalSlider->setValue(static_cast<int>(m_image.getSizeY()) / 2);
+                // Update slider ranges and restore last saved position for this image.
+                const int axialMax = std::max(0, static_cast<int>(m_image.getSizeZ()) - 1);
+                const int sagittalMax = std::max(0, static_cast<int>(m_image.getSizeX()) - 1);
+                const int coronalMax = std::max(0, static_cast<int>(m_image.getSizeY()) - 1);
+
+                m_axialSlider->setRange(0, axialMax);
+                m_sagittalSlider->setRange(0, sagittalMax);
+                m_coronalSlider->setRange(0, coronalMax);
+
+                int axialValue = m_images[row].lastAxialSlice;
+                int sagittalValue = m_images[row].lastSagittalSlice;
+                int coronalValue = m_images[row].lastCoronalSlice;
+
+                if (axialValue < 0)
+                    axialValue = axialMax / 2;
+                if (sagittalValue < 0)
+                    sagittalValue = sagittalMax / 2;
+                if (coronalValue < 0)
+                    coronalValue = coronalMax / 2;
+
+                m_axialSlider->setValue(std::min(std::max(axialValue, 0), axialMax));
+                m_sagittalSlider->setValue(std::min(std::max(sagittalValue, 0), sagittalMax));
+                m_coronalSlider->setValue(std::min(std::max(coronalValue, 0), coronalMax));
                 
                 // Window/level setup
                 float gmin = m_image.getGlobalMin();
@@ -1348,9 +1743,15 @@ void ManualSeedSelector::setupUi()
     m_maskList->setToolTip("Click to load mask - Colors indicate which image they belong to");
     maskListLayout->addWidget(m_maskList);
 
-    QPushButton *btnLoadMask = new QPushButton("Load Mask for Current Image");
-    btnLoadMask->setToolTip("Load a mask file and associate it with the current image");
-    connect(btnLoadMask, &QPushButton::clicked, [this]()
+    QHBoxLayout *maskButtonsLayout = new QHBoxLayout();
+    maskButtonsLayout->setContentsMargins(0, 3, 0, 0);
+    maskButtonsLayout->setSpacing(10);
+
+    QToolButton *btnLoadMask = new QToolButton();
+    btnLoadMask->setIcon(makeMonochromeIcon(kLoadIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Load, QSize(16, 16))));
+    btnLoadMask->setToolTip("Load masks for current image");
+    configureNiftiIconButton(btnLoadMask);
+    connect(btnLoadMask, &QToolButton::clicked, [this]()
             {
         if (m_currentImageIndex < 0) {
             QMessageBox::warning(this, "Load Mask", "Please select an image first.");
@@ -1361,8 +1762,24 @@ void ManualSeedSelector::setupUi()
             std::string path = f.toStdString();
             m_images[m_currentImageIndex].maskPaths.push_back(path);
         }
-        updateMaskSeedLists(); });
-    maskListLayout->addWidget(btnLoadMask);
+        refreshAssociatedFilesForCurrentImage(); });
+
+    QToolButton *btnRefreshMasks = new QToolButton();
+    btnRefreshMasks->setIcon(makeMonochromeIcon(kRefreshIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Refresh, QSize(16, 16))));
+    btnRefreshMasks->setToolTip("Refresh masks and seeds for current image");
+    configureNiftiIconButton(btnRefreshMasks);
+    connect(btnRefreshMasks, &QToolButton::clicked, [this]()
+            {
+        refreshAssociatedFilesForCurrentImage();
+        if (m_statusLabel)
+            m_statusLabel->setText("Refreshed masks and seeds for current image.");
+    });
+
+    maskButtonsLayout->addStretch(1);
+    maskButtonsLayout->addWidget(btnLoadMask);
+    maskButtonsLayout->addWidget(btnRefreshMasks);
+    maskButtonsLayout->addStretch(1);
+    maskListLayout->addLayout(maskButtonsLayout);
 
     // Connect item selection to load the mask
     connect(m_maskList, &QListWidget::itemClicked, [this](QListWidgetItem *item)
@@ -1395,9 +1812,15 @@ void ManualSeedSelector::setupUi()
     m_seedList->setToolTip("Click to load seeds - Colors indicate which image they belong to");
     seedListLayout->addWidget(m_seedList);
 
-    QPushButton *btnLoadSeeds = new QPushButton("Load Seeds for Current Image");
-    btnLoadSeeds->setToolTip("Load seed files and associate them with the current image");
-    connect(btnLoadSeeds, &QPushButton::clicked, [this]()
+    QHBoxLayout *seedButtonsLayout = new QHBoxLayout();
+    seedButtonsLayout->setContentsMargins(0, 3, 0, 0);
+    seedButtonsLayout->setSpacing(10);
+
+    QToolButton *btnLoadSeeds = new QToolButton();
+    btnLoadSeeds->setIcon(makeMonochromeIcon(kLoadIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Load, QSize(16, 16))));
+    btnLoadSeeds->setToolTip("Load seeds for current image");
+    configureNiftiIconButton(btnLoadSeeds);
+    connect(btnLoadSeeds, &QToolButton::clicked, [this]()
             {
         if (m_currentImageIndex < 0) {
             QMessageBox::warning(this, "Load Seeds", "Please select an image first.");
@@ -1408,8 +1831,24 @@ void ManualSeedSelector::setupUi()
             std::string path = f.toStdString();
             m_images[m_currentImageIndex].seedPaths.push_back(path);
         }
-        updateMaskSeedLists(); });
-    seedListLayout->addWidget(btnLoadSeeds);
+        refreshAssociatedFilesForCurrentImage(); });
+
+    QToolButton *btnRefreshSeeds = new QToolButton();
+    btnRefreshSeeds->setIcon(makeMonochromeIcon(kRefreshIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Refresh, QSize(16, 16))));
+    btnRefreshSeeds->setToolTip("Refresh masks and seeds for current image");
+    configureNiftiIconButton(btnRefreshSeeds);
+    connect(btnRefreshSeeds, &QToolButton::clicked, [this]()
+            {
+        refreshAssociatedFilesForCurrentImage();
+        if (m_statusLabel)
+            m_statusLabel->setText("Refreshed masks and seeds for current image.");
+    });
+
+    seedButtonsLayout->addStretch(1);
+    seedButtonsLayout->addWidget(btnLoadSeeds);
+    seedButtonsLayout->addWidget(btnRefreshSeeds);
+    seedButtonsLayout->addStretch(1);
+    seedListLayout->addLayout(seedButtonsLayout);
 
     // Connect item selection to load the seeds
     connect(m_seedList, &QListWidget::itemClicked, [this](QListWidgetItem *item)
@@ -1427,6 +1866,76 @@ void ManualSeedSelector::setupUi()
                 break;
             }
         } });
+
+    auto installCopyPathContextMenu = [this](QListWidget *listWidget, auto resolvePath)
+    {
+        if (!listWidget)
+            return;
+        listWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(listWidget, &QListWidget::customContextMenuRequested, this, [this, listWidget, resolvePath](const QPoint &pos)
+                {
+            QListWidgetItem *item = listWidget->itemAt(pos);
+            if (!item)
+                return;
+
+            QString resolvedPath = resolvePath(item).trimmed();
+            if (resolvedPath.isEmpty())
+                return;
+
+            QMenu menu(this);
+            QAction *copyPathAction = menu.addAction("Copy Path");
+            QAction *selectedAction = menu.exec(listWidget->viewport()->mapToGlobal(pos));
+            if (selectedAction != copyPathAction)
+                return;
+
+            QApplication::clipboard()->setText(resolvedPath);
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Copied path: %1").arg(resolvedPath));
+        });
+    };
+
+    installCopyPathContextMenu(m_niftiList, [this](QListWidgetItem *item) -> QString
+                               {
+        if (!item)
+            return {};
+        QString path = item->data(Qt::UserRole).toString().trimmed();
+        if (!path.isEmpty())
+            return QFileInfo(path).absoluteFilePath();
+
+        const int row = m_niftiList ? m_niftiList->row(item) : -1;
+        if (row >= 0 && row < static_cast<int>(m_images.size()))
+            return QFileInfo(QString::fromStdString(m_images[static_cast<size_t>(row)].imagePath)).absoluteFilePath();
+        return {}; });
+
+    installCopyPathContextMenu(m_maskList, [this](QListWidgetItem *item) -> QString
+                               {
+        if (!item)
+            return {};
+        QString path = item->data(Qt::UserRole).toString().trimmed();
+        if (!path.isEmpty())
+            return QFileInfo(path).absoluteFilePath();
+
+        if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()) || !m_maskList)
+            return {};
+        const int row = m_maskList->row(item);
+        if (row < 0 || row >= static_cast<int>(m_images[m_currentImageIndex].maskPaths.size()))
+            return {};
+        return QFileInfo(QString::fromStdString(m_images[m_currentImageIndex].maskPaths[static_cast<size_t>(row)])).absoluteFilePath(); });
+
+    installCopyPathContextMenu(m_seedList, [this](QListWidgetItem *item) -> QString
+                               {
+        if (!item)
+            return {};
+        QString path = item->data(Qt::UserRole).toString().trimmed();
+        if (!path.isEmpty())
+            return QFileInfo(path).absoluteFilePath();
+
+        if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()) || !m_seedList)
+            return {};
+        const int row = m_seedList->row(item);
+        if (row < 0 || row >= static_cast<int>(m_images[m_currentImageIndex].seedPaths.size()))
+            return {};
+        return QFileInfo(QString::fromStdString(m_images[m_currentImageIndex].seedPaths[static_cast<size_t>(row)])).absoluteFilePath(); });
 
     sidebarSplitter->addWidget(seedListGroup);
     sidebarSplitter->setStretchFactor(0, 0);
@@ -1501,11 +2010,65 @@ void ManualSeedSelector::setupUi()
     connect(m_show3DCheck, &QCheckBox::toggled, [this](bool checked)
             {
         m_enable3DView = checked;
+        if (m_mask3DView)
+            m_mask3DView->setMaskVisible(m_enable3DView);
         if (checked && m_mask3DDirty)
         {
             update3DMaskView();
             m_mask3DDirty = false;
-        } });
+        }
+        updateViews(); });
+
+    if (axialMaskCheck)
+    {
+        connect(axialMaskCheck, &QCheckBox::toggled, this, [this](bool checked)
+                {
+            m_enableAxialMask = checked;
+            updateViews(); });
+    }
+    if (sagittalMaskCheck)
+    {
+        connect(sagittalMaskCheck, &QCheckBox::toggled, this, [this](bool checked)
+                {
+            m_enableSagittalMask = checked;
+            updateViews(); });
+    }
+    if (coronalMaskCheck)
+    {
+        connect(coronalMaskCheck, &QCheckBox::toggled, this, [this](bool checked)
+                {
+            m_enableCoronalMask = checked;
+            updateViews(); });
+    }
+
+    if (axialSeedsCheck)
+    {
+        connect(axialSeedsCheck, &QCheckBox::toggled, this, [this](bool checked)
+                {
+            m_enableAxialSeeds = checked;
+            updateViews(); });
+    }
+    if (sagittalSeedsCheck)
+    {
+        connect(sagittalSeedsCheck, &QCheckBox::toggled, this, [this](bool checked)
+                {
+            m_enableSagittalSeeds = checked;
+            updateViews(); });
+    }
+    if (coronalSeedsCheck)
+    {
+        connect(coronalSeedsCheck, &QCheckBox::toggled, this, [this](bool checked)
+                {
+            m_enableCoronalSeeds = checked;
+            updateViews(); });
+    }
+
+    connect(m_showSeedsCheck, &QCheckBox::toggled, this, [this](bool checked)
+            {
+        m_enable3DSeeds = checked;
+        if (m_mask3DView)
+            m_mask3DView->setSeedsVisible(m_enable3DSeeds);
+        updateViews(); });
 
     // Mouse events for views
     connect(m_axialView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
@@ -1683,6 +2246,698 @@ void ManualSeedSelector::openImagesFromCsv()
         QMessageBox::information(this, "Open CSV", summary);
 }
 
+void ManualSeedSelector::runLunasSeedGeneration()
+{
+    if (!hasImage() || m_path.empty())
+    {
+        QMessageBox::warning(this, "Generate Seeds", "Please load an image before running LUNAS.");
+        return;
+    }
+
+    const QString inputPath = QString::fromStdString(m_path);
+    if (!QFileInfo::exists(inputPath))
+    {
+        QMessageBox::warning(this, "Generate Seeds", "The current image path does not exist on disk.");
+        return;
+    }
+
+    const QString scriptPath = resolveProjectScriptPath(QStringLiteral("src/lunas.py"));
+    if (scriptPath.isEmpty())
+    {
+        QMessageBox::critical(this, "Generate Seeds", "Could not locate src/lunas.py.");
+        return;
+    }
+
+    QString pythonProgram;
+    QStringList pythonPrefixArgs;
+    if (!resolvePythonCommand(&pythonProgram, &pythonPrefixArgs))
+    {
+        QMessageBox::critical(this, "Generate Seeds", "Could not find a Python interpreter. Set ROIFT_PYTHON if needed.");
+        return;
+    }
+
+    const QFileInfo inputInfo(inputPath);
+    const QString patientName = stripNiftiSuffix(inputInfo.fileName());
+    QDir outputRootDir = inputInfo.absoluteDir();
+    if (QString::compare(outputRootDir.dirName(), patientName, Qt::CaseInsensitive) == 0)
+    {
+        QDir parentDir = outputRootDir;
+        if (parentDir.cdUp())
+            outputRootDir = parentDir;
+    }
+    const QString outDir = outputRootDir.absolutePath();
+
+    const QFileInfo scriptInfo(scriptPath);
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    proc.setWorkingDirectory(scriptInfo.absolutePath());
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString scriptDir = scriptInfo.absolutePath();
+    const QString pythonPath = env.value("PYTHONPATH");
+    if (pythonPath.isEmpty())
+        env.insert("PYTHONPATH", scriptDir);
+    else
+        env.insert("PYTHONPATH", scriptDir + QDir::listSeparator() + pythonPath);
+    proc.setProcessEnvironment(env);
+
+    QStringList args = pythonPrefixArgs;
+    args << scriptPath
+         << "--patient"
+         << inputPath
+         << "--output"
+         << outDir
+         << "--only-seeds";
+
+    QProgressDialog progress("Running LUNAS seed generation...", "Cancel", 0, 0, this);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.show();
+
+    proc.start(pythonProgram, args);
+    if (!proc.waitForStarted(10000))
+    {
+        progress.close();
+        QMessageBox::critical(this, "Generate Seeds", QString("Failed to start LUNAS process.\n%1").arg(proc.errorString()));
+        return;
+    }
+
+    while (!proc.waitForFinished(200))
+    {
+        QCoreApplication::processEvents();
+        if (progress.wasCanceled())
+        {
+            proc.kill();
+            proc.waitForFinished(3000);
+            progress.close();
+            QMessageBox::warning(this, "Generate Seeds", "LUNAS seed generation was canceled.");
+            return;
+        }
+    }
+    progress.close();
+
+    const QString procStdout = proc.readAllStandardOutput();
+    const QString procStderr = proc.readAllStandardError();
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+    {
+        QMessageBox::critical(
+            this,
+            "Generate Seeds",
+            QString("LUNAS failed (exit code %1).\n\nSTDERR:\n%2").arg(proc.exitCode()).arg(procStderr));
+        if (!procStdout.isEmpty())
+            std::cerr << "LUNAS STDOUT:\n"
+                      << procStdout.toStdString() << "\n";
+        if (!procStderr.isEmpty())
+            std::cerr << "LUNAS STDERR:\n"
+                      << procStderr.toStdString() << "\n";
+        return;
+    }
+
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        const QString patientOutDir = QDir(outDir).filePath(patientName);
+        const QStringList generatedSeeds = {
+            QDir(patientOutDir).filePath(QString("left_lung_%1.txt").arg(patientName)),
+            QDir(patientOutDir).filePath(QString("right_lung_%1.txt").arg(patientName)),
+            QDir(patientOutDir).filePath(QString("trachea_%1.txt").arg(patientName)),
+        };
+
+        for (const QString &seedPath : generatedSeeds)
+        {
+            if (!QFileInfo::exists(seedPath))
+                continue;
+            const std::string asStd = seedPath.toStdString();
+            auto &seedPaths = m_images[m_currentImageIndex].seedPaths;
+            if (std::find(seedPaths.begin(), seedPaths.end(), asStd) == seedPaths.end())
+                seedPaths.push_back(asStd);
+        }
+        updateMaskSeedLists();
+    }
+
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("LUNAS seeds generated at: %1").arg(outDir));
+    QMessageBox::information(this, "Generate Seeds", "LUNAS seed generation finished successfully.");
+}
+
+void ManualSeedSelector::runRibsSeedGeneration()
+{
+    if (!hasImage() || m_path.empty())
+    {
+        QMessageBox::warning(this, "Generate Seeds", "Please load an image before running segment_ribs.");
+        return;
+    }
+
+    const QString inputPath = QString::fromStdString(m_path);
+    if (!QFileInfo::exists(inputPath))
+    {
+        QMessageBox::warning(this, "Generate Seeds", "The current image path does not exist on disk.");
+        return;
+    }
+
+    const QString scriptPath = resolveProjectScriptPath(QStringLiteral("src/segment_ribs.py"));
+    if (scriptPath.isEmpty())
+    {
+        QMessageBox::critical(this, "Generate Seeds", "Could not locate src/segment_ribs.py.");
+        return;
+    }
+
+    QString pythonProgram;
+    QStringList pythonPrefixArgs;
+    if (!resolvePythonCommand(&pythonProgram, &pythonPrefixArgs))
+    {
+        QMessageBox::critical(this, "Generate Seeds", "Could not find a Python interpreter. Set ROIFT_PYTHON if needed.");
+        return;
+    }
+
+    const QFileInfo inputInfo(inputPath);
+    const QString patientName = stripNiftiSuffix(inputInfo.fileName());
+    const QString segmentedDir = inputInfo.absolutePath();
+
+    const QDir segDir(segmentedDir);
+    const QStringList leftCandidates = segDir.entryList(
+        QStringList() << QString("left_lung_%1.nii*").arg(patientName) << "left_lung_*.nii*",
+        QDir::Files,
+        QDir::Name);
+    const QStringList rightCandidates = segDir.entryList(
+        QStringList() << QString("right_lung_%1.nii*").arg(patientName) << "right_lung_*.nii*",
+        QDir::Files,
+        QDir::Name);
+
+    if (leftCandidates.isEmpty() || rightCandidates.isEmpty())
+    {
+        QString missing;
+        if (leftCandidates.isEmpty())
+            missing += "left_lung_* ";
+        if (rightCandidates.isEmpty())
+            missing += "right_lung_*";
+        QMessageBox::warning(
+            this,
+            "Generate Seeds",
+            QString("Segmented lungs not found in the image folder.\nMissing pattern(s): %1\nFolder:\n%2")
+                .arg(missing.trimmed())
+                .arg(segmentedDir));
+        return;
+    }
+
+    const QString outDir = segmentedDir;
+
+    const QFileInfo scriptInfo(scriptPath);
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    proc.setWorkingDirectory(scriptInfo.absolutePath());
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString scriptDir = scriptInfo.absolutePath();
+    const QString pythonPath = env.value("PYTHONPATH");
+    if (pythonPath.isEmpty())
+        env.insert("PYTHONPATH", scriptDir);
+    else
+        env.insert("PYTHONPATH", scriptDir + QDir::listSeparator() + pythonPath);
+    env.insert("PYTHONUNBUFFERED", "1");
+    proc.setProcessEnvironment(env);
+
+    QStringList args = pythonPrefixArgs;
+    args << "-u"
+         << scriptPath
+         << "--patient-path"
+         << inputPath
+         << "--segmented-lung-path"
+         << segmentedDir
+         << "--output"
+         << outDir
+         << "--only-seeds";
+
+    QString procStdout;
+    QString procStderr;
+    auto flushProcessOutput = [&proc, &procStdout, &procStderr]()
+    {
+        const QByteArray outChunk = proc.readAllStandardOutput();
+        if (!outChunk.isEmpty())
+        {
+            procStdout += QString::fromLocal8Bit(outChunk);
+            std::cout.write(outChunk.constData(), outChunk.size());
+            std::cout.flush();
+        }
+
+        const QByteArray errChunk = proc.readAllStandardError();
+        if (!errChunk.isEmpty())
+        {
+            procStderr += QString::fromLocal8Bit(errChunk);
+            std::cerr.write(errChunk.constData(), errChunk.size());
+            std::cerr.flush();
+        }
+    };
+
+    QProgressDialog progress("Running ribs seed generation...", "Cancel", 0, 0, this);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.show();
+
+    proc.start(pythonProgram, args);
+    if (!proc.waitForStarted(10000))
+    {
+        progress.close();
+        QMessageBox::critical(this, "Generate Seeds", QString("Failed to start segment_ribs process.\n%1").arg(proc.errorString()));
+        return;
+    }
+
+    while (!proc.waitForFinished(200))
+    {
+        flushProcessOutput();
+        QCoreApplication::processEvents();
+        if (progress.wasCanceled())
+        {
+            proc.kill();
+            proc.waitForFinished(3000);
+            progress.close();
+            QMessageBox::warning(this, "Generate Seeds", "Ribs seed generation was canceled.");
+            return;
+        }
+    }
+    flushProcessOutput();
+    progress.close();
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+    {
+        QMessageBox::critical(
+            this,
+            "Generate Seeds",
+            QString("segment_ribs failed (exit code %1).\n\nSTDERR:\n%2").arg(proc.exitCode()).arg(procStderr));
+        if (!procStdout.isEmpty())
+            std::cerr << "segment_ribs STDOUT:\n"
+                      << procStdout.toStdString() << "\n";
+        if (!procStderr.isEmpty())
+            std::cerr << "segment_ribs STDERR:\n"
+                      << procStderr.toStdString() << "\n";
+        return;
+    }
+
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        const QStringList generatedSeeds = {
+            QDir(outDir).filePath(QString("ribs_%1.txt").arg(patientName)),
+            QDir(outDir).filePath(QString("outlier_ribs_%1.txt").arg(patientName)),
+        };
+
+        for (const QString &seedPath : generatedSeeds)
+        {
+            if (!QFileInfo::exists(seedPath))
+                continue;
+            const std::string asStd = seedPath.toStdString();
+            auto &seedPaths = m_images[m_currentImageIndex].seedPaths;
+            if (std::find(seedPaths.begin(), seedPaths.end(), asStd) == seedPaths.end())
+                seedPaths.push_back(asStd);
+        }
+        updateMaskSeedLists();
+    }
+
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Ribs seeds generated at: %1").arg(outDir));
+    QMessageBox::information(this, "Generate Seeds", "Ribs seed generation finished successfully.");
+}
+
+void ManualSeedSelector::runSuperResolution()
+{
+    if (!hasImage() || m_path.empty())
+    {
+        QMessageBox::warning(this, "Super Resolution", "Please load an image before running super resolution.");
+        return;
+    }
+
+    const QString inputPath = QString::fromStdString(m_path);
+    if (!QFileInfo::exists(inputPath))
+    {
+        QMessageBox::warning(this, "Super Resolution", "The current image path does not exist on disk.");
+        return;
+    }
+
+    QFileInfo inputInfo(inputPath);
+    QString baseName = inputInfo.fileName();
+    if (baseName.endsWith(".nii.gz", Qt::CaseInsensitive))
+        baseName.chop(7);
+    else if (baseName.endsWith(".nii", Qt::CaseInsensitive))
+        baseName.chop(4);
+    else
+        baseName = inputInfo.completeBaseName();
+
+    QString defaultOutput = QDir(inputInfo.absolutePath()).filePath(baseName + "_sr.nii.gz");
+    QString outQ = QFileDialog::getSaveFileName(
+        this,
+        "Save Super Resolution Output",
+        defaultOutput,
+        "NIfTI files (*.nii *.nii.gz);;All files (*)");
+
+    QCoreApplication::processEvents();
+    if (outQ.isEmpty())
+        return;
+    if (!(outQ.endsWith(".nii", Qt::CaseInsensitive) || outQ.endsWith(".nii.gz", Qt::CaseInsensitive)))
+        outQ += ".nii.gz";
+
+    const QString scriptPath = resolveSuperResolutionScriptPath();
+    if (scriptPath.isEmpty())
+    {
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            "Could not locate src/super_resolution/super_resolve_nifti.py.\n"
+            "Set ROIFT_SR_SCRIPT to the script path if needed.");
+        return;
+    }
+
+    const QString modelPath = resolveSuperResolutionModelPath(scriptPath);
+    if (modelPath.isEmpty())
+    {
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            "Could not locate RealESRGAN_x2plus.pth.\n"
+            "Set ROIFT_SR_MODEL to the checkpoint path if needed.");
+        return;
+    }
+
+    QString pythonProgram;
+    QStringList pythonPrefixArgs;
+    if (!resolvePythonCommand(&pythonProgram, &pythonPrefixArgs))
+    {
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            "Could not find a Python interpreter.\n"
+            "Install python/python3 or set ROIFT_PYTHON.");
+        return;
+    }
+
+    QTemporaryDir tmpOutDir;
+    if (!tmpOutDir.isValid())
+    {
+        QMessageBox::critical(this, "Super Resolution", "Failed to create a temporary output directory.");
+        return;
+    }
+
+    const QFileInfo scriptInfo(scriptPath);
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    proc.setWorkingDirectory(scriptInfo.absolutePath());
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString pythonPath = env.value("PYTHONPATH");
+    const QString scriptDir = scriptInfo.absolutePath();
+    if (pythonPath.isEmpty())
+        env.insert("PYTHONPATH", scriptDir);
+    else
+        env.insert("PYTHONPATH", scriptDir + QDir::listSeparator() + pythonPath);
+    proc.setProcessEnvironment(env);
+
+    QStringList args = pythonPrefixArgs;
+    args << scriptPath
+         << "--model"
+         << modelPath
+         << "--input"
+         << inputPath
+         << "--output"
+         << tmpOutDir.path();
+
+    QProgressDialog progress("Running super resolution. This may take a few minutes...", "Cancel", 0, 0, this);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.show();
+
+    proc.start(pythonProgram, args);
+    if (!proc.waitForStarted(10000))
+    {
+        progress.close();
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            QString("Failed to start Python process.\n%1").arg(proc.errorString()));
+        return;
+    }
+
+    while (!proc.waitForFinished(200))
+    {
+        QCoreApplication::processEvents();
+        if (progress.wasCanceled())
+        {
+            proc.kill();
+            proc.waitForFinished(3000);
+            progress.close();
+            QMessageBox::warning(this, "Super Resolution", "Super resolution execution was canceled.");
+            return;
+        }
+    }
+    progress.close();
+
+    const QString procStdout = proc.readAllStandardOutput();
+    const QString procStderr = proc.readAllStandardError();
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+    {
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            QString("Super resolution failed (exit code %1).\n\nSTDERR:\n%2")
+                .arg(proc.exitCode())
+                .arg(procStderr));
+        if (!procStdout.isEmpty())
+            std::cerr << "Super-resolution STDOUT:\n"
+                      << procStdout.toStdString() << "\n";
+        if (!procStderr.isEmpty())
+            std::cerr << "Super-resolution STDERR:\n"
+                      << procStderr.toStdString() << "\n";
+        return;
+    }
+
+    const QString expectedTmpOutput = QDir(tmpOutDir.path()).filePath("output.nii.gz");
+    QString generatedOutput = expectedTmpOutput;
+    if (!QFileInfo::exists(generatedOutput))
+    {
+        QDir tmpDir(tmpOutDir.path());
+        const QStringList generated = tmpDir.entryList(
+            QStringList() << "*.nii" << "*.nii.gz",
+            QDir::Files,
+            QDir::Name);
+        if (!generated.isEmpty())
+            generatedOutput = tmpDir.filePath(generated.front());
+    }
+
+    if (!QFileInfo::exists(generatedOutput))
+    {
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            "Super resolution finished but no output NIfTI file was generated.");
+        return;
+    }
+
+    if (QFile::exists(outQ) && !QFile::remove(outQ))
+    {
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            QString("Could not overwrite existing file:\n%1").arg(outQ));
+        return;
+    }
+
+    if (!QFile::copy(generatedOutput, outQ))
+    {
+        QMessageBox::critical(
+            this,
+            "Super Resolution",
+            QString("Failed to save output file:\n%1").arg(outQ));
+        return;
+    }
+
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Super resolution saved: %1").arg(outQ));
+
+    QMessageBox::information(
+        this,
+        "Super Resolution",
+        QString("Super resolution finished successfully.\nSaved to:\n%1").arg(outQ));
+}
+
+void ManualSeedSelector::runMaskPostProcessing()
+{
+    if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
+    {
+        QMessageBox::warning(this, "Postprocess Mask", "Please select an image first.");
+        return;
+    }
+
+    if (!m_maskList || m_maskList->count() == 0)
+    {
+        QMessageBox::warning(this, "Postprocess Mask", "No masks are available for the selected image.");
+        return;
+    }
+
+    const int selectedRow = m_maskList->currentRow();
+    if (selectedRow < 0)
+    {
+        QMessageBox::warning(this, "Postprocess Mask", "Select a mask in the mask list before running post-processing.");
+        return;
+    }
+
+    if (selectedRow >= static_cast<int>(m_images[m_currentImageIndex].maskPaths.size()))
+    {
+        QMessageBox::warning(this, "Postprocess Mask", "Selected mask index is out of range.");
+        return;
+    }
+
+    const QString inputMaskPath = QFileInfo(QString::fromStdString(
+                                                m_images[m_currentImageIndex].maskPaths[static_cast<size_t>(selectedRow)]))
+                                      .absoluteFilePath();
+    if (!QFileInfo::exists(inputMaskPath))
+    {
+        QMessageBox::warning(this, "Postprocess Mask", "The selected mask path does not exist on disk.");
+        return;
+    }
+
+    QString baseName = stripNiftiSuffix(QFileInfo(inputMaskPath).fileName());
+    QString defaultOutput = QDir(QFileInfo(inputMaskPath).absolutePath()).filePath(baseName + "_post.nii.gz");
+    QString outQ = QFileDialog::getSaveFileName(
+        this,
+        "Save Postprocessed Mask",
+        defaultOutput,
+        "NIfTI files (*.nii *.nii.gz);;All files (*)");
+
+    QCoreApplication::processEvents();
+    if (outQ.isEmpty())
+        return;
+    if (!(outQ.endsWith(".nii", Qt::CaseInsensitive) || outQ.endsWith(".nii.gz", Qt::CaseInsensitive)))
+        outQ += ".nii.gz";
+
+    const QString scriptPath = resolveMaskPostprocessScriptPath();
+    if (scriptPath.isEmpty())
+    {
+        QMessageBox::critical(
+            this,
+            "Postprocess Mask",
+            "Could not locate src/seed_gen/ribs_segmentation/post_processing/postprocess_mask.py.\n"
+            "Set ROIFT_MASK_PP_SCRIPT if needed.");
+        return;
+    }
+
+    QString pythonProgram;
+    QStringList pythonPrefixArgs;
+    if (!resolvePythonCommand(&pythonProgram, &pythonPrefixArgs))
+    {
+        QMessageBox::critical(
+            this,
+            "Postprocess Mask",
+            "Could not find a Python interpreter.\n"
+            "Install python/python3 or set ROIFT_PYTHON.");
+        return;
+    }
+
+    const QFileInfo scriptInfo(scriptPath);
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    proc.setWorkingDirectory(scriptInfo.absolutePath());
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString pythonPath = env.value("PYTHONPATH");
+    const QString scriptDir = scriptInfo.absolutePath();
+    if (pythonPath.isEmpty())
+        env.insert("PYTHONPATH", scriptDir);
+    else
+        env.insert("PYTHONPATH", scriptDir + QDir::listSeparator() + pythonPath);
+    proc.setProcessEnvironment(env);
+
+    QStringList args = pythonPrefixArgs;
+    args << scriptPath
+         << "--input"
+         << inputMaskPath
+         << "--output"
+         << outQ;
+
+    QProgressDialog progress("Running mask post-processing...", "Cancel", 0, 0, this);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.show();
+
+    proc.start(pythonProgram, args);
+    if (!proc.waitForStarted(10000))
+    {
+        progress.close();
+        QMessageBox::critical(
+            this,
+            "Postprocess Mask",
+            QString("Failed to start Python process.\n%1").arg(proc.errorString()));
+        return;
+    }
+
+    while (!proc.waitForFinished(200))
+    {
+        QCoreApplication::processEvents();
+        if (progress.wasCanceled())
+        {
+            proc.kill();
+            proc.waitForFinished(3000);
+            progress.close();
+            QMessageBox::warning(this, "Postprocess Mask", "Mask post-processing was canceled.");
+            return;
+        }
+    }
+    progress.close();
+
+    const QString procStdout = proc.readAllStandardOutput();
+    const QString procStderr = proc.readAllStandardError();
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+    {
+        QMessageBox::critical(
+            this,
+            "Postprocess Mask",
+            QString("Mask post-processing failed (exit code %1).\n\nSTDERR:\n%2")
+                .arg(proc.exitCode())
+                .arg(procStderr));
+        if (!procStdout.isEmpty())
+            std::cerr << "Mask postprocess STDOUT:\n"
+                      << procStdout.toStdString() << "\n";
+        if (!procStderr.isEmpty())
+            std::cerr << "Mask postprocess STDERR:\n"
+                      << procStderr.toStdString() << "\n";
+        return;
+    }
+
+    const QString outAbs = QFileInfo(outQ).absoluteFilePath();
+    if (!QFileInfo::exists(outAbs))
+    {
+        QMessageBox::critical(
+            this,
+            "Postprocess Mask",
+            QString("Post-processing finished but output file was not generated:\n%1").arg(outAbs));
+        return;
+    }
+
+    const std::string outStd = outAbs.toStdString();
+    auto &maskPaths = m_images[m_currentImageIndex].maskPaths;
+    if (std::find(maskPaths.begin(), maskPaths.end(), outStd) == maskPaths.end())
+        maskPaths.push_back(outStd);
+
+    updateMaskSeedLists();
+    loadMaskFromFile(outStd);
+    updateViews();
+
+    const int outIndex = static_cast<int>(
+        std::find(maskPaths.begin(), maskPaths.end(), outStd) - maskPaths.begin());
+    if (m_maskList && outIndex >= 0 && outIndex < m_maskList->count())
+        m_maskList->setCurrentRow(outIndex);
+
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Postprocessed mask saved: %1").arg(outAbs));
+
+    QMessageBox::information(
+        this,
+        "Postprocess Mask",
+        QString("Mask post-processing finished successfully.\nSaved to:\n%1").arg(outAbs));
+}
+
 int ManualSeedSelector::addImagesToList(const QStringList &paths, int *duplicateCount, int *missingCount)
 {
     if (duplicateCount)
@@ -1732,7 +2987,9 @@ int ManualSeedSelector::addImagesToList(const QStringList &paths, int *duplicate
         m_images.push_back(std::move(imageData));
 
         const QString filename = QFileInfo(normalized).fileName();
-        m_niftiList->addItem(filename.isEmpty() ? normalized : filename);
+        QListWidgetItem *item = new QListWidgetItem(filename.isEmpty() ? normalized : filename);
+        item->setData(Qt::UserRole, QFileInfo(normalized).absoluteFilePath());
+        m_niftiList->addItem(item);
         if (firstAddedIndex < 0)
             firstAddedIndex = m_niftiList->count() - 1;
 
@@ -1862,6 +3119,7 @@ void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex)
     const QDir imageDir = QFileInfo(imagePath).dir();
     if (!imageDir.exists())
         return;
+    const QString currentImageBaseName = stripNiftiSuffix(QFileInfo(imagePath).fileName()).trimmed().toLower();
 
     std::vector<std::string> detectedMaskPaths;
     std::vector<std::string> detectedSeedPaths;
@@ -1891,8 +3149,12 @@ void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex)
 
         if (isNiftiMaskFilenameCandidate(fileName))
         {
-            if (maskKeys.insert(absolutePath).second)
-                detectedMaskPaths.push_back(absolutePath);
+            const QString candidateBaseName = stripNiftiSuffix(fileName).trimmed().toLower();
+            if (candidateBaseName != currentImageBaseName)
+            {
+                if (maskKeys.insert(absolutePath).second)
+                    detectedMaskPaths.push_back(absolutePath);
+            }
         }
         if (isSeedFilenameCandidate(fileName))
         {
@@ -2190,6 +3452,7 @@ const Seed *ManualSeedSelector::findSeedNearCursor(int x, int y, int z, SlicePla
         if (distSquared == 0)
             break;
     }
+
     return nearest;
 }
 
@@ -2407,13 +3670,20 @@ void ManualSeedSelector::updateViews()
     unsigned int sizeY = m_image.getSizeY();
     unsigned int sizeZ = m_image.getSizeZ();
 
-    // Renderização 3D controlada pelo checkbox "Show 3D"
+    if (m_mask3DView)
+    {
+        m_mask3DView->setVoxelSpacing(m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
+        m_mask3DView->setMaskVisible(m_enable3DView);
+        m_mask3DView->setSeedsVisible(m_enable3DSeeds);
+    }
+
+    // 3D mask rendering is controlled by "Show 3D", seeds are controlled separately.
     if (m_enable3DView && m_mask3DDirty)
     {
         update3DMaskView();
         m_mask3DDirty = false;
     }
-    else if (m_enable3DView && m_mask3DView)
+    else if (m_mask3DView)
     {
         std::vector<SeedRenderData> seedRenderData;
         seedRenderData.reserve(m_seeds.size());
@@ -2454,13 +3724,16 @@ void ManualSeedSelector::updateViews()
         {
             std::cerr << "updateViews: mask buffer size mismatch, clearing\n";
             m_maskData.clear();
+            m_maskSpacingX = m_image.getSpacingX();
+            m_maskSpacingY = m_image.getSpacingY();
+            m_maskSpacingZ = m_image.getSpacingZ();
             m_mask3DDirty = true;
         }
     }
 
     // Axial view
     auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
-    if (!m_maskData.empty())
+    if (m_enableAxialMask && !m_maskData.empty())
     {
         for (unsigned int yy = 0; yy < sizeY; ++yy)
         {
@@ -2489,7 +3762,7 @@ void ManualSeedSelector::updateViews()
     // Sagittal view
     int sagX = m_sagittalSlider->value();
     auto sagittal_rgb = m_image.getSagittalSliceAsRGB(sagX, lo, hi);
-    if (!m_maskData.empty())
+    if (m_enableSagittalMask && !m_maskData.empty())
     {
         for (unsigned int zz = 0; zz < sizeZ; ++zz)
         {
@@ -2518,7 +3791,7 @@ void ManualSeedSelector::updateViews()
     // Coronal view
     int corY = m_coronalSlider->value();
     auto coronal_rgb = m_image.getCoronalSliceAsRGB(corY, lo, hi);
-    if (!m_maskData.empty())
+    if (m_enableCoronalMask && !m_maskData.empty())
     {
         for (unsigned int zz = 0; zz < sizeZ; ++zz)
         {
@@ -2544,47 +3817,95 @@ void ManualSeedSelector::updateViews()
     QImage coronal = makeQImageFromRGB(coronal_rgb, int(sizeX), int(sizeZ));
     m_coronalView->setImage(coronal);
 
-    // Seed overlays
-    m_axialView->setOverlayDraw([this, z](QPainter &p, float scale)
+    // Seed overlays (visual declutter only; does not modify m_seeds)
+    const int minPixelSpacing = std::max(1, m_seedDisplayMinPixelSpacing);
+    const auto makeCellKey = [minPixelSpacing](int px, int py) -> std::uint64_t
+    {
+        const int cellX = (minPixelSpacing > 0) ? (px / minPixelSpacing) : px;
+        const int cellY = (minPixelSpacing > 0) ? (py / minPixelSpacing) : py;
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cellX)) << 32) |
+               static_cast<std::uint32_t>(cellY);
+    };
+
+    m_axialView->setOverlayDraw([this, z, minPixelSpacing, makeCellKey](QPainter &p, float scale)
                                 {
-        for (auto &s : m_seeds)
+        if (!m_enableAxialSeeds)
+            return;
+        std::unordered_set<std::uint64_t> occupiedCells;
+        if (minPixelSpacing > 1)
+            occupiedCells.reserve(m_seeds.size());
+        const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
+        for (const auto &s : m_seeds)
         {
             if (s.z != z)
                 continue;
+            const int px = static_cast<int>(std::lround(s.x * scale));
+            const int py = static_cast<int>(std::lround(s.y * scale));
+            if (minPixelSpacing > 1)
+            {
+                if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                    continue;
+            }
             int lbl = std::max(0, std::min(255, s.label));
             const QColor fillColor = colorForLabel(lbl);
             const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
             p.setPen(QPen(outlineColor, 1.0));
             p.setBrush(fillColor);
-            p.drawEllipse(QPoint(int(s.x * scale), int(s.y * scale)), 2, 2);
+            p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
         } });
 
-    m_sagittalView->setOverlayDraw([this, sagX](QPainter &p, float scale)
+    m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scale)
                                    {
-        for (auto &s : m_seeds)
+        if (!m_enableSagittalSeeds)
+            return;
+        std::unordered_set<std::uint64_t> occupiedCells;
+        if (minPixelSpacing > 1)
+            occupiedCells.reserve(m_seeds.size());
+        const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
+        for (const auto &s : m_seeds)
         {
             if (s.x != sagX)
                 continue;
+            const int px = static_cast<int>(std::lround(s.y * scale));
+            const int py = static_cast<int>(std::lround(s.z * scale));
+            if (minPixelSpacing > 1)
+            {
+                if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                    continue;
+            }
             int lbl = std::max(0, std::min(255, s.label));
             const QColor fillColor = colorForLabel(lbl);
             const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
             p.setPen(QPen(outlineColor, 1.0));
             p.setBrush(fillColor);
-            p.drawEllipse(QPoint(int(s.y * scale), int(s.z * scale)), 2, 2);
+            p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
         } });
 
-    m_coronalView->setOverlayDraw([this, corY](QPainter &p, float scale)
+    m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scale)
                                   {
-        for (auto &s : m_seeds)
+        if (!m_enableCoronalSeeds)
+            return;
+        std::unordered_set<std::uint64_t> occupiedCells;
+        if (minPixelSpacing > 1)
+            occupiedCells.reserve(m_seeds.size());
+        const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
+        for (const auto &s : m_seeds)
         {
             if (s.y != corY)
                 continue;
+            const int px = static_cast<int>(std::lround(s.x * scale));
+            const int py = static_cast<int>(std::lround(s.z * scale));
+            if (minPixelSpacing > 1)
+            {
+                if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                    continue;
+            }
             int lbl = std::max(0, std::min(255, s.label));
             const QColor fillColor = colorForLabel(lbl);
             const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
             p.setPen(QPen(outlineColor, 1.0));
             p.setBrush(fillColor);
-            p.drawEllipse(QPoint(int(s.x * scale), int(s.z * scale)), 2, 2);
+            p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
         } });
 }
 
@@ -2592,10 +3913,11 @@ void ManualSeedSelector::update3DMaskView()
 {
     if (!m_mask3DView)
         return;
+    m_mask3DView->setVoxelSpacing(m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
     unsigned int sx = m_image.getSizeX();
     unsigned int sy = m_image.getSizeY();
     unsigned int sz = m_image.getSizeZ();
-    m_mask3DView->setMaskData(m_maskData, sx, sy, sz);
+    m_mask3DView->setMaskData(m_maskData, sx, sy, sz, m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
 
     std::vector<SeedRenderData> seedRenderData;
     seedRenderData.reserve(m_seeds.size());
@@ -2625,6 +3947,9 @@ void ManualSeedSelector::setMaskMode(int mode)
 void ManualSeedSelector::cleanMask()
 {
     m_maskData.clear();
+    m_maskSpacingX = m_image.getSpacingX();
+    m_maskSpacingY = m_image.getSpacingY();
+    m_maskSpacingZ = m_image.getSpacingZ();
     m_mask3DDirty = true;
 }
 
@@ -2714,6 +4039,16 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
         unsigned int sx = static_cast<unsigned int>(size[0]);
         unsigned int sy = static_cast<unsigned int>(size[1]);
         unsigned int sz = static_cast<unsigned int>(size[2]);
+        const auto spacing = img->GetSpacing();
+        m_maskSpacingX = std::abs(static_cast<double>(spacing[0]));
+        m_maskSpacingY = std::abs(static_cast<double>(spacing[1]));
+        m_maskSpacingZ = std::abs(static_cast<double>(spacing[2]));
+        if (!std::isfinite(m_maskSpacingX) || m_maskSpacingX <= 0.0)
+            m_maskSpacingX = m_image.getSpacingX();
+        if (!std::isfinite(m_maskSpacingY) || m_maskSpacingY <= 0.0)
+            m_maskSpacingY = m_image.getSpacingY();
+        if (!std::isfinite(m_maskSpacingZ) || m_maskSpacingZ <= 0.0)
+            m_maskSpacingZ = m_image.getSpacingZ();
         size_t tot = size_t(sx) * size_t(sy) * size_t(sz);
         m_maskData.clear();
         m_maskData.resize(tot);
@@ -2990,6 +4325,7 @@ void ManualSeedSelector::updateMaskSeedLists()
         std::string filename = std::filesystem::path(maskPath).filename().string();
         QListWidgetItem *item = new QListWidgetItem(QString::fromStdString(filename));
         item->setForeground(QBrush(color));
+        item->setData(Qt::UserRole, QFileInfo(QString::fromStdString(maskPath)).absoluteFilePath());
         m_maskList->addItem(item);
     }
 
@@ -2999,6 +4335,7 @@ void ManualSeedSelector::updateMaskSeedLists()
         std::string filename = std::filesystem::path(seedPath).filename().string();
         QListWidgetItem *item = new QListWidgetItem(QString::fromStdString(filename));
         item->setForeground(QBrush(color));
+        item->setData(Qt::UserRole, QFileInfo(QString::fromStdString(seedPath)).absoluteFilePath());
         m_seedList->addItem(item);
     }
 }

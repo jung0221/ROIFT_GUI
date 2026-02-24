@@ -46,13 +46,11 @@ public:
     // expose image path
     std::string getImagePath() const { return m_path; }
     // convenience wrapper to load a mask and update views (used by segmentation runner)
-    bool applyMaskFromPath(const std::string &path)
-    {
-        bool ok = loadMaskFromFile(path);
-        if (ok)
-            updateViews();
-        return ok;
-    }
+    bool applyMaskFromPath(const std::string &path);
+    // refresh mask/seed associations from disk for current image
+    void refreshAssociatedFilesForCurrentImage();
+    // add multiple NIfTI images to the list (used by CLI startup)
+    int addImagesFromPaths(const QStringList &paths);
 
     // Expose segmentation parameters
     double getPolarity() const { return m_polSlider ? m_polSlider->value() / 100.0 : 1.0; }
@@ -69,6 +67,10 @@ public:
 private slots:
     void openImage();
     void openImagesFromCsv();
+    void runLunasSeedGeneration();
+    void runRibsSeedGeneration();
+    void runSuperResolution();
+    void runMaskPostProcessing();
     void saveSeeds();
     void loadSeeds();
     bool saveImageToFile(const std::string &path);
@@ -155,6 +157,7 @@ private:
     // seed interaction mode: 0=idle,1=draw,2=erase
     int m_seedMode = 1;
     int m_seedBrushRadius = 5;
+    int m_seedDisplayMinPixelSpacing = 4;
 
     // Tabbed UI: inline controls instead of dialogs
     QPushButton *m_btnSeedDraw = nullptr;
@@ -162,13 +165,26 @@ private:
     QPushButton *m_btnMaskDraw = nullptr;
     QPushButton *m_btnMaskErase = nullptr;
     QSpinBox *m_seedBrushSpin = nullptr;
+    QSpinBox *m_seedDisplaySpacingSpin = nullptr;
     QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
     QCheckBox *m_show3DCheck = nullptr;
+    QCheckBox *m_showMaskCheck = nullptr;
+    QCheckBox *m_showSeedsCheck = nullptr;
 
     Mask3DView *m_mask3DView = nullptr;
     bool m_mask3DDirty = false;
     bool m_enable3DView = false;
+    double m_maskSpacingX = 1.0;
+    double m_maskSpacingY = 1.0;
+    double m_maskSpacingZ = 1.0;
+    bool m_enableAxialMask = true;
+    bool m_enableSagittalMask = true;
+    bool m_enableCoronalMask = true;
+    bool m_enableAxialSeeds = true;
+    bool m_enableSagittalSeeds = true;
+    bool m_enableCoronalSeeds = true;
+    bool m_enable3DSeeds = true;
     RangeSlider *m_windowSlider = nullptr;
     QDoubleSpinBox *m_windowLevelSpin = nullptr;
     QDoubleSpinBox *m_windowWidthSpin = nullptr;
@@ -196,6 +212,9 @@ private:
         std::vector<std::string> maskPaths;
         std::vector<std::string> seedPaths;
         QColor color; // Color to identify this image's items
+        int lastAxialSlice = -1;
+        int lastSagittalSlice = -1;
+        int lastCoronalSlice = -1;
     };
 
     QListWidget *m_niftiList = nullptr;

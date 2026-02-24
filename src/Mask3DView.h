@@ -40,8 +40,17 @@ class Mask3DView : public QWidget
     Q_OBJECT
 public:
     explicit Mask3DView(QWidget *parent = nullptr);
-    void setMaskData(const std::vector<int> &mask, unsigned int sizeX, unsigned int sizeY, unsigned int sizeZ);
+    void setMaskData(const std::vector<int> &mask,
+                     unsigned int sizeX,
+                     unsigned int sizeY,
+                     unsigned int sizeZ,
+                     double spacingX,
+                     double spacingY,
+                     double spacingZ);
+    void setVoxelSpacing(double spacingX, double spacingY, double spacingZ);
     void setSeedData(const std::vector<SeedRenderData> &seeds);
+    void setMaskVisible(bool visible);
+    void setSeedsVisible(bool visible);
     void clearMask();
     void setSeedRectangleEraseEnabled(bool enabled);
 
@@ -87,6 +96,11 @@ private:
     std::map<int, QColor> m_labelColors;
     bool m_seedCameraFramed = false;
     bool m_seedRectEraseEnabled = false;
+    bool m_maskVisible = true;
+    bool m_seedsVisible = true;
+    double m_spacingX = 1.0;
+    double m_spacingY = 1.0;
+    double m_spacingZ = 1.0;
     bool m_selectingRect = false;
     QPoint m_rectStart;
     QRubberBand *m_selectionBand = nullptr;

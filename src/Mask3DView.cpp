@@ -159,7 +159,13 @@ void Mask3DView::buildPipeline()
     m_mapper->SetInputConnection(m_smoother->GetOutputPort());
 }
 
-void Mask3DView::setMaskData(const std::vector<int> &mask, unsigned int sizeX, unsigned int sizeY, unsigned int sizeZ)
+void Mask3DView::setMaskData(const std::vector<int> &mask,
+                             unsigned int sizeX,
+                             unsigned int sizeY,
+                             unsigned int sizeZ,
+                             double spacingX,
+                             double spacingY,
+                             double spacingZ)
 {
     if (mask.empty() || sizeX == 0 || sizeY == 0 || sizeZ == 0)
     {
@@ -177,9 +183,11 @@ void Mask3DView::setMaskData(const std::vector<int> &mask, unsigned int sizeX, u
         return;
     }
 
+    setVoxelSpacing(spacingX, spacingY, spacingZ);
+
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
     image->SetDimensions(int(sizeX), int(sizeY), int(sizeZ));
-    image->SetSpacing(1.0, 1.0, 1.0);
+    image->SetSpacing(m_spacingX, m_spacingY, m_spacingZ);
     image->AllocateScalars(VTK_INT, 1);
 
     int *dst = static_cast<int *>(image->GetScalarPointer());
@@ -216,14 +224,39 @@ void Mask3DView::setMaskData(const std::vector<int> &mask, unsigned int sizeX, u
         m_flyingEdges->SetValue(i, m_activeLabels[static_cast<size_t>(i)]);
 
     m_flyingEdges->Modified();
-    m_actor->SetVisibility(m_visibilityCheck ? m_visibilityCheck->isChecked() : true);
+    m_actor->SetVisibility(m_maskVisible && !m_activeLabels.empty());
     rebuildLookupTable();
     updateLabelControls();
-    setStatusText(QString("Labels visíveis: %1 (GPU)").arg(m_activeLabels.size()));
+    const double physX = static_cast<double>(sizeX) * m_spacingX;
+    const double physY = static_cast<double>(sizeY) * m_spacingY;
+    const double physZ = static_cast<double>(sizeZ) * m_spacingZ;
+    setStatusText(QString("Labels visíveis: %1 (GPU) | Voxel(mm): %2 x %3 x %4 | Dim(mm): %5 x %6 x %7")
+                      .arg(m_activeLabels.size())
+                      .arg(m_spacingX, 0, 'f', 3)
+                      .arg(m_spacingY, 0, 'f', 3)
+                      .arg(m_spacingZ, 0, 'f', 3)
+                      .arg(physX, 0, 'f', 1)
+                      .arg(physY, 0, 'f', 1)
+                      .arg(physZ, 0, 'f', 1));
     m_renderer->ResetCamera();
     m_seedCameraFramed = true;
     if (m_renderWindow)
         m_renderWindow->Render();
+}
+
+void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacingZ)
+{
+    const double newSpacingX = (std::isfinite(spacingX) && spacingX > 0.0) ? spacingX : 1.0;
+    const double newSpacingY = (std::isfinite(spacingY) && spacingY > 0.0) ? spacingY : 1.0;
+    const double newSpacingZ = (std::isfinite(spacingZ) && spacingZ > 0.0) ? spacingZ : 1.0;
+    const bool changed = (newSpacingX != m_spacingX) || (newSpacingY != m_spacingY) || (newSpacingZ != m_spacingZ);
+
+    m_spacingX = newSpacingX;
+    m_spacingY = newSpacingY;
+    m_spacingZ = newSpacingZ;
+
+    if (changed && !m_seedRenderData.empty())
+        setSeedData(m_seedRenderData);
 }
 
 void Mask3DView::clearMask()
@@ -263,7 +296,10 @@ void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
     for (vtkIdType i = 0; i < static_cast<vtkIdType>(m_seedRenderData.size()); ++i)
     {
         const SeedRenderData &seed = m_seedRenderData[static_cast<size_t>(i)];
-        points->InsertNextPoint(static_cast<double>(seed.x), static_cast<double>(seed.y), static_cast<double>(seed.z));
+        points->InsertNextPoint(
+            static_cast<double>(seed.x) * m_spacingX,
+            static_cast<double>(seed.y) * m_spacingY,
+            static_cast<double>(seed.z) * m_spacingZ);
 
         const int label = std::max(0, std::min(255, seed.label));
         const QColor c = colorForLabel(label);
@@ -277,7 +313,7 @@ void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
     m_seedPolyData->SetPoints(points);
     m_seedPolyData->GetPointData()->SetScalars(colors);
     m_seedPolyData->Modified();
-    m_seedActor->VisibilityOn();
+    m_seedActor->SetVisibility(m_seedsVisible ? 1 : 0);
     // Auto-frame seeds only once when they become visible without a mask.
     if (!hadVisibleSeeds && !m_seedCameraFramed && m_actor && !m_actor->GetVisibility())
     {
@@ -285,6 +321,24 @@ void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
         m_seedCameraFramed = true;
     }
 
+    if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+void Mask3DView::setMaskVisible(bool visible)
+{
+    m_maskVisible = visible;
+    if (m_actor)
+        m_actor->SetVisibility(m_maskVisible && !m_activeLabels.empty());
+    if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+void Mask3DView::setSeedsVisible(bool visible)
+{
+    m_seedsVisible = visible;
+    if (m_seedActor)
+        m_seedActor->SetVisibility(m_seedsVisible && !m_seedRenderData.empty());
     if (m_renderWindow)
         m_renderWindow->Render();
 }
@@ -378,9 +432,9 @@ QVector<int> Mask3DView::collectSeedIndicesInRect(const QRect &rect) const
     for (const SeedRenderData &seed : m_seedRenderData)
     {
         m_renderer->SetWorldPoint(
-            static_cast<double>(seed.x),
-            static_cast<double>(seed.y),
-            static_cast<double>(seed.z),
+            static_cast<double>(seed.x) * m_spacingX,
+            static_cast<double>(seed.y) * m_spacingY,
+            static_cast<double>(seed.z) * m_spacingZ,
             1.0);
         m_renderer->WorldToDisplay();
         double displayPoint[3] = {0.0, 0.0, 0.0};
@@ -473,12 +527,7 @@ void Mask3DView::setStatusText(const QString &text)
 
 void Mask3DView::onVisibilityToggled(bool checked)
 {
-    if (m_actor)
-    {
-        m_actor->SetVisibility(checked && !m_activeLabels.empty());
-        if (m_renderWindow)
-            m_renderWindow->Render();
-    }
+    setMaskVisible(checked);
 }
 
 void Mask3DView::onOpacityChanged(int value)

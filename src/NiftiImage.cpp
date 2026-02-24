@@ -19,6 +19,10 @@ NiftiImage::~NiftiImage() {}
 
 bool NiftiImage::load(const std::string &path)
 {
+    m_spacingX = 1.0;
+    m_spacingY = 1.0;
+    m_spacingZ = 1.0;
+
     auto has_suffix_ci = [](const std::string &p, const std::string &suf)
     {
         if (p.size() < suf.size())
@@ -129,6 +133,16 @@ bool NiftiImage::load(const std::string &path)
             return false;
         }
         m_region = m_image->GetLargestPossibleRegion();
+        const auto spacing = m_image->GetSpacing();
+        m_spacingX = std::abs(static_cast<double>(spacing[0]));
+        m_spacingY = std::abs(static_cast<double>(spacing[1]));
+        m_spacingZ = std::abs(static_cast<double>(spacing[2]));
+        if (!std::isfinite(m_spacingX) || m_spacingX <= 0.0)
+            m_spacingX = 1.0;
+        if (!std::isfinite(m_spacingY) || m_spacingY <= 0.0)
+            m_spacingY = 1.0;
+        if (!std::isfinite(m_spacingZ) || m_spacingZ <= 0.0)
+            m_spacingZ = 1.0;
     }
     catch (itk::ExceptionObject &e)
     {
@@ -205,7 +219,7 @@ bool NiftiImage::load(const std::string &path)
     }
 
     // Log loaded image properties for debugging
-    std::cerr << "NiftiImage::load: loaded '" << path << "' (actual='" << actualPath << "') size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ") min=" << m_min << " max=" << m_max << " comp=" << m_component << " isMask=" << (m_isMask ? "yes" : "no") << " uniq=" << uniques.size() << " sampled=" << sampled << "\n";
+    std::cerr << "NiftiImage::load: loaded '" << path << "' (actual='" << actualPath << "') size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ") spacing=(" << m_spacingX << "," << m_spacingY << "," << m_spacingZ << ") min=" << m_min << " max=" << m_max << " comp=" << m_component << " isMask=" << (m_isMask ? "yes" : "no") << " uniq=" << uniques.size() << " sampled=" << sampled << "\n";
     cleanupTemp();
     return true;
 }
@@ -213,6 +227,9 @@ bool NiftiImage::load(const std::string &path)
 unsigned int NiftiImage::getSizeX() const { return m_region.GetSize()[0]; }
 unsigned int NiftiImage::getSizeY() const { return m_region.GetSize()[1]; }
 unsigned int NiftiImage::getSizeZ() const { return m_region.GetSize()[2]; }
+double NiftiImage::getSpacingX() const { return m_spacingX; }
+double NiftiImage::getSpacingY() const { return m_spacingY; }
+double NiftiImage::getSpacingZ() const { return m_spacingZ; }
 
 float NiftiImage::getGlobalMin() const { return m_min; }
 float NiftiImage::getGlobalMax() const { return m_max; }
@@ -292,6 +309,9 @@ NiftiImage NiftiImage::deepCopy() const
     out.m_region = out.m_image->GetLargestPossibleRegion();
     out.m_min = m_min;
     out.m_max = m_max;
+    out.m_spacingX = m_spacingX;
+    out.m_spacingY = m_spacingY;
+    out.m_spacingZ = m_spacingZ;
     return out;
 }
 

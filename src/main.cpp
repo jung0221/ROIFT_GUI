@@ -1,14 +1,16 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QScreen>
+#include <QStringList>
 #include "ManualSeedSelector.h"
 #include <iostream>
 #include <string>
+#include <vector>
 
 static void print_help()
 {
-    std::cerr << "roift_gui [--input <nifti_path>]\n";
-    std::cerr << "If no --input is provided, you may pass the nifti path as the first positional argument.\n";
+    std::cerr << "roift_gui [--input <nifti_path> [more_paths...]]\n";
+    std::cerr << "You can pass multiple NIfTI paths after --input/-i or as positional arguments.\n";
 }
 
 int main(int argc, char **argv)
@@ -17,7 +19,7 @@ int main(int argc, char **argv)
     // QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
     QApplication app(argc, argv);
-    std::string path;
+    std::vector<std::string> inputPaths;
     std::string seedsPath;
     bool startFullscreen = false;
     for (int i = 1; i < argc; ++i)
@@ -30,14 +32,22 @@ int main(int argc, char **argv)
         }
         if (a == "--input" || a == "-i")
         {
-            if (i + 1 < argc)
+            if (i + 1 < argc && std::string(argv[i + 1]).rfind("-", 0) != 0)
             {
-                path = argv[i + 1];
-                ++i;
+                int j = i + 1;
+                while (j < argc)
+                {
+                    std::string candidate = argv[j];
+                    if (candidate.rfind("-", 0) == 0)
+                        break;
+                    inputPaths.push_back(candidate);
+                    ++j;
+                }
+                i = j - 1;
             }
             else
             {
-                std::cerr << "Error: --input requires a path\n";
+                std::cerr << "Error: --input requires at least one path\n";
                 print_help();
                 return 1;
             }
@@ -84,22 +94,35 @@ int main(int argc, char **argv)
         {
             startFullscreen = true;
         }
-        else if (path.empty())
+        else if (!a.empty() && a[0] == '-')
         {
-            // first positional argument
-            path = a;
+            std::cerr << "Error: unknown option '" << a << "'\n";
+            print_help();
+            return 1;
+        }
+        else
+        {
+            inputPaths.push_back(a);
         }
     }
 
-    if (!path.empty())
+    if (!inputPaths.empty())
     {
-        std::cerr << "main: opening path from CLI: '" << path << "'\n";
+        std::cerr << "main: opening " << inputPaths.size() << " path(s) from CLI\n";
     }
     else
     {
         std::cerr << "main: no input path provided via CLI\n";
     }
-    ManualSeedSelector w(path);
+    ManualSeedSelector w("");
+    if (!inputPaths.empty())
+    {
+        QStringList initialPaths;
+        for (const std::string &p : inputPaths)
+            initialPaths.push_back(QString::fromStdString(p));
+        w.addImagesFromPaths(initialPaths);
+    }
+
     // if an image was provided and successfully loaded, optionally load seeds
     if (!seedsPath.empty() && w.hasImage())
     {

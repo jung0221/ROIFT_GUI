@@ -29,6 +29,9 @@ public:
     unsigned int getSizeX() const;
     unsigned int getSizeY() const;
     unsigned int getSizeZ() const;
+    double getSpacingX() const;
+    double getSpacingY() const;
+    double getSpacingZ() const;
 
     float getGlobalMin() const;
     float getGlobalMax() const;
@@ -40,6 +43,9 @@ private:
     ImageType::RegionType m_region;
     float m_min = 0.0f;
     float m_max = 1.0f;
+    double m_spacingX = 1.0;
+    double m_spacingY = 1.0;
+    double m_spacingZ = 1.0;
     bool m_isMask = false;
     itk::ImageIOBase::IOComponentType m_component = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
 };

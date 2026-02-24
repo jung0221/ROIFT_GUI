@@ -19,6 +19,7 @@
 #include <QThread>
 #include <QFile>
 #include <QTime>
+#include <QStandardPaths>
 #include <algorithm>
 #include <cmath>
 #include <QListWidget>
@@ -38,6 +39,144 @@ using namespace SegmentationRunner;
 
 namespace
 {
+    struct RoiftExecutable
+    {
+        QString path;
+        bool gpuBinary = false;
+    };
+
+    QStringList roiftExecutableNames(bool preferGpu)
+    {
+#if defined(Q_OS_WIN)
+        const QString suffix = ".exe";
+#else
+        const QString suffix;
+#endif
+        const QString gpuName = "oiftrelax_gpu" + suffix;
+        const QString cpuName = "oiftrelax" + suffix;
+        const QString parallelName = "oiftrelax_parallel" + suffix;
+
+        if (preferGpu)
+            return {gpuName, cpuName, parallelName};
+        return {cpuName, parallelName, gpuName};
+    }
+
+    bool isGpuExecutablePath(const QString &path)
+    {
+        return QFileInfo(path).fileName().startsWith("oiftrelax_gpu", Qt::CaseInsensitive);
+    }
+
+    RoiftExecutable resolveRoiftExecutable(bool preferGpu)
+    {
+        RoiftExecutable resolved;
+
+        const QString envExecutable = qEnvironmentVariable("ROIFT_EXECUTABLE").trimmed();
+        if (!envExecutable.isEmpty())
+        {
+            const QString envPath = QFileInfo(envExecutable).absoluteFilePath();
+            if (QFileInfo::exists(envPath))
+            {
+                resolved.path = envPath;
+                resolved.gpuBinary = isGpuExecutablePath(envPath);
+                return resolved;
+            }
+        }
+
+        const QStringList names = roiftExecutableNames(preferGpu);
+        for (const QString &name : names)
+        {
+            const QString inPath = QStandardPaths::findExecutable(name);
+            if (!inPath.isEmpty())
+            {
+                resolved.path = inPath;
+                resolved.gpuBinary = isGpuExecutablePath(inPath);
+                return resolved;
+            }
+        }
+
+        // Try likely paths for both in-source and out-of-source builds.
+        const QStringList relativeSearchDirs = {
+            "",
+            "roift",
+            "roift/gft_delta",
+            "../roift",
+            "../roift/gft_delta",
+            "../roift/Release",
+            "../roift/Debug",
+            "../roift/gft_delta/Release",
+            "../roift/gft_delta/Debug",
+            "../../roift",
+            "../../roift/gft_delta",
+            "../../roift/Release",
+            "../../roift/Debug",
+            "../../roift/gft_delta/Release",
+            "../../roift/gft_delta/Debug",
+            "build/roift",
+            "build/roift/gft_delta",
+            "build/roift/Release",
+            "build/roift/Debug",
+            "build/roift/gft_delta/Release",
+            "build/roift/gft_delta/Debug",
+            "build/bin/Release",
+            "build/bin/Debug",
+            "build/src/ROIFT_GUI/roift",
+            "build/src/ROIFT_GUI/roift/gft_delta",
+            "build/src/ROIFT_GUI/roift/Release",
+            "build/src/ROIFT_GUI/roift/Debug",
+            "build/src/ROIFT_GUI/roift/gft_delta/Release",
+            "build/src/ROIFT_GUI/roift/gft_delta/Debug",
+            "build/src/ROIFT_GUI/Release",
+            "build/src/ROIFT_GUI/Debug",
+            "build/src",
+            "build/src/Release",
+            "build/src/Debug",
+        };
+
+        const QStringList roots = {
+            QCoreApplication::applicationDirPath(),
+            QDir::currentPath(),
+        };
+
+        for (const QString &root : roots)
+        {
+            QDir dir(root);
+            if (!dir.exists())
+                continue;
+
+            for (int depth = 0; depth <= 12; ++depth)
+            {
+                for (const QString &subDir : relativeSearchDirs)
+                {
+                    for (const QString &name : names)
+                    {
+                        const QString relPath = subDir.isEmpty() ? name : QString("%1/%2").arg(subDir, name);
+                        const QString candidate = QDir::cleanPath(dir.filePath(relPath));
+                        if (QFileInfo::exists(candidate))
+                        {
+                            resolved.path = QFileInfo(candidate).absoluteFilePath();
+                            resolved.gpuBinary = isGpuExecutablePath(resolved.path);
+                            return resolved;
+                        }
+                    }
+                }
+
+                if (!dir.cdUp())
+                    break;
+            }
+        }
+
+        return resolved;
+    }
+
+    QString roiftNotFoundMessage(bool preferGpu)
+    {
+        const QString mode = preferGpu ? "GPU" : "CPU";
+        return QString("Could not find external ROIFT executable (%1 mode).\n"
+                       "Searched PATH and build folders relative to current/app directories.\n"
+                       "If needed, set ROIFT_EXECUTABLE to the full executable path.")
+            .arg(mode);
+    }
+
     // Helper function to create a windowed image
     QString createWindowedImage(const std::string &originalPath, double windowLevel, double windowWidth)
     {
@@ -251,32 +390,16 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
         }
 
         QString seedPath = seedFile;
-        QDir appDir(QCoreApplication::applicationDirPath());
-        QStringList candidates;
-        candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
-        candidates << appDir.filePath("roift/oiftrelax_gpu");
-        candidates << appDir.filePath("../roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu");
-        QString exePath;
-        for (auto &c : candidates)
-        {
-            if (QFile::exists(c))
-            {
-                exePath = c;
-                break;
-            }
-        }
+        const RoiftExecutable roiftExec = resolveRoiftExecutable(parent->getUseGPU());
+        const QString exePath = roiftExec.path;
         if (exePath.isEmpty())
         {
-            QMessageBox::critical(parent, "ROIFT not found", "Could not find external ROIFT executable.");
+            QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
             return;
         }
+        const bool useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
+        if (parent->getUseGPU() && !roiftExec.gpuBinary)
+            qWarning() << "Use GPU is enabled, but oiftrelax_gpu was not found. Falling back to:" << exePath;
 
         if (polSweep)
         {
@@ -298,7 +421,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
             }
 
             // GPU can only handle one segmentation at a time
-            bool useGPU = parent->getUseGPU();
+            bool useGPU = useGpuExecution;
             int maxParallel = useGPU ? 1 : std::min(5, std::max(1, QThread::idealThreadCount()));
             struct PolProc
             {
@@ -414,7 +537,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
             QProcess proc;
             QStringList args;
             args << QString::fromStdString(parent->getImagePath()) << seedPath << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp;
-            if (parent->getUseGPU())
+            if (useGpuExecution)
                 args << "--delta";
             QStringList quotedArgs;
             for (const QString &a : args)
@@ -485,37 +608,21 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
     QCoreApplication::processEvents();
     if (outDir.isEmpty())
         return;
-    QDir appDir(QCoreApplication::applicationDirPath());
-    QStringList candidates;
-    candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
-    candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
-    candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
-    candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
-    candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
-    candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
-    candidates << appDir.filePath("roift/oiftrelax_gpu");
-    candidates << appDir.filePath("../roift/oiftrelax_gpu");
-    candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
-    candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu");
-    QString exePath;
-    for (auto &c : candidates)
-    {
-        if (QFile::exists(c))
-        {
-            exePath = c;
-            break;
-        }
-    }
+    const RoiftExecutable roiftExec = resolveRoiftExecutable(parent->getUseGPU());
+    const QString exePath = roiftExec.path;
     if (exePath.isEmpty())
     {
-        QMessageBox::critical(parent, "ROIFT not found", "Could not find external ROIFT executable.");
+        QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
         return;
     }
+    const bool useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
+    if (parent->getUseGPU() && !roiftExec.gpuBinary)
+        qWarning() << "Use GPU is enabled, but oiftrelax_gpu was not found. Falling back to:" << exePath;
 
     // Parallel execution: schedule up to N concurrent oiftrelax invocations
     // Cap concurrency to at most 10 processes at once to avoid overloading the system
     // GPU can only handle one segmentation at a time
-    bool useGPU = parent->getUseGPU();
+    bool useGPU = useGpuExecution;
     int maxParallel = useGPU ? 1 : std::min(5, std::max(1, QThread::idealThreadCount()));
     int idx = 0;
     // Build labels vector excluding any skipped labels from skipList (checked = skip)
@@ -771,7 +878,6 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
     int percentile = parent->getPercentile();
     bool doAll = parent->getSegmentAll();
     bool polSweep = parent->getPolaritySweep() && !doAll;
-    bool useGPU = parent->getUseGPU();
     double windowLevel = parent->getWindowLevel();
     double windowWidth = parent->getWindowWidth();
 
@@ -832,37 +938,21 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
         if (!(outp.endsWith(".nii", Qt::CaseInsensitive) || outp.endsWith(".nii.gz", Qt::CaseInsensitive)))
             outp += ".nii.gz";
 
-        QDir appDir(QCoreApplication::applicationDirPath());
-        QStringList candidates;
-        candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
-        candidates << appDir.filePath("roift/oiftrelax_gpu");
-        candidates << appDir.filePath("../roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu");
-        QString exePath;
-        for (auto &c : candidates)
-        {
-            if (QFile::exists(c))
-            {
-                exePath = c;
-                break;
-            }
-        }
+        const RoiftExecutable roiftExec = resolveRoiftExecutable(parent->getUseGPU());
+        const QString exePath = roiftExec.path;
         if (exePath.isEmpty())
         {
-            QMessageBox::critical(parent, "ROIFT not found", "Could not find external ROIFT executable.");
+            QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
             return;
         }
+        const bool useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
+        if (parent->getUseGPU() && !roiftExec.gpuBinary)
+            qWarning() << "Use GPU is enabled, but oiftrelax_gpu was not found. Falling back to:" << exePath;
 
         QProcess proc;
         QStringList args;
         args << imagePath << seedFile << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp;
-        if (parent->getUseGPU())
+        if (useGpuExecution)
             args << "--delta";
         QStringList quotedArgs;
         for (const QString &a : args)
@@ -968,36 +1058,20 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
             polValues.push_back(rounded);
         }
 
-        QDir appDir(QCoreApplication::applicationDirPath());
-        QStringList candidates;
-        candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
-        candidates << appDir.filePath("roift/oiftrelax_gpu");
-        candidates << appDir.filePath("../roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu");
-        QString exePath;
-        for (auto &c : candidates)
-        {
-            if (QFile::exists(c))
-            {
-                exePath = c;
-                break;
-            }
-        }
+        const RoiftExecutable roiftExec = resolveRoiftExecutable(parent->getUseGPU());
+        const QString exePath = roiftExec.path;
         if (exePath.isEmpty())
         {
-            QMessageBox::critical(parent, "ROIFT not found", "Could not find external ROIFT executable.");
+            QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
             QFile::remove(seedFile);
             return;
         }
+        const bool useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
+        if (parent->getUseGPU() && !roiftExec.gpuBinary)
+            qWarning() << "Use GPU is enabled, but oiftrelax_gpu was not found. Falling back to:" << exePath;
 
         // GPU can only handle one segmentation at a time
-        int maxParallel = useGPU ? 1 : std::min(5, std::max(1, QThread::idealThreadCount()));
+        int maxParallel = useGpuExecution ? 1 : std::min(5, std::max(1, QThread::idealThreadCount()));
         struct PolProc
         {
             double polValue;
@@ -1023,7 +1097,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
             QProcess *p = new QProcess();
             QStringList argsPol;
             argsPol << imagePath << seedFile << QString::number(polVal, 'f', 1) << QString::number(niter) << QString::number(percentile) << outPol;
-            if (parent->getUseGPU())
+            if (useGpuExecution)
                 argsPol << "--delta";
             QStringList quotedArgs;
             for (const QString &a : argsPol)
@@ -1120,35 +1194,19 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
         if (outDir.isEmpty())
             return;
 
-        QDir appDir(QCoreApplication::applicationDirPath());
-        QStringList candidates;
-        candidates << appDir.filePath("../roift/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu.exe");
-        candidates << QDir::current().filePath("build/roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/gft_delta/oiftrelax_gpu");
-        candidates << appDir.filePath("roift/oiftrelax_gpu");
-        candidates << appDir.filePath("../roift/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/roift/Release/oiftrelax_gpu");
-        candidates << QDir::current().filePath("build/bin/Release/oiftrelax_gpu");
-        QString exePath;
-        for (auto &c : candidates)
-        {
-            if (QFile::exists(c))
-            {
-                exePath = c;
-                break;
-            }
-        }
+        const RoiftExecutable roiftExec = resolveRoiftExecutable(parent->getUseGPU());
+        const QString exePath = roiftExec.path;
         if (exePath.isEmpty())
         {
-            QMessageBox::critical(parent, "ROIFT not found", "Could not find external ROIFT executable.");
+            QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
             return;
         }
+        const bool useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
+        if (parent->getUseGPU() && !roiftExec.gpuBinary)
+            qWarning() << "Use GPU is enabled, but oiftrelax_gpu was not found. Falling back to:" << exePath;
 
         // GPU can only handle one segmentation at a time
-        int maxParallel = useGPU ? 1 : std::min(5, std::max(1, QThread::idealThreadCount()));
+        int maxParallel = useGpuExecution ? 1 : std::min(5, std::max(1, QThread::idealThreadCount()));
 
         qDebug() << "[DEBUG] Showing skip labels dialog...";
 
@@ -1238,7 +1296,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
             QProcess *proc2 = new QProcess();
             QStringList args2;
             args2 << imagePath << perSeed << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp2;
-            if (parent->getUseGPU())
+            if (useGpuExecution)
                 args2 << "--delta";
             QStringList quoted2;
             for (const QString &a : args2)
