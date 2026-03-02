@@ -28,6 +28,7 @@
 #include <QImage>
 #include <QBuffer>
 #include <QByteArray>
+#include <QPixmap>
 #include <QPainter>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -193,7 +194,7 @@ QIcon makeMonochromeIcon(const char *svgData, const QSize &size, const QIcon &fa
     if (!svgData || size.isEmpty())
         return fallback;
 
-    QSvgRenderer renderer(QByteArray(svgData));
+    QSvgRenderer renderer{QByteArray(svgData)};
     if (!renderer.isValid())
         return fallback;
 
