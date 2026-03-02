@@ -2,6 +2,7 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QtGlobal>
 #include <iostream>
 
 OrthogonalView::OrthogonalView(QWidget *parent): QWidget(parent) {
@@ -63,6 +64,15 @@ void OrthogonalView::mousePressEvent(QMouseEvent *event) {
     }
     int xi, yi;
     if (widgetToImage(m_image, event->pos(), size(), m_userZoom, m_pan, xi, yi)) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QPoint globalPos = event->globalPosition().toPoint();
+#else
+        const QPoint globalPos = event->globalPos();
+#endif
+        if (event->button() == Qt::RightButton) {
+            emit contextMenuRequested(xi, yi, globalPos);
+            return;
+        }
         if (getenv("MANUAL_SEED_DEBUG")) std::cerr << "mousePress mapped: widget("<<event->x()<<","<<event->y()<<") -> img("<<xi<<","<<yi<<")\n";
         emit mousePressed(xi, yi, event->button());
     }

@@ -22,6 +22,7 @@ signals:
     void mousePressed(int x, int y, Qt::MouseButton button);
     void mouseReleased(int x, int y, Qt::MouseButton button);
     void mouseMoved(int x, int y, Qt::MouseButtons buttons);
+    void contextMenuRequested(int x, int y, QPoint globalPos);
 
 protected:
     void paintEvent(QPaintEvent *event) override;

@@ -868,16 +868,12 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
     }
     std::reverse(filtered.begin(), filtered.end());
 
-    QStringList choices;
-    for (int v : uniq)
-        choices << QString::number(v);
-
     // Get parameters from UI
     double pol = parent->getPolarity();
     int niter = parent->getNiter();
     int percentile = parent->getPercentile();
     bool doAll = parent->getSegmentAll();
-    bool polSweep = parent->getPolaritySweep() && !doAll;
+    bool polSweep = parent->getPolaritySweep();
     double windowLevel = parent->getWindowLevel();
     double windowWidth = parent->getWindowWidth();
 
@@ -910,30 +906,39 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
 
     QString baseDir = QFileInfo(QString::fromStdString(parent->getImagePath())).absolutePath();
 
-    if (!doAll && !polSweep)
+    auto writeMultilabelSeedFile = [&](const QString &seedFilePath) -> bool
     {
-        // Single segmentation run
-        bool ok = false;
-        QString sel = QInputDialog::getItem(parent, "Select Internal Label", "Choose label to be INTERNAL:", choices, 0, false, &ok);
-        if (!ok)
-            return;
-        int internal_label = sel.toInt();
-
-        // Create temporary seed file
-        QString seedFile = QDir::temp().filePath("roift_seeds_temp.txt");
-        std::ofstream ofs(seedFile.toStdString());
+        std::ofstream ofs(seedFilePath.toStdString());
+        if (!ofs)
+            return false;
         ofs << filtered.size() << "\n";
         for (const auto &s : filtered)
         {
-            int internal_flag = (s.label == internal_label) ? 1 : 0;
-            ofs << s.x << " " << s.y << " " << s.z << " " << s.label << " " << internal_flag << "\n";
+            const int labelId = std::max(0, s.label);
+            ofs << s.x << " " << s.y << " " << s.z << " " << labelId << " " << labelId << "\n";
         }
         ofs.close();
+        return true;
+    };
+
+    if (!doAll && !polSweep)
+    {
+        // Single segmentation run
+        // Create temporary seed file
+        QString seedFile = QDir::temp().filePath("roift_seeds_multilabel_temp.txt");
+        if (!writeMultilabelSeedFile(seedFile))
+        {
+            QMessageBox::critical(parent, "Save Seeds", "Failed to create temporary multi-label seed file.");
+            return;
+        }
 
         QString outQ = QFileDialog::getSaveFileName(parent, "Save segmentation output", baseDir, "NIfTI files (*.nii *.nii.gz);;All files (*)");
         QCoreApplication::processEvents();
         if (outQ.isEmpty())
+        {
+            QFile::remove(seedFile);
             return;
+        }
         QString outp = outQ;
         if (!(outp.endsWith(".nii", Qt::CaseInsensitive) || outp.endsWith(".nii.gz", Qt::CaseInsensitive)))
             outp += ".nii.gz";
@@ -943,6 +948,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
         if (exePath.isEmpty())
         {
             QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
+            QFile::remove(seedFile);
             return;
         }
         const bool useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
@@ -1004,7 +1010,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
             }
             else
             {
-                QMessageBox::information(parent, "ROIFT", "Segmentation finished and mask loaded successfully.");
+                QMessageBox::information(parent, "ROIFT", "Multi-label segmentation finished and mask loaded successfully.");
             }
         }
         else
@@ -1021,23 +1027,13 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
     }
     else if (polSweep)
     {
-        // Polarity sweep - ask for internal label
-        bool ok = false;
-        QString sel = QInputDialog::getItem(parent, "Select Internal Label", "Choose label to be INTERNAL:", choices, 0, false, &ok);
-        if (!ok)
-            return;
-        int internal_label = sel.toInt();
-
         // Create temporary seed file
-        QString seedFile = QDir::temp().filePath("roift_seeds_polsweep_temp.txt");
-        std::ofstream ofs(seedFile.toStdString());
-        ofs << filtered.size() << "\n";
-        for (const auto &s : filtered)
+        QString seedFile = QDir::temp().filePath("roift_seeds_polsweep_multilabel_temp.txt");
+        if (!writeMultilabelSeedFile(seedFile))
         {
-            int internal_flag = (s.label == internal_label) ? 1 : 0;
-            ofs << s.x << " " << s.y << " " << s.z << " " << s.label << " " << internal_flag << "\n";
+            QMessageBox::critical(parent, "Save Seeds", "Failed to create temporary multi-label seed file.");
+            return;
         }
-        ofs.close();
 
         QString outDir = QFileDialog::getExistingDirectory(parent, "Select directory to save per-polarity segmentations", baseDir);
         QCoreApplication::processEvents();
@@ -1181,7 +1177,7 @@ void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
             return;
         }
 
-        QString summary = QString("Polarity sweep finished (%1 outputs). Masks saved in: %2")
+        QString summary = QString("Multi-label polarity sweep finished (%1 outputs). Masks saved in: %2")
                               .arg(successes.size())
                               .arg(outDir);
         QMessageBox::information(parent, "ROIFT", summary);

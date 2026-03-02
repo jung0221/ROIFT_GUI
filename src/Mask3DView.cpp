@@ -15,6 +15,7 @@
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkActor.h>
+#include <vtkCamera.h>
 #include <vtkFlyingEdges3D.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
@@ -22,6 +23,8 @@
 #include <vtkLookupTable.h>
 #include <vtkGlyph3DMapper.h>
 #include <vtkPointData.h>
+#include <vtkCellData.h>
+#include <vtkDataArray.h>
 #include <vtkPoints.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkPolyData.h>
@@ -59,6 +62,9 @@ Mask3DView::Mask3DView(QWidget *parent)
     m_colorButton = nullptr;
 
     m_statusLabel = new QLabel("Nenhuma máscara carregada");
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setWordWrap(false);
     layout->addWidget(m_statusLabel);
 
     buildPipeline();
@@ -131,11 +137,13 @@ void Mask3DView::buildPipeline()
     m_lookupTable->Build();
 
     m_mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-    m_mapper->SetScalarModeToUsePointFieldData();
-    m_mapper->SelectColorArray("Scalars");
+    // Prefer active point scalars for color mapping. We fallback to cell scalars
+    // at runtime if point scalars are not present.
+    m_mapper->SetScalarModeToUsePointData();
     m_mapper->ScalarVisibilityOn();
     m_mapper->SetLookupTable(m_lookupTable);
     m_mapper->SetColorModeToMapScalars();
+    m_mapper->UseLookupTableScalarRangeOn();
     m_actor->SetMapper(m_mapper);
 
     // FlyingEdges3D - GPU-accelerated alternative to Marching Cubes
@@ -214,7 +222,10 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
 
     for (int lbl : m_activeLabels)
     {
-        if (m_labelColors.find(lbl) == m_labelColors.end())
+        // Keep anatomy colors stable and high-contrast across updates.
+        if (lbl == 1 || lbl == 2 || lbl == 3)
+            m_labelColors[lbl] = colorForLabel(lbl);
+        else if (m_labelColors.find(lbl) == m_labelColors.end())
             m_labelColors[lbl] = colorForLabel(lbl);
     }
 
@@ -225,6 +236,49 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
 
     m_flyingEdges->Modified();
     m_actor->SetVisibility(m_maskVisible && !m_activeLabels.empty());
+
+    // Ensure mapper sees the scalar array emitted by the contour pipeline.
+    // Depending on VTK build/filter behavior, scalars may come as point or cell data.
+    m_smoother->Update();
+    vtkPolyData *poly = m_smoother->GetOutput();
+    if (poly && m_mapper)
+    {
+        vtkDataArray *pointScalars = poly->GetPointData() ? poly->GetPointData()->GetScalars() : nullptr;
+        if (!pointScalars && poly->GetPointData())
+        {
+            vtkDataArray *namedPointScalars = poly->GetPointData()->GetArray("Scalars");
+            if (namedPointScalars)
+            {
+                poly->GetPointData()->SetScalars(namedPointScalars);
+                pointScalars = namedPointScalars;
+            }
+        }
+
+        if (pointScalars)
+        {
+            m_mapper->SetScalarModeToUsePointData();
+            m_mapper->ScalarVisibilityOn();
+        }
+        else
+        {
+            vtkDataArray *cellScalars = poly->GetCellData() ? poly->GetCellData()->GetScalars() : nullptr;
+            if (cellScalars && poly->GetCellData()->GetArray("Scalars"))
+                cellScalars = poly->GetCellData()->GetArray("Scalars");
+
+            if (cellScalars)
+            {
+                m_mapper->SetScalarModeToUseCellData();
+                m_mapper->ScalarVisibilityOn();
+            }
+            else
+            {
+                // Last-resort fallback: at least keep geometry visible.
+                m_mapper->ScalarVisibilityOff();
+                m_actor->GetProperty()->SetColor(0.85, 0.85, 0.85);
+            }
+        }
+    }
+
     rebuildLookupTable();
     updateLabelControls();
     const double physX = static_cast<double>(sizeX) * m_spacingX;
@@ -266,6 +320,51 @@ void Mask3DView::clearMask()
     updateLabelControls();
     setStatusText("Nenhuma máscara 3D disponível");
     if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+Mask3DView::CameraState Mask3DView::captureCameraState() const
+{
+    CameraState state;
+    if (!m_renderer)
+        return state;
+
+    vtkCamera *camera = m_renderer->GetActiveCamera();
+    if (!camera)
+        return state;
+
+    camera->GetPosition(state.position);
+    camera->GetFocalPoint(state.focalPoint);
+    camera->GetViewUp(state.viewUp);
+    camera->GetClippingRange(state.clippingRange);
+    state.parallelProjection = camera->GetParallelProjection() ? 1 : 0;
+    state.parallelScale = camera->GetParallelScale();
+    state.viewAngle = camera->GetViewAngle();
+    state.valid = true;
+    return state;
+}
+
+void Mask3DView::restoreCameraState(const CameraState &state, bool render)
+{
+    if (!state.valid || !m_renderer)
+        return;
+
+    vtkCamera *camera = m_renderer->GetActiveCamera();
+    if (!camera)
+        return;
+
+    camera->SetPosition(state.position);
+    camera->SetFocalPoint(state.focalPoint);
+    camera->SetViewUp(state.viewUp);
+    camera->SetParallelProjection(state.parallelProjection);
+    if (state.parallelProjection)
+        camera->SetParallelScale(state.parallelScale);
+    else
+        camera->SetViewAngle(state.viewAngle);
+    camera->SetClippingRange(state.clippingRange);
+    m_renderer->ResetCameraClippingRange();
+
+    if (render && m_renderWindow)
         m_renderWindow->Render();
 }
 
@@ -522,7 +621,10 @@ void Mask3DView::updateColorButtonStyle()
 void Mask3DView::setStatusText(const QString &text)
 {
     if (m_statusLabel)
+    {
         m_statusLabel->setText(text);
+        m_statusLabel->setToolTip(text);
+    }
 }
 
 void Mask3DView::onVisibilityToggled(bool checked)

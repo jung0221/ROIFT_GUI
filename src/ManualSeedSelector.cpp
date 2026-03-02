@@ -19,6 +19,7 @@
 #include <QGridLayout>
 #include <QSizePolicy>
 #include <QApplication>
+#include <QGuiApplication>
 #include <QClipboard>
 #include <QCursor>
 #include <QPushButton>
@@ -40,12 +41,19 @@
 #include <QDoubleSpinBox>
 #include <QSlider>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QFrame>
 #include <QToolButton>
 #include <QSplitter>
 #include <QListWidget>
 #include <QMenu>
 #include <QTreeWidget>
+#include <QProgressBar>
+#include <QSignalBlocker>
+#include <QTimer>
+#include <QResizeEvent>
+#include <QMoveEvent>
+#include <QWindow>
 
 #include <cstdint>
 #include <cstring>
@@ -58,6 +66,7 @@
 #include <unordered_set>
 #include <utility>
 #include <filesystem>
+#include <thread>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -269,6 +278,10 @@ constexpr const char *kRefreshIconSvg = R"svg(
 </svg>
 )svg";
 
+constexpr int kPathRole = Qt::UserRole;
+constexpr int kMaskSourceImageRole = Qt::UserRole + 1;
+constexpr int kWindowSliderTicks = 4096;
+
 QString normalizeCsvCell(QString value)
 {
     value = value.trimmed();
@@ -332,7 +345,7 @@ bool isNiftiPathCell(const QString &value)
 bool isNiftiMaskFilenameCandidate(const QString &fileName)
 {
     const QString lower = fileName.trimmed().toLower();
-    return lower.endsWith(".nii.gz");
+    return lower.endsWith(".nii.gz") || lower.endsWith(".nii");
 }
 
 bool isSeedFilenameCandidate(const QString &fileName)
@@ -541,6 +554,335 @@ QString stripNiftiSuffix(const QString &fileName)
         baseName.chop(4);
     return baseName;
 }
+
+std::string makeTerminalProgressBar(int done, int total, int width = 30)
+{
+    const int safeTotal = std::max(1, total);
+    const int clampedDone = std::clamp(done, 0, safeTotal);
+    const int filled = static_cast<int>(std::round((static_cast<double>(clampedDone) / static_cast<double>(safeTotal)) * width));
+
+    std::string bar;
+    bar.reserve(static_cast<size_t>(width + 2));
+    bar.push_back('[');
+    for (int i = 0; i < width; ++i)
+        bar.push_back(i < filled ? '=' : ' ');
+    bar.push_back(']');
+    return bar;
+}
+
+QColor heatmapColorFromNormalized(float value)
+{
+    const float t = std::clamp(value, 0.0f, 1.0f);
+    const auto lerp = [](int a, int b, float u) -> int
+    {
+        return static_cast<int>(std::round((1.0f - u) * static_cast<float>(a) + u * static_cast<float>(b)));
+    };
+
+    if (t <= 0.25f)
+    {
+        const float u = t / 0.25f;
+        return QColor(lerp(0, 0, u), lerp(0, 255, u), lerp(255, 255, u));
+    }
+    if (t <= 0.50f)
+    {
+        const float u = (t - 0.25f) / 0.25f;
+        return QColor(lerp(0, 0, u), lerp(255, 255, u), lerp(255, 0, u));
+    }
+    if (t <= 0.75f)
+    {
+        const float u = (t - 0.50f) / 0.25f;
+        return QColor(lerp(0, 255, u), lerp(255, 255, u), lerp(0, 0, u));
+    }
+
+    const float u = (t - 0.75f) / 0.25f;
+    return QColor(lerp(255, 255, u), lerp(255, 0, u), lerp(0, 0, u));
+}
+
+unsigned int mapDepthIndex(unsigned int sourceIndex, unsigned int sourceDepth, unsigned int targetDepth)
+{
+    if (targetDepth == 0)
+        return 0;
+    if (targetDepth == 1 || sourceDepth <= 1)
+        return 0;
+
+    const double ratio = static_cast<double>(sourceIndex) / static_cast<double>(sourceDepth - 1);
+    const double mapped = ratio * static_cast<double>(targetDepth - 1);
+    const unsigned int nearest = static_cast<unsigned int>(std::llround(mapped));
+    return std::min(nearest, targetDepth - 1);
+}
+
+uint64_t makePointQueryBucketKey(unsigned int z, unsigned int bx, unsigned int by)
+{
+    return (static_cast<uint64_t>(z) << 32) |
+           (static_cast<uint64_t>(by & 0xFFFFu) << 16) |
+           static_cast<uint64_t>(bx & 0xFFFFu);
+}
+
+void configureWindowControls(float gmin,
+                             float gmax,
+                             RangeSlider *windowSlider,
+                             QDoubleSpinBox *windowLevelSpin,
+                             QDoubleSpinBox *windowWidthSpin,
+                             float *windowGlobalMin,
+                             float *windowGlobalMax,
+                             float *windowLow,
+                             float *windowHigh)
+{
+    if (!std::isfinite(gmin))
+        gmin = 0.0f;
+    if (!std::isfinite(gmax))
+        gmax = gmin + 1.0f;
+    if (gmax <= gmin)
+        gmax = gmin + 1e-3f;
+
+    const float span = gmax - gmin;
+
+    int decimals = 1;
+    double step = 1.0;
+    if (span <= 2.0f)
+    {
+        decimals = 3;
+        step = std::max(0.001, static_cast<double>(span) / 200.0);
+    }
+    else if (span <= 20.0f)
+    {
+        decimals = 2;
+        step = std::max(0.01, static_cast<double>(span) / 200.0);
+    }
+    else if (span <= 200.0f)
+    {
+        decimals = 1;
+        step = std::max(0.1, static_cast<double>(span) / 200.0);
+    }
+    else
+    {
+        decimals = 1;
+        step = std::max(1.0, static_cast<double>(span) / 200.0);
+    }
+
+    if (windowGlobalMin)
+        *windowGlobalMin = gmin;
+    if (windowGlobalMax)
+        *windowGlobalMax = gmax;
+    if (windowLow)
+        *windowLow = gmin;
+    if (windowHigh)
+        *windowHigh = gmax;
+
+    if (windowSlider)
+    {
+        windowSlider->setRange(0, kWindowSliderTicks);
+        windowSlider->setLowerValue(0);
+        windowSlider->setUpperValue(kWindowSliderTicks);
+    }
+
+    if (windowLevelSpin)
+    {
+        windowLevelSpin->setDecimals(decimals);
+        windowLevelSpin->setSingleStep(step);
+        windowLevelSpin->setRange(static_cast<double>(gmin), static_cast<double>(gmax));
+        windowLevelSpin->setValue(0.5 * (static_cast<double>(gmin) + static_cast<double>(gmax)));
+    }
+
+    if (windowWidthSpin)
+    {
+        const double widthMin = std::min(static_cast<double>(span), std::max(1e-3, step));
+        windowWidthSpin->setDecimals(decimals);
+        windowWidthSpin->setSingleStep(step);
+        windowWidthSpin->setRange(widthMin, static_cast<double>(span));
+        windowWidthSpin->setValue(static_cast<double>(span));
+    }
+}
+
+int windowValueToSliderTick(float value, float gmin, float gmax)
+{
+    if (!std::isfinite(gmin) || !std::isfinite(gmax) || gmax <= gmin)
+        return 0;
+    const double t = std::clamp((static_cast<double>(value) - static_cast<double>(gmin)) /
+                                    (static_cast<double>(gmax) - static_cast<double>(gmin)),
+                                0.0, 1.0);
+    return static_cast<int>(std::llround(t * static_cast<double>(kWindowSliderTicks)));
+}
+
+float sliderTickToWindowValue(int tick, float gmin, float gmax)
+{
+    if (!std::isfinite(gmin) || !std::isfinite(gmax) || gmax <= gmin)
+        return gmin;
+    const double t = std::clamp(static_cast<double>(tick) / static_cast<double>(kWindowSliderTicks), 0.0, 1.0);
+    return static_cast<float>(static_cast<double>(gmin) +
+                              t * (static_cast<double>(gmax) - static_cast<double>(gmin)));
+}
+
+std::vector<unsigned int> buildAxisMapping(unsigned int sourceSize, unsigned int targetSize)
+{
+    std::vector<unsigned int> mapping(sourceSize, 0);
+    if (sourceSize == 0 || targetSize == 0)
+        return mapping;
+
+    if (sourceSize == targetSize)
+    {
+        for (unsigned int i = 0; i < sourceSize; ++i)
+            mapping[i] = i;
+        return mapping;
+    }
+
+    for (unsigned int i = 0; i < sourceSize; ++i)
+        mapping[i] = mapDepthIndex(i, sourceSize, targetSize);
+    return mapping;
+}
+
+bool accumulateResampledMaskVotes(const itk::Image<int32_t, 3> *img,
+                                  unsigned int targetX,
+                                  unsigned int targetY,
+                                  unsigned int targetZ,
+                                  std::vector<float> &votes,
+                                  std::vector<int> *minXPerZ = nullptr,
+                                  std::vector<int> *maxXPerZ = nullptr,
+                                  std::vector<int> *minYPerZ = nullptr,
+                                  std::vector<int> *maxYPerZ = nullptr)
+{
+    if (!img || targetX == 0 || targetY == 0 || targetZ == 0)
+        return false;
+
+    const auto region = img->GetLargestPossibleRegion();
+    const auto size = region.GetSize();
+    const unsigned int srcX = static_cast<unsigned int>(size[0]);
+    const unsigned int srcY = static_cast<unsigned int>(size[1]);
+    const unsigned int srcZ = static_cast<unsigned int>(size[2]);
+    if (srcX == 0 || srcY == 0 || srcZ == 0)
+        return false;
+
+    const size_t expectedVotes = static_cast<size_t>(targetX) * static_cast<size_t>(targetY) * static_cast<size_t>(targetZ);
+    if (votes.size() != expectedVotes)
+        return false;
+
+    const std::vector<unsigned int> mapX = buildAxisMapping(srcX, targetX);
+    const std::vector<unsigned int> mapY = buildAxisMapping(srcY, targetY);
+    const std::vector<unsigned int> mapZ = buildAxisMapping(srcZ, targetZ);
+    const size_t targetPlaneStride = static_cast<size_t>(targetX) * static_cast<size_t>(targetY);
+
+    using MaskImageType = itk::Image<int32_t, 3>;
+    using MaskIteratorType = itk::ImageRegionConstIterator<MaskImageType>;
+    MaskIteratorType it(img, region);
+
+    unsigned int x = 0;
+    unsigned int y = 0;
+    unsigned int z = 0;
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it)
+    {
+        if (it.Get() != 0)
+        {
+            const unsigned int tx = mapX[x];
+            const unsigned int ty = mapY[y];
+            const unsigned int tz = mapZ[z];
+            const size_t targetIdx = static_cast<size_t>(tx) +
+                                     static_cast<size_t>(ty) * static_cast<size_t>(targetX) +
+                                     static_cast<size_t>(tz) * targetPlaneStride;
+            votes[targetIdx] += 1.0f;
+
+            if (minXPerZ && maxXPerZ && minYPerZ && maxYPerZ &&
+                tz < minXPerZ->size() && tz < maxXPerZ->size() &&
+                tz < minYPerZ->size() && tz < maxYPerZ->size())
+            {
+                (*minXPerZ)[tz] = std::min((*minXPerZ)[tz], static_cast<int>(tx));
+                (*maxXPerZ)[tz] = std::max((*maxXPerZ)[tz], static_cast<int>(tx));
+                (*minYPerZ)[tz] = std::min((*minYPerZ)[tz], static_cast<int>(ty));
+                (*maxYPerZ)[tz] = std::max((*maxYPerZ)[tz], static_cast<int>(ty));
+            }
+        }
+
+        ++x;
+        if (x >= srcX)
+        {
+            x = 0;
+            ++y;
+            if (y >= srcY)
+            {
+                y = 0;
+                ++z;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool buildResampledMaskBounds(const itk::Image<int32_t, 3> *img,
+                              unsigned int targetX,
+                              unsigned int targetY,
+                              unsigned int targetZ,
+                              std::vector<int> &minXPerZ,
+                              std::vector<int> &maxXPerZ,
+                              std::vector<int> &minYPerZ,
+                              std::vector<int> &maxYPerZ)
+{
+    if (!img || targetX == 0 || targetY == 0 || targetZ == 0)
+        return false;
+
+    const auto region = img->GetLargestPossibleRegion();
+    const auto size = region.GetSize();
+    const unsigned int srcX = static_cast<unsigned int>(size[0]);
+    const unsigned int srcY = static_cast<unsigned int>(size[1]);
+    const unsigned int srcZ = static_cast<unsigned int>(size[2]);
+    if (srcX == 0 || srcY == 0 || srcZ == 0)
+        return false;
+
+    minXPerZ.assign(targetZ, std::numeric_limits<int>::max());
+    maxXPerZ.assign(targetZ, -1);
+    minYPerZ.assign(targetZ, std::numeric_limits<int>::max());
+    maxYPerZ.assign(targetZ, -1);
+
+    const std::vector<unsigned int> mapX = buildAxisMapping(srcX, targetX);
+    const std::vector<unsigned int> mapY = buildAxisMapping(srcY, targetY);
+    const std::vector<unsigned int> mapZ = buildAxisMapping(srcZ, targetZ);
+
+    using MaskImageType = itk::Image<int32_t, 3>;
+    using MaskIteratorType = itk::ImageRegionConstIterator<MaskImageType>;
+    MaskIteratorType it(img, region);
+
+    unsigned int x = 0;
+    unsigned int y = 0;
+    unsigned int z = 0;
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it)
+    {
+        if (it.Get() != 0)
+        {
+            const unsigned int tx = mapX[x];
+            const unsigned int ty = mapY[y];
+            const unsigned int tz = mapZ[z];
+            if (tz < targetZ)
+            {
+                minXPerZ[tz] = std::min(minXPerZ[tz], static_cast<int>(tx));
+                maxXPerZ[tz] = std::max(maxXPerZ[tz], static_cast<int>(tx));
+                minYPerZ[tz] = std::min(minYPerZ[tz], static_cast<int>(ty));
+                maxYPerZ[tz] = std::max(maxYPerZ[tz], static_cast<int>(ty));
+            }
+        }
+
+        ++x;
+        if (x >= srcX)
+        {
+            x = 0;
+            ++y;
+            if (y >= srcY)
+            {
+                y = 0;
+                ++z;
+            }
+        }
+    }
+
+    for (unsigned int zi = 0; zi < targetZ; ++zi)
+    {
+        if (maxXPerZ[zi] < 0 || maxYPerZ[zi] < 0)
+        {
+            minXPerZ[zi] = -1;
+            minYPerZ[zi] = -1;
+        }
+    }
+
+    return true;
+}
 } // namespace
 
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
@@ -565,6 +907,7 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
             QListWidgetItem *niftiItem = new QListWidgetItem(QString::fromStdString(filename));
             niftiItem->setData(Qt::UserRole, QFileInfo(QString::fromStdString(niftiPath)).absoluteFilePath());
             m_niftiList->addItem(niftiItem);
+            renumberNiftiListItems();
             m_niftiList->setCurrentRow(0);
             m_currentImageIndex = 0;
 
@@ -573,6 +916,9 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
             {
                 std::cerr << "ManualSeedSelector: clearing existing mask buffer due to new image load" << std::endl;
                 m_maskData.clear();
+                m_maskDimX = 0;
+                m_maskDimY = 0;
+                m_maskDimZ = 0;
                 m_mask3DDirty = true;
             }
             m_maskSpacingX = m_image.getSpacingX();
@@ -591,33 +937,87 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
             // Window/level setup
             float gmin = m_image.getGlobalMin();
             float gmax = m_image.getGlobalMax();
-            m_windowGlobalMin = gmin;
-            m_windowGlobalMax = gmax;
-            if (m_windowSlider)
-            {
-                m_windowSlider->setRange(static_cast<int>(std::floor(gmin)), static_cast<int>(std::ceil(gmax)));
-                m_windowSlider->setLowerValue(static_cast<int>(gmin));
-                m_windowSlider->setUpperValue(static_cast<int>(gmax));
-            }
-            if (m_windowLevelSpin)
-            {
-                m_windowLevelSpin->setRange(static_cast<double>(gmin), static_cast<double>(gmax));
-                m_windowLevelSpin->setValue(0.5 * (gmin + gmax));
-            }
-            if (m_windowWidthSpin)
-            {
-                m_windowWidthSpin->setRange(1.0, static_cast<double>(gmax - gmin));
-                m_windowWidthSpin->setValue(static_cast<double>(gmax - gmin));
-            }
-            m_windowLow = gmin;
-            m_windowHigh = gmax;
+            configureWindowControls(gmin, gmax,
+                                    m_windowSlider,
+                                    m_windowLevelSpin,
+                                    m_windowWidthSpin,
+                                    &m_windowGlobalMin,
+                                    &m_windowGlobalMax,
+                                    &m_windowLow,
+                                    &m_windowHigh);
 
             updateViews();
         }
     }
 }
 
-ManualSeedSelector::~ManualSeedSelector() = default;
+ManualSeedSelector::~ManualSeedSelector()
+{
+    stopHeatmapWorker(true);
+}
+
+void ManualSeedSelector::clampWindowToCurrentScreen()
+{
+    if (m_clampingWindowGeometry || isFullScreen() || isMaximized())
+        return;
+
+    QScreen *screen = QGuiApplication::screenAt(frameGeometry().center());
+    if (!screen && windowHandle())
+        screen = windowHandle()->screen();
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    if (!screen)
+        return;
+
+    const QRect avail = screen->availableGeometry();
+    const QRect frame = frameGeometry();
+    const QRect client = geometry();
+
+    // Convert between frame/client geometries to preserve WM decorations.
+    const int leftMargin = client.x() - frame.x();
+    const int topMargin = client.y() - frame.y();
+    const int rightMargin = frame.right() - client.right();
+    const int bottomMargin = frame.bottom() - client.bottom();
+
+    QRect clampedFrame = frame;
+    if (clampedFrame.width() > avail.width())
+        clampedFrame.setWidth(avail.width());
+    if (clampedFrame.height() > avail.height())
+        clampedFrame.setHeight(avail.height());
+    if (clampedFrame.left() < avail.left())
+        clampedFrame.moveLeft(avail.left());
+    if (clampedFrame.top() < avail.top())
+        clampedFrame.moveTop(avail.top());
+    if (clampedFrame.right() > avail.right())
+        clampedFrame.moveRight(avail.right());
+    if (clampedFrame.bottom() > avail.bottom())
+        clampedFrame.moveBottom(avail.bottom());
+
+    if (clampedFrame == frame)
+        return;
+
+    QRect newClient(
+        clampedFrame.x() + leftMargin,
+        clampedFrame.y() + topMargin,
+        std::max(1, clampedFrame.width() - leftMargin - rightMargin),
+        std::max(1, clampedFrame.height() - topMargin - bottomMargin));
+
+    m_clampingWindowGeometry = true;
+    setGeometry(newClient);
+    m_clampingWindowGeometry = false;
+}
+
+void ManualSeedSelector::resizeEvent(QResizeEvent *event)
+{
+    QMainWindow::resizeEvent(event);
+    clampWindowToCurrentScreen();
+}
+
+void ManualSeedSelector::moveEvent(QMoveEvent *event)
+{
+    QMainWindow::moveEvent(event);
+    clampWindowToCurrentScreen();
+}
 
 bool ManualSeedSelector::applyMaskFromPath(const std::string &path)
 {
@@ -633,13 +1033,20 @@ bool ManualSeedSelector::applyMaskFromPath(const std::string &path)
         if (std::find(maskPaths.begin(), maskPaths.end(), absolutePath) == maskPaths.end())
             maskPaths.push_back(absolutePath);
     }
+    else
+    {
+        const std::string absolutePath =
+            QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath()).toStdString();
+        if (std::find(m_unassignedMaskPaths.begin(), m_unassignedMaskPaths.end(), absolutePath) == m_unassignedMaskPaths.end())
+            m_unassignedMaskPaths.push_back(absolutePath);
+    }
 
     refreshAssociatedFilesForCurrentImage();
     updateViews();
     return true;
 }
 
-void ManualSeedSelector::refreshAssociatedFilesForCurrentImage()
+void ManualSeedSelector::refreshAssociatedFilesForCurrentImage(bool forceDetect)
 {
     if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
     {
@@ -647,7 +1054,7 @@ void ManualSeedSelector::refreshAssociatedFilesForCurrentImage()
         return;
     }
 
-    autoDetectAssociatedFilesForImage(m_currentImageIndex);
+    autoDetectAssociatedFilesForImage(m_currentImageIndex, forceDetect);
     updateMaskSeedLists();
 }
 
@@ -687,7 +1094,6 @@ void ManualSeedSelector::setupUi()
             border: 1px solid #555555;
             border-radius: 3px;
             padding: 6px 14px;
-            min-width: 110px;
             font-size: 10px;
             color: #ffffff;
         }
@@ -926,15 +1332,15 @@ void ManualSeedSelector::setupUi()
 
     windowGrid->addWidget(new QLabel("WL:"), 1, 0);
     m_windowLevelSpin = new QDoubleSpinBox();
-    m_windowLevelSpin->setDecimals(1);
-    m_windowLevelSpin->setSingleStep(10.0);
+    m_windowLevelSpin->setDecimals(3);
+    m_windowLevelSpin->setSingleStep(1.0);
     m_windowLevelSpin->setToolTip("Window Level");
     windowGrid->addWidget(m_windowLevelSpin, 1, 1);
 
     windowGrid->addWidget(new QLabel("WW:"), 1, 2);
     m_windowWidthSpin = new QDoubleSpinBox();
-    m_windowWidthSpin->setDecimals(1);
-    m_windowWidthSpin->setSingleStep(10.0);
+    m_windowWidthSpin->setDecimals(3);
+    m_windowWidthSpin->setSingleStep(1.0);
     m_windowWidthSpin->setToolTip("Window Width");
     windowGrid->addWidget(m_windowWidthSpin, 1, 3);
 
@@ -1185,6 +1591,39 @@ void ManualSeedSelector::setupUi()
     maskFileLayout->addWidget(btnMaskClear);
 
     maskLayout->addWidget(maskFileGroup);
+
+    QGroupBox *maskAdvancedGroup = new QGroupBox("Advanced");
+    QHBoxLayout *maskAdvancedLayout = new QHBoxLayout(maskAdvancedGroup);
+    m_btnMaskHeatmap = new QPushButton("Heatmap");
+    m_btnMaskHeatmap->setCheckable(true);
+    m_btnMaskHeatmap->setToolTip("Generate a new NIfTI heatmap volume from all masks in the Masks list");
+    connect(m_btnMaskHeatmap, &QPushButton::toggled, this, [this](bool enabled)
+            {
+        if (enabled)
+        {
+            m_heatmapEnabled = true;
+            startHeatmapBuildAsync(true);
+        }
+        else
+        {
+            m_heatmapCancelRequested.store(true);
+            m_heatmapEnabled = false;
+            m_heatmapData.clear();
+            m_heatmapMaskCount = 0;
+            if (m_heatmapProgressBar)
+                m_heatmapProgressBar->setVisible(false);
+            if (m_heatmapCancelButton)
+            {
+                m_heatmapCancelButton->setVisible(false);
+                m_heatmapCancelButton->setEnabled(true);
+            }
+            if (m_statusLabel)
+                m_statusLabel->setText("Heatmap disabled.");
+            updateViews();
+        }
+    });
+    maskAdvancedLayout->addWidget(m_btnMaskHeatmap);
+    maskLayout->addWidget(maskAdvancedGroup);
     maskLayout->addStretch();
 
     m_maskTabIndex = m_ribbonTabs->addTab(maskTab, "Mask");
@@ -1244,8 +1683,8 @@ void ManualSeedSelector::setupUi()
     QVBoxLayout *optionsLayout = new QVBoxLayout(optionsGroup);
     optionsLayout->setSpacing(4);
 
-    m_segmentAllBox = new QCheckBox("Segment all labels");
-    m_segmentAllBox->setToolTip("Process all seed labels in batch");
+    m_segmentAllBox = new QCheckBox("Legacy batch per label");
+    m_segmentAllBox->setToolTip("Optional legacy mode: run one binary segmentation per label. Default run already uses multi-label competition in a single execution.");
     optionsLayout->addWidget(m_segmentAllBox);
 
     m_polSweepBox = new QCheckBox("Polarity sweep");
@@ -1301,7 +1740,7 @@ void ManualSeedSelector::setupUi()
     // MAIN CONTENT: View Grid + Right Sidebar (resizable)
     // =====================================================
     QSplitter *contentSplitter = new QSplitter(Qt::Horizontal);
-    contentSplitter->setChildrenCollapsible(false);
+    contentSplitter->setChildrenCollapsible(true);
     contentSplitter->setHandleWidth(8);
     contentSplitter->setToolTip("Drag this divider to resize the right panel.");
 
@@ -1332,10 +1771,12 @@ void ManualSeedSelector::setupUi()
         view->installEventFilter(this);
     }
 
-    m_axialView->setMinimumSize(360, 280);
-    m_sagittalView->setMinimumSize(320, 280);
-    m_coronalView->setMinimumSize(320, 280);
-    m_mask3DView->setMinimumSize(320, 240);
+    // Keep minimums modest so OS tiling/snap (Win+arrow) can fit on half-screen
+    // without spilling into adjacent monitors.
+    m_axialView->setMinimumSize(120, 120);
+    m_sagittalView->setMinimumSize(120, 120);
+    m_coronalView->setMinimumSize(120, 120);
+    m_mask3DView->setMinimumSize(120, 120);
 
     const QString toggleCheckStyle = "QCheckBox { background-color: rgba(0, 0, 0, 150); padding: 2px 6px; border-radius: 4px; }";
     auto createToggleCheck = [&toggleCheckStyle](const QString &text, const QString &tooltip, bool checked) -> QCheckBox *
@@ -1448,14 +1889,14 @@ void ManualSeedSelector::setupUi()
     QWidget *viewContainer = new QWidget();
     viewContainer->setLayout(viewGrid);
     viewContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    viewContainer->setMinimumWidth(640);
+    viewContainer->setMinimumWidth(0);
     contentSplitter->addWidget(viewContainer);
 
     // =====================================================
     // RIGHT SIDEBAR: File Management
     // =====================================================
     QWidget *sidebar = new QWidget();
-    sidebar->setMinimumWidth(200);
+    sidebar->setMinimumWidth(100);
     sidebar->setMaximumWidth(520);
     QVBoxLayout *sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setSpacing(4);
@@ -1497,6 +1938,7 @@ void ManualSeedSelector::setupUi()
     m_niftiList->setMinimumHeight(70);
     m_niftiList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_niftiList->setToolTip("Click to select which image to display");
+    m_niftiList->viewport()->installEventFilter(this);
     niftiListLayout->addWidget(m_niftiList);
 
     QHBoxLayout *niftiButtonsLayout = new QHBoxLayout();
@@ -1585,6 +2027,7 @@ void ManualSeedSelector::setupUi()
         if (currentRow >= 0 && currentRow < static_cast<int>(m_images.size())) {
             m_images.erase(m_images.begin() + currentRow);
             delete m_niftiList->takeItem(currentRow);
+            renumberNiftiListItems();
             if (currentRow == m_currentImageIndex) {
                 m_currentImageIndex = -1;
                 m_image = NiftiImage();
@@ -1618,11 +2061,16 @@ void ManualSeedSelector::setupUi()
             return;
 
         m_images.clear();
+        stopHeatmapWorker(false);
         m_niftiList->clear();
         m_currentImageIndex = -1;
         m_image = NiftiImage();
         m_path.clear();
+        m_loadedMaskPath.clear();
         m_maskData.clear();
+        m_maskDimX = 0;
+        m_maskDimY = 0;
+        m_maskDimZ = 0;
         m_seeds.clear();
         m_maskSpacingX = 1.0;
         m_maskSpacingY = 1.0;
@@ -1652,10 +2100,28 @@ void ManualSeedSelector::setupUi()
     niftiButtonsLayout->addStretch(1);
     niftiListLayout->addLayout(niftiButtonsLayout);
 
+    m_autoDetectAssociationsCheck = new QCheckBox("Auto-detect masks/seeds");
+    m_autoDetectAssociationsCheck->setChecked(m_autoDetectAssociatedFiles);
+    m_autoDetectAssociationsCheck->setToolTip("Automatically scan image folder for associated masks (.nii/.nii.gz) and seeds (.txt)");
+    connect(m_autoDetectAssociationsCheck, &QCheckBox::toggled, this, [this](bool enabled)
+            {
+        m_autoDetectAssociatedFiles = enabled;
+        if (m_statusLabel)
+        {
+            m_statusLabel->setText(enabled
+                                       ? "Auto-detection of masks/seeds enabled."
+                                       : "Auto-detection of masks/seeds disabled.");
+        } });
+    niftiListLayout->addWidget(m_autoDetectAssociationsCheck);
+
     // Connect item selection to load the image
     connect(m_niftiList, &QListWidget::currentRowChanged, [this](int row)
             {
         if (row >= 0 && row < static_cast<int>(m_images.size())) {
+            stopHeatmapWorker(false);
+            const Mask3DView::CameraState preservedCamera = (m_mask3DView != nullptr)
+                                                                ? m_mask3DView->captureCameraState()
+                                                                : Mask3DView::CameraState{};
             // Persist current slice positions before switching images.
             if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size())) {
                 m_images[m_currentImageIndex].lastAxialSlice = m_axialSlider->value();
@@ -1667,10 +2133,14 @@ void ManualSeedSelector::setupUi()
             if (m_image.load(path)) {
                 m_currentImageIndex = row;
                 m_path = path;
-                autoDetectAssociatedFilesForImage(row);
+                autoDetectAssociatedFilesForImage(row, false);
                 
                 // Clear mask and seed data when switching images
+                m_loadedMaskPath.clear();
                 m_maskData.clear();
+                m_maskDimX = 0;
+                m_maskDimY = 0;
+                m_maskDimZ = 0;
                 m_seeds.clear();
                 m_maskSpacingX = m_image.getSpacingX();
                 m_maskSpacingY = m_image.getSpacingY();
@@ -1704,27 +2174,20 @@ void ManualSeedSelector::setupUi()
                 // Window/level setup
                 float gmin = m_image.getGlobalMin();
                 float gmax = m_image.getGlobalMax();
-                m_windowGlobalMin = gmin;
-                m_windowGlobalMax = gmax;
-                if (m_windowSlider) {
-                    m_windowSlider->setRange(static_cast<int>(std::floor(gmin)), static_cast<int>(std::ceil(gmax)));
-                    m_windowSlider->setLowerValue(static_cast<int>(gmin));
-                    m_windowSlider->setUpperValue(static_cast<int>(gmax));
-                }
-                if (m_windowLevelSpin) {
-                    m_windowLevelSpin->setRange(static_cast<double>(gmin), static_cast<double>(gmax));
-                    m_windowLevelSpin->setValue(0.5 * (gmin + gmax));
-                }
-                if (m_windowWidthSpin) {
-                    m_windowWidthSpin->setRange(1.0, static_cast<double>(gmax - gmin));
-                    m_windowWidthSpin->setValue(static_cast<double>(gmax - gmin));
-                }
-                m_windowLow = gmin;
-                m_windowHigh = gmax;
+                configureWindowControls(gmin, gmax,
+                                        m_windowSlider,
+                                        m_windowLevelSpin,
+                                        m_windowWidthSpin,
+                                        &m_windowGlobalMin,
+                                        &m_windowGlobalMax,
+                                        &m_windowLow,
+                                        &m_windowHigh);
                 
                 // Update mask and seed lists for this image
                 updateMaskSeedLists();
                 updateViews();
+                if (m_mask3DView && preservedCamera.valid)
+                    m_mask3DView->restoreCameraState(preservedCamera, true);
                 m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(path)));
             }
         } });
@@ -1749,20 +2212,46 @@ void ManualSeedSelector::setupUi()
 
     QToolButton *btnLoadMask = new QToolButton();
     btnLoadMask->setIcon(makeMonochromeIcon(kLoadIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Load, QSize(16, 16))));
-    btnLoadMask->setToolTip("Load masks for current image");
+    btnLoadMask->setToolTip("Add");
     configureNiftiIconButton(btnLoadMask);
     connect(btnLoadMask, &QToolButton::clicked, [this]()
             {
-        if (m_currentImageIndex < 0) {
-            QMessageBox::warning(this, "Load Mask", "Please select an image first.");
-            return;
-        }
+        const bool hadImage = hasImage();
         QStringList files = QFileDialog::getOpenFileNames(this, "Open Masks", "", "NIfTI files (*.nii *.nii.gz)");
-        for (const QString &f : files) {
-            std::string path = f.toStdString();
-            m_images[m_currentImageIndex].maskPaths.push_back(path);
+        if (files.isEmpty())
+            return;
+
+        int duplicateCount = 0;
+        int missingCount = 0;
+        const int added = addMaskPathsToCurrentContext(files, &duplicateCount, &missingCount);
+        const QString targetLabel = (resolveMaskTargetImageIndex() >= 0) ? "current image" : "global mask list";
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Added %1 mask(s) to %2, %3 duplicate(s), %4 missing")
+                                       .arg(added)
+                                       .arg(targetLabel)
+                                       .arg(duplicateCount)
+                                       .arg(missingCount));
+
+        if (!hadImage && added > 0)
+        {
+            for (const QString &candidate : files)
+            {
+                const QString abs = QFileInfo(candidate).absoluteFilePath();
+                if (QFileInfo::exists(abs))
+                {
+                    loadMaskFromFile(abs.toStdString());
+                    updateViews();
+                    break;
+                }
+            }
         }
-        refreshAssociatedFilesForCurrentImage(); });
+    });
+
+    QToolButton *btnLoadMaskCsv = new QToolButton();
+    btnLoadMaskCsv->setIcon(makeMonochromeIcon(kAddCsvIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::AddCsv, QSize(16, 16))));
+    btnLoadMaskCsv->setToolTip("Add CSV");
+    configureNiftiIconButton(btnLoadMaskCsv);
+    connect(btnLoadMaskCsv, &QToolButton::clicked, this, &ManualSeedSelector::openMasksFromCsv);
 
     QToolButton *btnRefreshMasks = new QToolButton();
     btnRefreshMasks->setIcon(makeMonochromeIcon(kRefreshIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Refresh, QSize(16, 16))));
@@ -1770,33 +2259,197 @@ void ManualSeedSelector::setupUi()
     configureNiftiIconButton(btnRefreshMasks);
     connect(btnRefreshMasks, &QToolButton::clicked, [this]()
             {
-        refreshAssociatedFilesForCurrentImage();
+        refreshAssociatedFilesForCurrentImage(true);
         if (m_statusLabel)
             m_statusLabel->setText("Refreshed masks and seeds for current image.");
     });
 
+    QToolButton *btnRemoveMask = new QToolButton();
+    btnRemoveMask->setIcon(makeMonochromeIcon(kRemoveIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Remove, QSize(16, 16))));
+    btnRemoveMask->setToolTip("Remove selected mask");
+    configureNiftiIconButton(btnRemoveMask);
+    connect(btnRemoveMask, &QToolButton::clicked, [this]()
+            {
+        if (!m_maskList || !m_maskList->currentItem()) {
+            QMessageBox::information(this, "Remove Mask", "Please select a mask in the list.");
+            return;
+        }
+
+        QListWidgetItem *item = m_maskList->currentItem();
+        const QString path = QDir::cleanPath(QFileInfo(item->data(kPathRole).toString()).absoluteFilePath());
+        const std::string key = path.toStdString();
+        const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
+        const bool removingActiveMask = (!activeMaskPath.isEmpty() && path == activeMaskPath);
+        const int sourceImageIndex = item->data(kMaskSourceImageRole).toInt();
+        bool removed = false;
+        if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size())) {
+            auto &maskPaths = m_images[static_cast<size_t>(sourceImageIndex)].maskPaths;
+            auto it = std::find(maskPaths.begin(), maskPaths.end(), key);
+            if (it != maskPaths.end()) {
+                maskPaths.erase(it);
+                removed = true;
+            }
+        } else {
+            auto it = std::find(m_unassignedMaskPaths.begin(), m_unassignedMaskPaths.end(), key);
+            if (it != m_unassignedMaskPaths.end()) {
+                m_unassignedMaskPaths.erase(it);
+                removed = true;
+            }
+        }
+
+        if (!removed) {
+            QMessageBox::warning(this, "Remove Mask", "Selected mask is not present in the internal list.");
+            return;
+        }
+
+        if (removingActiveMask)
+        {
+            m_loadedMaskPath.clear();
+            m_maskData.clear();
+            m_maskDimX = 0;
+            m_maskDimY = 0;
+            m_maskDimZ = 0;
+            m_mask3DDirty = true;
+            updateViews();
+        }
+
+        updateMaskSeedLists();
+        if (m_statusLabel)
+            m_statusLabel->setText(removingActiveMask
+                                       ? QString("Removed active mask: %1 (overlay cleared)").arg(path)
+                                       : QString("Removed mask: %1").arg(path));
+    });
+
+    QToolButton *btnRemoveAllMasks = new QToolButton();
+    btnRemoveAllMasks->setIcon(makeMonochromeIcon(kRemoveAllIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::RemoveAll, QSize(16, 16))));
+    btnRemoveAllMasks->setToolTip("Remove all masks from current scope");
+    configureNiftiIconButton(btnRemoveAllMasks);
+    connect(btnRemoveAllMasks, &QToolButton::clicked, [this]()
+            {
+        if (!m_maskList || m_maskList->count() == 0)
+            return;
+
+        QMessageBox::StandardButton answer = QMessageBox::question(
+            this,
+            "Confirm Remove All Masks",
+            "Are you sure you want to remove all masks shown in the current list?",
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+
+        std::vector<std::unordered_set<std::string>> perImageToRemove(m_images.size());
+        std::unordered_set<std::string> globalToRemove;
+        globalToRemove.reserve(static_cast<size_t>(m_maskList->count()));
+        const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
+
+        for (int i = 0; i < m_maskList->count(); ++i)
+        {
+            QListWidgetItem *item = m_maskList->item(i);
+            if (!item)
+                continue;
+
+            const QString path = QDir::cleanPath(QFileInfo(item->data(kPathRole).toString()).absoluteFilePath());
+            if (path.isEmpty())
+                continue;
+
+            const std::string key = path.toStdString();
+            const int sourceImageIndex = item->data(kMaskSourceImageRole).toInt();
+            if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size()))
+                perImageToRemove[static_cast<size_t>(sourceImageIndex)].insert(key);
+            else
+                globalToRemove.insert(key);
+        }
+
+        bool removedActiveMask = false;
+        if (!activeMaskPath.isEmpty())
+        {
+            const std::string activeKey = activeMaskPath.toStdString();
+            if (globalToRemove.find(activeKey) != globalToRemove.end())
+                removedActiveMask = true;
+            if (!removedActiveMask)
+            {
+                for (const auto &toRemove : perImageToRemove)
+                {
+                    if (toRemove.find(activeKey) != toRemove.end())
+                    {
+                        removedActiveMask = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        int removedCount = 0;
+        for (size_t imageIdx = 0; imageIdx < m_images.size(); ++imageIdx)
+        {
+            const auto &toRemove = perImageToRemove[imageIdx];
+            if (toRemove.empty())
+                continue;
+
+            auto &paths = m_images[imageIdx].maskPaths;
+            const auto oldSize = paths.size();
+            paths.erase(std::remove_if(paths.begin(), paths.end(), [&toRemove](const std::string &p)
+                                       { return toRemove.find(p) != toRemove.end(); }),
+                        paths.end());
+            removedCount += static_cast<int>(oldSize - paths.size());
+        }
+
+        if (!globalToRemove.empty())
+        {
+            const auto oldSize = m_unassignedMaskPaths.size();
+            m_unassignedMaskPaths.erase(
+                std::remove_if(m_unassignedMaskPaths.begin(), m_unassignedMaskPaths.end(), [&globalToRemove](const std::string &p)
+                               { return globalToRemove.find(p) != globalToRemove.end(); }),
+                m_unassignedMaskPaths.end());
+            removedCount += static_cast<int>(oldSize - m_unassignedMaskPaths.size());
+        }
+
+        if (removedActiveMask)
+        {
+            m_loadedMaskPath.clear();
+            m_maskData.clear();
+            m_maskDimX = 0;
+            m_maskDimY = 0;
+            m_maskDimZ = 0;
+            m_mask3DDirty = true;
+            updateViews();
+        }
+
+        updateMaskSeedLists();
+        if (m_statusLabel)
+            m_statusLabel->setText(removedActiveMask
+                                       ? QString("Removed %1 mask(s) from current list scope (active overlay cleared).").arg(removedCount)
+                                       : QString("Removed %1 mask(s) from current list scope.").arg(removedCount));
+    });
+
     maskButtonsLayout->addStretch(1);
     maskButtonsLayout->addWidget(btnLoadMask);
+    maskButtonsLayout->addWidget(btnLoadMaskCsv);
     maskButtonsLayout->addWidget(btnRefreshMasks);
+    maskButtonsLayout->addWidget(btnRemoveMask);
+    maskButtonsLayout->addWidget(btnRemoveAllMasks);
     maskButtonsLayout->addStretch(1);
     maskListLayout->addLayout(maskButtonsLayout);
 
     // Connect item selection to load the mask
     connect(m_maskList, &QListWidget::itemClicked, [this](QListWidgetItem *item)
             {
-        if (!item || m_currentImageIndex < 0) return;
-        
-        // Find which mask was clicked
-        for (size_t i = 0; i < m_images[m_currentImageIndex].maskPaths.size(); ++i) {
-            std::string filename = std::filesystem::path(m_images[m_currentImageIndex].maskPaths[i]).filename().string();
-            if (item->text().toStdString() == filename) {
-                if (loadMaskFromFile(m_images[m_currentImageIndex].maskPaths[i])) {
-                    updateViews();
-                    m_statusLabel->setText(QString("Loaded mask: %1").arg(item->text()));
-                }
-                break;
-            }
-        } });
+        if (!item)
+            return;
+
+        const QString maskPath = QFileInfo(item->data(kPathRole).toString()).absoluteFilePath();
+        if (maskPath.isEmpty()) {
+            QMessageBox::warning(this, "Load Mask", "Selected mask item has no valid path.");
+            return;
+        }
+
+        if (loadMaskFromFile(maskPath.toStdString())) {
+            updateViews();
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Loaded mask: %1").arg(item->text()));
+        }
+    });
 
     sidebarSplitter->addWidget(maskListGroup);
 
@@ -1831,7 +2484,9 @@ void ManualSeedSelector::setupUi()
             std::string path = f.toStdString();
             m_images[m_currentImageIndex].seedPaths.push_back(path);
         }
-        refreshAssociatedFilesForCurrentImage(); });
+        updateMaskSeedLists();
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Added %1 seed group(s) to current image.").arg(files.size())); });
 
     QToolButton *btnRefreshSeeds = new QToolButton();
     btnRefreshSeeds->setIcon(makeMonochromeIcon(kRefreshIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Refresh, QSize(16, 16))));
@@ -1839,32 +2494,90 @@ void ManualSeedSelector::setupUi()
     configureNiftiIconButton(btnRefreshSeeds);
     connect(btnRefreshSeeds, &QToolButton::clicked, [this]()
             {
-        refreshAssociatedFilesForCurrentImage();
+        refreshAssociatedFilesForCurrentImage(true);
         if (m_statusLabel)
             m_statusLabel->setText("Refreshed masks and seeds for current image.");
+    });
+
+    QToolButton *btnRemoveSeed = new QToolButton();
+    btnRemoveSeed->setIcon(makeMonochromeIcon(kRemoveIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Remove, QSize(16, 16))));
+    btnRemoveSeed->setToolTip("Remove selected seed group");
+    configureNiftiIconButton(btnRemoveSeed);
+    connect(btnRemoveSeed, &QToolButton::clicked, [this]()
+            {
+        if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size())) {
+            QMessageBox::warning(this, "Remove Seed Group", "Please select an image first.");
+            return;
+        }
+
+        const int row = m_seedList ? m_seedList->currentRow() : -1;
+        auto &seedPaths = m_images[m_currentImageIndex].seedPaths;
+        if (row < 0 || row >= static_cast<int>(seedPaths.size())) {
+            QMessageBox::information(this, "Remove Seed Group", "Please select a seed group in the list.");
+            return;
+        }
+
+        const QString removedPath = QFileInfo(QString::fromStdString(seedPaths[static_cast<size_t>(row)])).absoluteFilePath();
+        seedPaths.erase(seedPaths.begin() + row);
+        updateMaskSeedLists();
+        if (m_seedList && m_seedList->count() > 0)
+            m_seedList->setCurrentRow(std::min(row, m_seedList->count() - 1));
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Removed seed group: %1").arg(removedPath));
+    });
+
+    QToolButton *btnRemoveAllSeeds = new QToolButton();
+    btnRemoveAllSeeds->setIcon(makeMonochromeIcon(kRemoveAllIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::RemoveAll, QSize(16, 16))));
+    btnRemoveAllSeeds->setToolTip("Remove all seed groups for current image");
+    configureNiftiIconButton(btnRemoveAllSeeds);
+    connect(btnRemoveAllSeeds, &QToolButton::clicked, [this]()
+            {
+        if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
+            return;
+
+        auto &seedPaths = m_images[m_currentImageIndex].seedPaths;
+        if (seedPaths.empty())
+            return;
+
+        QMessageBox::StandardButton answer = QMessageBox::question(
+            this,
+            "Confirm Remove All Seed Groups",
+            "Are you sure you want to remove all seed groups from the current image?",
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+
+        const int removedCount = static_cast<int>(seedPaths.size());
+        seedPaths.clear();
+        updateMaskSeedLists();
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Removed %1 seed group(s) from current image.").arg(removedCount));
     });
 
     seedButtonsLayout->addStretch(1);
     seedButtonsLayout->addWidget(btnLoadSeeds);
     seedButtonsLayout->addWidget(btnRefreshSeeds);
+    seedButtonsLayout->addWidget(btnRemoveSeed);
+    seedButtonsLayout->addWidget(btnRemoveAllSeeds);
     seedButtonsLayout->addStretch(1);
     seedListLayout->addLayout(seedButtonsLayout);
 
     // Connect item selection to load the seeds
     connect(m_seedList, &QListWidget::itemClicked, [this](QListWidgetItem *item)
             {
-        if (!item || m_currentImageIndex < 0) return;
-        
-        // Find which seed was clicked
-        for (size_t i = 0; i < m_images[m_currentImageIndex].seedPaths.size(); ++i) {
-            std::string filename = std::filesystem::path(m_images[m_currentImageIndex].seedPaths[i]).filename().string();
-            if (item->text().toStdString() == filename) {
-                if (loadSeedsFromFile(m_images[m_currentImageIndex].seedPaths[i])) {
-                    updateViews();
-                    m_statusLabel->setText(QString("Loaded seeds: %1").arg(item->text()));
-                }
-                break;
-            }
+        if (!item || m_currentImageIndex < 0)
+            return;
+
+        const QString seedPath = QFileInfo(item->data(Qt::UserRole).toString()).absoluteFilePath();
+        if (seedPath.isEmpty())
+            return;
+
+        if (loadSeedsFromFile(seedPath.toStdString()))
+        {
+            updateViews();
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Loaded seeds: %1").arg(QFileInfo(seedPath).fileName()));
         } });
 
     auto installCopyPathContextMenu = [this](QListWidget *listWidget, auto resolvePath)
@@ -1893,19 +2606,6 @@ void ManualSeedSelector::setupUi()
                 m_statusLabel->setText(QString("Copied path: %1").arg(resolvedPath));
         });
     };
-
-    installCopyPathContextMenu(m_niftiList, [this](QListWidgetItem *item) -> QString
-                               {
-        if (!item)
-            return {};
-        QString path = item->data(Qt::UserRole).toString().trimmed();
-        if (!path.isEmpty())
-            return QFileInfo(path).absoluteFilePath();
-
-        const int row = m_niftiList ? m_niftiList->row(item) : -1;
-        if (row >= 0 && row < static_cast<int>(m_images.size()))
-            return QFileInfo(QString::fromStdString(m_images[static_cast<size_t>(row)].imagePath)).absoluteFilePath();
-        return {}; });
 
     installCopyPathContextMenu(m_maskList, [this](QListWidgetItem *item) -> QString
                                {
@@ -1955,7 +2655,14 @@ void ManualSeedSelector::setupUi()
     // =====================================================
     // BOTTOM: Status bar
     // =====================================================
+    QHBoxLayout *bottomStatusLayout = new QHBoxLayout();
+    bottomStatusLayout->setContentsMargins(0, 0, 0, 0);
+    bottomStatusLayout->setSpacing(8);
+
     m_statusLabel = new QLabel("Ready - Load an image to begin");
+    m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_statusLabel->setMinimumWidth(0);
+    m_statusLabel->setWordWrap(false);
     m_statusLabel->setStyleSheet(R"(
         QLabel {
             background-color: #252526;
@@ -1965,7 +2672,82 @@ void ManualSeedSelector::setupUi()
             font-family: 'Consolas', 'Courier New', monospace;
         }
     )");
-    mainLayout->addWidget(m_statusLabel);
+    bottomStatusLayout->addWidget(m_statusLabel, 1);
+
+    m_heatmapProgressBar = new QProgressBar();
+    m_heatmapProgressBar->setRange(0, 100);
+    m_heatmapProgressBar->setValue(0);
+    m_heatmapProgressBar->setFormat("Heatmap %p%");
+    m_heatmapProgressBar->setTextVisible(true);
+    m_heatmapProgressBar->setVisible(false);
+    m_heatmapProgressBar->setMinimumWidth(220);
+    m_heatmapProgressBar->setStyleSheet(R"(
+        QProgressBar {
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            color: #d8d8d8;
+            padding: 2px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #007acc;
+            border-radius: 3px;
+        }
+    )");
+    bottomStatusLayout->addWidget(m_heatmapProgressBar, 0);
+
+    m_heatmapCancelButton = new QPushButton("Cancel Heatmap");
+    m_heatmapCancelButton->setVisible(false);
+    m_heatmapCancelButton->setEnabled(true);
+    m_heatmapCancelButton->setToolTip("Cancel current heatmap generation");
+    m_heatmapCancelButton->setStyleSheet(R"(
+        QPushButton {
+            background-color: #5a1f1f;
+            border: 1px solid #7a2a2a;
+            border-radius: 4px;
+            color: #f2d6d6;
+            padding: 4px 10px;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: #6a2424;
+            border-color: #8a3030;
+        }
+        QPushButton:pressed {
+            background-color: #4a1919;
+        }
+        QPushButton:disabled {
+            color: #aa8e8e;
+            background-color: #3f2525;
+            border-color: #5a3030;
+        }
+    )");
+    connect(m_heatmapCancelButton, &QPushButton::clicked, this, [this]()
+            {
+        if (!m_heatmapWorkerActive.load())
+            return;
+        m_heatmapCancelRequested.store(true);
+        m_heatmapCancelButton->setEnabled(false);
+        if (m_statusLabel)
+            m_statusLabel->setText("Canceling heatmap generation..."); });
+    bottomStatusLayout->addWidget(m_heatmapCancelButton, 0);
+    mainLayout->addLayout(bottomStatusLayout);
+
+    m_heatmapProgressTimer = new QTimer(this);
+    m_heatmapProgressTimer->setInterval(80);
+    connect(m_heatmapProgressTimer, &QTimer::timeout, this, [this]()
+            { onHeatmapProgressTimer(); });
+
+    m_viewUpdateTimer = new QTimer(this);
+    m_viewUpdateTimer->setSingleShot(true);
+    m_viewUpdateTimer->setInterval(33); // ~30 FPS for interactive drawing
+    connect(m_viewUpdateTimer, &QTimer::timeout, this, [this]()
+            {
+        if (!m_viewUpdatePending)
+            return;
+        m_viewUpdatePending = false;
+        updateViews(); });
 
     // =====================================================
     // SIGNAL CONNECTIONS
@@ -1989,7 +2771,9 @@ void ManualSeedSelector::setupUi()
     connect(m_windowSlider, &RangeSlider::rangeChanged, [this](int low, int high)
             {
         if (m_blockWindowSignals) return;
-        applyWindowFromValues(static_cast<float>(low), static_cast<float>(high), true); });
+        const float lo = sliderTickToWindowValue(low, m_windowGlobalMin, m_windowGlobalMax);
+        const float hi = sliderTickToWindowValue(high, m_windowGlobalMin, m_windowGlobalMax);
+        applyWindowFromValues(lo, hi, true); });
 
     connect(m_windowLevelSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [this](double level)
             {
@@ -2070,6 +2854,13 @@ void ManualSeedSelector::setupUi()
             m_mask3DView->setSeedsVisible(m_enable3DSeeds);
         updateViews(); });
 
+    connect(m_axialView, &OrthogonalView::contextMenuRequested, this, [this](int x, int y, const QPoint &globalPos)
+            { showViewContextMenu(SlicePlane::Axial, x, y, globalPos); });
+    connect(m_sagittalView, &OrthogonalView::contextMenuRequested, this, [this](int x, int y, const QPoint &globalPos)
+            { showViewContextMenu(SlicePlane::Sagittal, x, y, globalPos); });
+    connect(m_coronalView, &OrthogonalView::contextMenuRequested, this, [this](int x, int y, const QPoint &globalPos)
+            { showViewContextMenu(SlicePlane::Coronal, x, y, globalPos); });
+
     // Mouse events for views
     connect(m_axialView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
@@ -2094,7 +2885,8 @@ void ManualSeedSelector::setupUi()
             endSliceDrag(m_axialSliceDrag); });
     connect(m_axialView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
             {
-        endSliceDrag(m_axialSliceDrag); });
+        endSliceDrag(m_axialSliceDrag);
+        requestViewUpdate(true); });
 
     connect(m_sagittalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
@@ -2119,7 +2911,8 @@ void ManualSeedSelector::setupUi()
             endSliceDrag(m_sagittalSliceDrag); });
     connect(m_sagittalView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
             {
-        endSliceDrag(m_sagittalSliceDrag); });
+        endSliceDrag(m_sagittalSliceDrag);
+        requestViewUpdate(true); });
 
     connect(m_coronalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
@@ -2144,7 +2937,8 @@ void ManualSeedSelector::setupUi()
             endSliceDrag(m_coronalSliceDrag); });
     connect(m_coronalView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
             {
-        endSliceDrag(m_coronalSliceDrag); });
+        endSliceDrag(m_coronalSliceDrag);
+        requestViewUpdate(true); });
 
     connect(m_ribbonTabs, &QTabWidget::currentChanged, this, [this](int)
             {
@@ -2244,6 +3038,62 @@ void ManualSeedSelector::openImagesFromCsv()
         QMessageBox::warning(this, "Open CSV", summary);
     else
         QMessageBox::information(this, "Open CSV", summary);
+}
+
+void ManualSeedSelector::openMasksFromCsv()
+{
+    const bool hadImage = hasImage();
+    const QString csvPath = QFileDialog::getOpenFileName(this, "Open CSV with mask paths", "", "CSV files (*.csv);;All files (*)");
+    if (csvPath.isEmpty())
+        return;
+
+    QString errorMessage;
+    const QStringList paths = extractNiftiPathsFromCsv(csvPath, &errorMessage);
+    if (paths.isEmpty())
+    {
+        QMessageBox::warning(this, "Open CSV", errorMessage.isEmpty() ? "No valid NIfTI paths were found in the selected CSV." : errorMessage);
+        return;
+    }
+
+    int duplicateCount = 0;
+    int missingCount = 0;
+    const int added = addMaskPathsToCurrentContext(paths, &duplicateCount, &missingCount);
+    const int targetImageIndex = resolveMaskTargetImageIndex();
+    const QString targetLabel = (targetImageIndex >= 0) ? "current image" : "global mask list";
+
+    QString summary = QString("CSV processed successfully.\nDetected paths: %1\nAdded masks to %2: %3")
+                          .arg(paths.size())
+                          .arg(targetLabel)
+                          .arg(added);
+    if (duplicateCount > 0)
+        summary += QString("\nDuplicates skipped: %1").arg(duplicateCount);
+    if (missingCount > 0)
+        summary += QString("\nMissing files skipped: %1").arg(missingCount);
+
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Mask CSV imported: %1 added, %2 duplicate(s), %3 missing")
+                                   .arg(added)
+                                   .arg(duplicateCount)
+                                   .arg(missingCount));
+
+    if (added == 0)
+        QMessageBox::warning(this, "Open CSV", summary);
+    else
+        QMessageBox::information(this, "Open CSV", summary);
+
+    if (!hadImage && added > 0)
+    {
+        for (const QString &candidate : paths)
+        {
+            const QString abs = QFileInfo(candidate).absoluteFilePath();
+            if (QFileInfo::exists(abs))
+            {
+                loadMaskFromFile(abs.toStdString());
+                updateViews();
+                break;
+            }
+        }
+    }
 }
 
 void ManualSeedSelector::runLunasSeedGeneration()
@@ -2997,9 +3847,295 @@ int ManualSeedSelector::addImagesToList(const QStringList &paths, int *duplicate
         ++added;
     }
 
+    if (added > 0)
+        renumberNiftiListItems();
+
     if (added > 0 && firstAddedIndex >= 0)
         m_niftiList->setCurrentRow(firstAddedIndex);
 
+    return added;
+}
+
+bool ManualSeedSelector::appendNiftiImagePath(const QString &path, bool *isDuplicate)
+{
+    if (isDuplicate)
+        *isDuplicate = false;
+
+    const QString normalized = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    if (!QFileInfo::exists(normalized))
+        return false;
+
+    const std::string key = normalized.toStdString();
+    for (const ImageData &imageData : m_images)
+    {
+        const QString existing = QDir::cleanPath(QFileInfo(QString::fromStdString(imageData.imagePath)).absoluteFilePath());
+        if (existing == normalized)
+        {
+            if (isDuplicate)
+                *isDuplicate = true;
+            return false;
+        }
+    }
+
+    ImageData imageData;
+    imageData.imagePath = key;
+    imageData.color = getColorForImageIndex(static_cast<int>(m_images.size()));
+    m_images.push_back(std::move(imageData));
+
+    const QString fileName = QFileInfo(normalized).fileName();
+    QListWidgetItem *item = new QListWidgetItem(fileName.isEmpty() ? normalized : fileName);
+    item->setData(Qt::UserRole, normalized);
+    m_niftiList->addItem(item);
+    renumberNiftiListItems();
+    return true;
+}
+
+void ManualSeedSelector::renumberNiftiListItems()
+{
+    if (!m_niftiList)
+        return;
+
+    for (int i = 0; i < m_niftiList->count(); ++i)
+    {
+        QListWidgetItem *item = m_niftiList->item(i);
+        if (!item)
+            continue;
+        const QString path = QFileInfo(item->data(Qt::UserRole).toString()).absoluteFilePath();
+        const QString fileName = QFileInfo(path).fileName();
+        const QString baseText = fileName.isEmpty() ? path : fileName;
+        item->setText(QString("%1. %2").arg(i + 1).arg(baseText));
+    }
+}
+
+bool ManualSeedSelector::saveHeatmapAsNifti(const std::vector<float> &heatmapData, int usedMasks, QString *outputPath, QString *errorMessage)
+{
+    if (outputPath)
+        outputPath->clear();
+    if (errorMessage)
+        errorMessage->clear();
+
+    const unsigned int sx = m_heatmapBuildDimX > 0 ? m_heatmapBuildDimX : m_image.getSizeX();
+    const unsigned int sy = m_heatmapBuildDimY > 0 ? m_heatmapBuildDimY : m_image.getSizeY();
+    const unsigned int sz = m_heatmapBuildDimZ > 0 ? m_heatmapBuildDimZ : m_image.getSizeZ();
+    const size_t expected = static_cast<size_t>(sx) * static_cast<size_t>(sy) * static_cast<size_t>(sz);
+    if (sx == 0 || sy == 0 || sz == 0 || heatmapData.size() != expected)
+    {
+        if (errorMessage)
+            *errorMessage = "Heatmap data has invalid dimensions.";
+        return false;
+    }
+
+    QString sourcePath = m_heatmapBuildReferencePath.trimmed();
+    if (sourcePath.isEmpty() && m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+        sourcePath = QFileInfo(QString::fromStdString(m_images[m_currentImageIndex].imagePath)).absoluteFilePath();
+    if (sourcePath.isEmpty())
+    {
+        if (errorMessage)
+            *errorMessage = "No reference path available to save heatmap.";
+        return false;
+    }
+
+    const QFileInfo sourceInfo(sourcePath);
+    QDir outDir = sourceInfo.dir();
+    const QString baseName = stripNiftiSuffix(sourceInfo.fileName());
+
+    QString targetPath = outDir.absoluteFilePath(QString("%1_heatmap.nii.gz").arg(baseName));
+    int suffix = 1;
+    while (QFileInfo::exists(targetPath))
+    {
+        targetPath = outDir.absoluteFilePath(QString("%1_heatmap_%2.nii.gz").arg(baseName).arg(suffix++, 2, 10, QChar('0')));
+    }
+
+    try
+    {
+        using HeatmapImageType = itk::Image<float, 3>;
+        using WriterType = itk::ImageFileWriter<HeatmapImageType>;
+        using IteratorType = itk::ImageRegionIterator<HeatmapImageType>;
+        using ReferenceImageType = itk::Image<float, 3>;
+        using ReferenceReaderType = itk::ImageFileReader<ReferenceImageType>;
+
+        HeatmapImageType::Pointer outImage = HeatmapImageType::New();
+        HeatmapImageType::IndexType start;
+        start.Fill(0);
+        HeatmapImageType::SizeType size;
+        size[0] = static_cast<HeatmapImageType::SizeValueType>(sx);
+        size[1] = static_cast<HeatmapImageType::SizeValueType>(sy);
+        size[2] = static_cast<HeatmapImageType::SizeValueType>(sz);
+        HeatmapImageType::RegionType region;
+        region.SetIndex(start);
+        region.SetSize(size);
+        outImage->SetRegions(region);
+        outImage->Allocate();
+
+        HeatmapImageType::SpacingType spacing;
+        spacing[0] = hasImage() ? m_image.getSpacingX() : 1.0;
+        spacing[1] = hasImage() ? m_image.getSpacingY() : 1.0;
+        spacing[2] = hasImage() ? m_image.getSpacingZ() : 1.0;
+        outImage->SetSpacing(spacing);
+        outImage->FillBuffer(0.0f);
+
+        try
+        {
+            ReferenceReaderType::Pointer refReader = ReferenceReaderType::New();
+            refReader->SetFileName(sourcePath.toStdString());
+            refReader->UpdateOutputInformation();
+            ReferenceImageType::Pointer ref = refReader->GetOutput();
+            if (ref)
+            {
+                outImage->SetSpacing(ref->GetSpacing());
+                outImage->SetOrigin(ref->GetOrigin());
+                outImage->SetDirection(ref->GetDirection());
+            }
+        }
+        catch (...)
+        {
+        }
+
+        IteratorType it(outImage, region);
+        size_t idx = 0;
+        for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++idx)
+            it.Set(std::clamp(heatmapData[idx], 0.0f, 1.0f));
+
+        WriterType::Pointer writer = WriterType::New();
+        itk::NiftiImageIO::Pointer nio = itk::NiftiImageIO::New();
+        writer->SetImageIO(nio);
+        writer->SetFileName(targetPath.toStdString());
+        writer->SetInput(outImage);
+        writer->Update();
+
+        const bool hadActiveImage = (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()));
+        const bool added = appendNiftiImagePath(targetPath, nullptr);
+        if (!added && m_statusLabel)
+            m_statusLabel->setText("Heatmap NIfTI saved, but it was already present in NIfTI Images.");
+
+        const QString targetAbsolutePath = QFileInfo(targetPath).absoluteFilePath();
+        int heatmapImageIndex = -1;
+        for (int i = 0; i < static_cast<int>(m_images.size()); ++i)
+        {
+            const QString imagePath = QFileInfo(QString::fromStdString(m_images[static_cast<size_t>(i)].imagePath)).absoluteFilePath();
+            if (imagePath == targetAbsolutePath)
+            {
+                heatmapImageIndex = i;
+                break;
+            }
+        }
+
+        if (heatmapImageIndex >= 0)
+        {
+            std::vector<std::string> normalizedMaskPaths;
+            normalizedMaskPaths.reserve(m_heatmapBuildMaskPaths.size());
+            std::unordered_set<std::string> seenMaskPaths;
+            seenMaskPaths.reserve(m_heatmapBuildMaskPaths.size());
+            for (const std::string &maskPath : m_heatmapBuildMaskPaths)
+            {
+                const QString absoluteMaskPath = QFileInfo(QString::fromStdString(maskPath)).absoluteFilePath();
+                if (!QFileInfo::exists(absoluteMaskPath))
+                    continue;
+                const std::string key = QDir::cleanPath(absoluteMaskPath).toStdString();
+                if (seenMaskPaths.insert(key).second)
+                    normalizedMaskPaths.push_back(key);
+            }
+            m_images[static_cast<size_t>(heatmapImageIndex)].maskPaths = std::move(normalizedMaskPaths);
+            if (heatmapImageIndex == m_currentImageIndex)
+                updateMaskSeedLists();
+        }
+
+        if (!hadActiveImage && m_niftiList)
+        {
+            for (int i = 0; i < m_niftiList->count(); ++i)
+            {
+                QListWidgetItem *item = m_niftiList->item(i);
+                if (!item)
+                    continue;
+                const QString itemPath = QFileInfo(item->data(Qt::UserRole).toString()).absoluteFilePath();
+                if (itemPath == QFileInfo(targetPath).absoluteFilePath())
+                {
+                    m_niftiList->setCurrentRow(i);
+                    break;
+                }
+            }
+        }
+
+        if (outputPath)
+            *outputPath = targetPath;
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Heatmap NIfTI saved (%1 masks): %2").arg(usedMasks).arg(targetPath));
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        if (errorMessage)
+            *errorMessage = QString("Failed to write heatmap NIfTI: %1").arg(e.what());
+        return false;
+    }
+}
+
+int ManualSeedSelector::resolveMaskTargetImageIndex() const
+{
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+        return m_currentImageIndex;
+
+    if (m_niftiList)
+    {
+        const int row = m_niftiList->currentRow();
+        if (row >= 0 && row < static_cast<int>(m_images.size()))
+            return row;
+    }
+
+    return -1;
+}
+
+int ManualSeedSelector::addMaskPathsToCurrentContext(const QStringList &paths, int *duplicateCount, int *missingCount)
+{
+    if (duplicateCount)
+        *duplicateCount = 0;
+    if (missingCount)
+        *missingCount = 0;
+    if (paths.isEmpty())
+        return 0;
+
+    const int targetImageIndex = resolveMaskTargetImageIndex();
+    std::vector<std::string> &targetPaths = (targetImageIndex >= 0)
+                                                ? m_images[static_cast<size_t>(targetImageIndex)].maskPaths
+                                                : m_unassignedMaskPaths;
+
+    std::unordered_set<std::string> existing;
+    existing.reserve(targetPaths.size() + paths.size());
+    for (const std::string &path : targetPaths)
+    {
+        const QString normalized = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath());
+        existing.insert(normalized.toStdString());
+    }
+
+    int added = 0;
+    for (const QString &entry : paths)
+    {
+        const QString cleaned = normalizeCsvCell(entry);
+        if (cleaned.isEmpty())
+            continue;
+
+        const QString normalized = QDir::cleanPath(QFileInfo(cleaned).absoluteFilePath());
+        if (!QFileInfo::exists(normalized))
+        {
+            if (missingCount)
+                ++(*missingCount);
+            continue;
+        }
+
+        const std::string key = normalized.toStdString();
+        if (existing.find(key) != existing.end())
+        {
+            if (duplicateCount)
+                ++(*duplicateCount);
+            continue;
+        }
+
+        targetPaths.push_back(key);
+        existing.insert(key);
+        ++added;
+    }
+
+    updateMaskSeedLists();
     return added;
 }
 
@@ -3109,8 +4245,11 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
     return extractedPaths;
 }
 
-void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex)
+void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex, bool force)
 {
+    if (!m_autoDetectAssociatedFiles && !force)
+        return;
+
     if (imageIndex < 0 || imageIndex >= static_cast<int>(m_images.size()))
         return;
 
@@ -3171,6 +4310,208 @@ void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex)
 
     imageData.maskPaths = std::move(detectedMaskPaths);
     imageData.seedPaths = std::move(detectedSeedPaths);
+}
+
+bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
+{
+    if (summary)
+        summary->clear();
+
+    if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
+        return false;
+    if (!hasImage())
+        return false;
+
+    const unsigned int imageSX = m_image.getSizeX();
+    const unsigned int imageSY = m_image.getSizeY();
+    const unsigned int imageSZ = m_image.getSizeZ();
+    if (imageSX == 0 || imageSY == 0 || imageSZ == 0)
+        return false;
+
+    const QString imageBaseName = stripNiftiSuffix(QFileInfo(QString::fromStdString(m_images[static_cast<size_t>(m_currentImageIndex)].imagePath)).fileName()).trimmed().toLower();
+    if (imageBaseName.isEmpty())
+        return false;
+
+    std::vector<std::string> candidatePaths;
+    std::unordered_set<std::string> seen;
+    auto appendPath = [&candidatePaths, &seen](const std::string &rawPath)
+    {
+        const QString absPath = QFileInfo(QString::fromStdString(rawPath)).absoluteFilePath();
+        if (absPath.isEmpty() || !QFileInfo::exists(absPath))
+            return;
+        const std::string key = QDir::cleanPath(absPath).toStdString();
+        if (seen.insert(key).second)
+            candidatePaths.push_back(key);
+    };
+
+    for (const std::string &p : m_images[static_cast<size_t>(m_currentImageIndex)].maskPaths)
+        appendPath(p);
+    for (const std::string &p : m_unassignedMaskPaths)
+        appendPath(p);
+
+    if (candidatePaths.empty())
+        return false;
+
+    struct AnatomyMatch
+    {
+        std::string path;
+        bool found = false;
+    };
+
+    AnatomyMatch leftMatch, rightMatch, tracheaMatch;
+    for (const std::string &path : candidatePaths)
+    {
+        const QString fileName = QFileInfo(QString::fromStdString(path)).fileName();
+        if (!isNiftiMaskFilenameCandidate(fileName))
+            continue;
+        const QString base = stripNiftiSuffix(fileName).trimmed().toLower();
+        if (!base.contains(imageBaseName))
+            continue;
+
+        if (!leftMatch.found && base.contains("left_lung"))
+        {
+            leftMatch.path = path;
+            leftMatch.found = true;
+        }
+        else if (!rightMatch.found && base.contains("right_lung"))
+        {
+            rightMatch.path = path;
+            rightMatch.found = true;
+        }
+        else if (!tracheaMatch.found && base.contains("trachea"))
+        {
+            tracheaMatch.path = path;
+            tracheaMatch.found = true;
+        }
+    }
+
+    if (!leftMatch.found && !rightMatch.found && !tracheaMatch.found)
+        return false;
+
+    const size_t imagePlane = static_cast<size_t>(imageSX) * static_cast<size_t>(imageSY);
+    const size_t imageTotal = imagePlane * static_cast<size_t>(imageSZ);
+    m_maskData.assign(imageTotal, 0);
+    m_maskDimX = imageSX;
+    m_maskDimY = imageSY;
+    m_maskDimZ = imageSZ;
+    m_maskSpacingX = m_image.getSpacingX();
+    m_maskSpacingY = m_image.getSpacingY();
+    m_maskSpacingZ = m_image.getSpacingZ();
+
+    using MaskImageType = itk::Image<int32_t, 3>;
+    using MaskReaderType = itk::ImageFileReader<MaskImageType>;
+
+    auto applyMask = [&](const std::string &maskPath, int labelValue, const QString &anatomyName) -> bool
+    {
+        try
+        {
+            MaskReaderType::Pointer reader = MaskReaderType::New();
+            reader->SetFileName(maskPath);
+            reader->Update();
+            MaskImageType::Pointer img = reader->GetOutput();
+            if (!img)
+                return false;
+
+            const auto region = img->GetLargestPossibleRegion();
+            const auto size = region.GetSize();
+            const unsigned int sx = static_cast<unsigned int>(size[0]);
+            const unsigned int sy = static_cast<unsigned int>(size[1]);
+            const unsigned int sz = static_cast<unsigned int>(size[2]);
+            if (sx != imageSX || sy != imageSY || sz == 0)
+            {
+                if (m_statusLabel)
+                {
+                    m_statusLabel->setText(QString("Skipping %1 auto-mask: incompatible dimensions (%2x%3x%4 vs %5x%6x%7).")
+                                               .arg(anatomyName)
+                                               .arg(sx)
+                                               .arg(sy)
+                                               .arg(sz)
+                                               .arg(imageSX)
+                                               .arg(imageSY)
+                                               .arg(imageSZ));
+                }
+                return false;
+            }
+
+            const size_t srcPlane = static_cast<size_t>(sx) * static_cast<size_t>(sy);
+            const size_t srcTotal = srcPlane * static_cast<size_t>(sz);
+            std::vector<int> srcMask(srcTotal, 0);
+            itk::ImageRegionConstIterator<MaskImageType> it(img, region);
+            size_t idx = 0;
+            for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++idx)
+                srcMask[idx] = static_cast<int>(it.Get());
+
+            if (sz == imageSZ)
+            {
+                for (size_t i = 0; i < imageTotal; ++i)
+                {
+                    if (srcMask[i] != 0)
+                        m_maskData[i] = labelValue;
+                }
+            }
+            else
+            {
+                for (unsigned int z = 0; z < imageSZ; ++z)
+                {
+                    const unsigned int srcZ = mapDepthIndex(z, imageSZ, sz);
+                    const size_t srcOffset = static_cast<size_t>(srcZ) * srcPlane;
+                    const size_t dstOffset = static_cast<size_t>(z) * imagePlane;
+                    for (size_t i = 0; i < imagePlane; ++i)
+                    {
+                        if (srcMask[srcOffset + i] != 0)
+                            m_maskData[dstOffset + i] = labelValue;
+                    }
+                }
+            }
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
+
+    int loadedCount = 0;
+    QStringList loadedNames;
+    // Deterministic order; trachea last so it wins in overlaps.
+    if (leftMatch.found && applyMask(leftMatch.path, 1, "left_lung"))
+    {
+        ++loadedCount;
+        loadedNames.push_back("left_lung");
+    }
+    if (rightMatch.found && applyMask(rightMatch.path, 2, "right_lung"))
+    {
+        ++loadedCount;
+        loadedNames.push_back("right_lung");
+    }
+    if (tracheaMatch.found && applyMask(tracheaMatch.path, 3, "trachea"))
+    {
+        ++loadedCount;
+        loadedNames.push_back("trachea");
+    }
+
+    if (loadedCount == 0)
+    {
+        m_maskData.clear();
+        m_maskDimX = 0;
+        m_maskDimY = 0;
+        m_maskDimZ = 0;
+        return false;
+    }
+
+    if (m_show3DCheck && !m_show3DCheck->isChecked())
+    {
+        QSignalBlocker blocker(m_show3DCheck);
+        m_show3DCheck->setChecked(true);
+        m_enable3DView = true;
+        if (m_mask3DView)
+            m_mask3DView->setMaskVisible(true);
+    }
+
+    m_mask3DDirty = true;
+    if (summary)
+        *summary = QString("Auto-loaded anatomy masks: %1").arg(loadedNames.join(", "));
+    return true;
 }
 
 bool ManualSeedSelector::saveImageToFile(const std::string &path)
@@ -3563,6 +4904,1107 @@ void ManualSeedSelector::onCoronalClicked(int x, int y, Qt::MouseButton b)
     }
 }
 
+void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int planeY, const QPoint &globalPos)
+{
+    if (!hasImage())
+        return;
+
+    int vx = -1;
+    int vy = -1;
+    int vz = -1;
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        vx = planeX;
+        vy = planeY;
+        vz = m_axialSlider->value();
+        break;
+    case SlicePlane::Sagittal:
+        vx = m_sagittalSlider->value();
+        vy = planeX;
+        vz = planeY;
+        break;
+    case SlicePlane::Coronal:
+        vx = planeX;
+        vy = m_coronalSlider->value();
+        vz = planeY;
+        break;
+    }
+
+    if (vx < 0 || vy < 0 || vz < 0 ||
+        vx >= static_cast<int>(m_image.getSizeX()) ||
+        vy >= static_cast<int>(m_image.getSizeY()) ||
+        vz >= static_cast<int>(m_image.getSizeZ()))
+    {
+        return;
+    }
+
+    QMenu menu(this);
+    QAction *showMasksAction = menu.addAction("Show masks lists on this point");
+    QAction *eraseSeedsAction = nullptr;
+    if (isSeedsTabActive())
+    {
+        menu.addSeparator();
+        eraseSeedsAction = menu.addAction("Erase seeds near this point");
+    }
+
+    QAction *selected = menu.exec(globalPos);
+    if (!selected)
+        return;
+
+    if (selected == showMasksAction)
+    {
+        showMasksOnPointDialog(vx, vy, vz);
+        return;
+    }
+
+    if (eraseSeedsAction && selected == eraseSeedsAction)
+    {
+        eraseNear(vx, vy, vz, m_seedBrushRadius);
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Erased seeds near x:%1 y:%2 z:%3").arg(vx).arg(vy).arg(vz));
+    }
+}
+
+void ManualSeedSelector::preloadMasksForPointQuery(bool force)
+{
+    std::vector<std::string> maskPaths;
+    std::unordered_set<std::string> seenPaths;
+
+    if (m_maskList && m_maskList->count() > 0)
+    {
+        maskPaths.reserve(static_cast<size_t>(m_maskList->count()));
+        seenPaths.reserve(static_cast<size_t>(m_maskList->count()));
+        for (int i = 0; i < m_maskList->count(); ++i)
+        {
+            QListWidgetItem *item = m_maskList->item(i);
+            if (!item)
+                continue;
+            const QString path = QFileInfo(item->data(kPathRole).toString()).absoluteFilePath();
+            if (path.isEmpty())
+                continue;
+            const std::string key = QDir::cleanPath(path).toStdString();
+            if (seenPaths.insert(key).second)
+                maskPaths.push_back(key);
+        }
+    }
+
+    if (maskPaths.empty())
+    {
+        const int targetImageIndex = resolveMaskTargetImageIndex();
+        std::vector<std::string> fallbackPaths;
+        if (targetImageIndex >= 0 && targetImageIndex < static_cast<int>(m_images.size()))
+            fallbackPaths = m_images[static_cast<size_t>(targetImageIndex)].maskPaths;
+        else
+            fallbackPaths = m_unassignedMaskPaths;
+
+        maskPaths.reserve(fallbackPaths.size());
+        seenPaths.reserve(fallbackPaths.size());
+        for (const std::string &maskPathStd : fallbackPaths)
+        {
+            const QString path = QFileInfo(QString::fromStdString(maskPathStd)).absoluteFilePath();
+            if (path.isEmpty())
+                continue;
+            const std::string key = QDir::cleanPath(path).toStdString();
+            if (seenPaths.insert(key).second)
+                maskPaths.push_back(key);
+        }
+    }
+
+    const bool cacheMatchesCurrent = (!force &&
+                                      m_cachedMasksForPointQueryImageIndex == m_currentImageIndex &&
+                                      m_cachedMasksForPointQueryPaths == maskPaths);
+    if (cacheMatchesCurrent)
+        return;
+
+    m_cachedMasksForPointQuery.clear();
+    m_cachedMasksForPointQuery.reserve(maskPaths.size());
+    m_cachedMasksForPointQueryPaths = maskPaths;
+    m_cachedMasksForPointQueryImageIndex = m_currentImageIndex;
+
+    const unsigned int sx = m_image.getSizeX();
+    const unsigned int sy = m_image.getSizeY();
+    const unsigned int sz = m_image.getSizeZ();
+    const bool hasReferenceDims = (sx > 0 && sy > 0 && sz > 0);
+
+    for (const std::string &maskPathStd : maskPaths)
+    {
+        CachedMaskForPointQuery entry;
+        entry.path = QFileInfo(QString::fromStdString(maskPathStd)).absoluteFilePath().toStdString();
+        entry.fileName = QFileInfo(QString::fromStdString(entry.path)).fileName().toStdString();
+
+        try
+        {
+            using MaskImageType = itk::Image<int32_t, 3>;
+            using MaskReaderType = itk::ImageFileReader<MaskImageType>;
+            MaskReaderType::Pointer reader = MaskReaderType::New();
+            reader->SetFileName(maskPathStd);
+            reader->UpdateOutputInformation();
+            MaskImageType::Pointer img = reader->GetOutput();
+            if (!img)
+            {
+                entry.error = "Reader returned empty image.";
+            }
+            else
+            {
+                const auto region = img->GetLargestPossibleRegion();
+                const auto size = region.GetSize();
+                entry.dimX = static_cast<unsigned int>(size[0]);
+                entry.dimY = static_cast<unsigned int>(size[1]);
+                entry.dimZ = static_cast<unsigned int>(size[2]);
+                entry.metadataLoaded = true;
+
+                if (entry.dimZ == 0)
+                {
+                    entry.error = "Invalid depth dimension (Z=0).";
+                }
+                else if (hasReferenceDims && (entry.dimX != sx || entry.dimY != sy))
+                {
+                    entry.error = QString("Dimension mismatch (%1x%2x%3 vs %4x%5x%6)")
+                                      .arg(entry.dimX)
+                                      .arg(entry.dimY)
+                                      .arg(entry.dimZ)
+                                      .arg(sx)
+                                      .arg(sy)
+                                      .arg(sz);
+                }
+                else
+                {
+                    entry.dimensionCompatible = true;
+                }
+            }
+        }
+        catch (const std::exception &e)
+        {
+            entry.error = e.what();
+        }
+
+        m_cachedMasksForPointQuery.push_back(std::move(entry));
+    }
+}
+
+void ManualSeedSelector::clearPointQueryCache()
+{
+    m_heatmapPointQueryCache.clear();
+    m_heatmapPointQueryPaths.clear();
+    m_heatmapPointQueryDimX = 0;
+    m_heatmapPointQueryDimY = 0;
+    m_heatmapPointQueryDimZ = 0;
+    m_heatmapPointQueryBucketCols = 0;
+    m_heatmapPointQueryBucketRows = 0;
+    m_heatmapPointQueryBuckets.clear();
+}
+
+void ManualSeedSelector::rebuildPointQueryBuckets()
+{
+    m_heatmapPointQueryBuckets.clear();
+    m_heatmapPointQueryBucketCols = 0;
+    m_heatmapPointQueryBucketRows = 0;
+
+    if (m_heatmapPointQueryCache.empty() ||
+        m_heatmapPointQueryDimX == 0 ||
+        m_heatmapPointQueryDimY == 0 ||
+        m_heatmapPointQueryDimZ == 0)
+        return;
+
+    const unsigned int bucketSize = std::max(1u, kPointQueryBucketSizeXY);
+    m_heatmapPointQueryBucketCols = (m_heatmapPointQueryDimX + bucketSize - 1u) / bucketSize;
+    m_heatmapPointQueryBucketRows = (m_heatmapPointQueryDimY + bucketSize - 1u) / bucketSize;
+    if (m_heatmapPointQueryBucketCols == 0 || m_heatmapPointQueryBucketRows == 0)
+        return;
+
+    for (int maskIdx = 0; maskIdx < static_cast<int>(m_heatmapPointQueryCache.size()); ++maskIdx)
+    {
+        const HeatmapPointQueryMaskCache &entry = m_heatmapPointQueryCache[static_cast<size_t>(maskIdx)];
+        const size_t depth = std::min({entry.minXPerZ.size(),
+                                       entry.maxXPerZ.size(),
+                                       entry.minYPerZ.size(),
+                                       entry.maxYPerZ.size(),
+                                       static_cast<size_t>(m_heatmapPointQueryDimZ)});
+        for (size_t z = 0; z < depth; ++z)
+        {
+            const int minX = entry.minXPerZ[z];
+            const int maxX = entry.maxXPerZ[z];
+            const int minY = entry.minYPerZ[z];
+            const int maxY = entry.maxYPerZ[z];
+            if (minX < 0 || minY < 0 || maxX < minX || maxY < minY)
+                continue;
+
+            const unsigned int clampedMinX = static_cast<unsigned int>(std::clamp(minX, 0, static_cast<int>(m_heatmapPointQueryDimX - 1u)));
+            const unsigned int clampedMaxX = static_cast<unsigned int>(std::clamp(maxX, 0, static_cast<int>(m_heatmapPointQueryDimX - 1u)));
+            const unsigned int clampedMinY = static_cast<unsigned int>(std::clamp(minY, 0, static_cast<int>(m_heatmapPointQueryDimY - 1u)));
+            const unsigned int clampedMaxY = static_cast<unsigned int>(std::clamp(maxY, 0, static_cast<int>(m_heatmapPointQueryDimY - 1u)));
+
+            const unsigned int bx0 = std::min(clampedMinX / bucketSize, m_heatmapPointQueryBucketCols - 1u);
+            const unsigned int bx1 = std::min(clampedMaxX / bucketSize, m_heatmapPointQueryBucketCols - 1u);
+            const unsigned int by0 = std::min(clampedMinY / bucketSize, m_heatmapPointQueryBucketRows - 1u);
+            const unsigned int by1 = std::min(clampedMaxY / bucketSize, m_heatmapPointQueryBucketRows - 1u);
+
+            for (unsigned int by = by0; by <= by1; ++by)
+            {
+                for (unsigned int bx = bx0; bx <= bx1; ++bx)
+                {
+                    std::vector<int> &bucket = m_heatmapPointQueryBuckets[makePointQueryBucketKey(static_cast<unsigned int>(z), bx, by)];
+                    if (bucket.empty() || bucket.back() != maskIdx)
+                        bucket.push_back(maskIdx);
+                }
+            }
+        }
+    }
+}
+
+void ManualSeedSelector::showMasksOnPointDialog(int x, int y, int z)
+{
+    if (!hasImage())
+    {
+        QMessageBox::information(this, "Masks On Point", "No volume loaded.");
+        return;
+    }
+
+    auto collectCurrentMaskPaths = [this]() -> std::vector<std::string>
+    {
+        std::vector<std::string> maskPaths;
+        std::unordered_set<std::string> seenPaths;
+        if (m_maskList && m_maskList->count() > 0)
+        {
+            maskPaths.reserve(static_cast<size_t>(m_maskList->count()));
+            seenPaths.reserve(static_cast<size_t>(m_maskList->count()));
+            for (int i = 0; i < m_maskList->count(); ++i)
+            {
+                QListWidgetItem *item = m_maskList->item(i);
+                if (!item)
+                    continue;
+                const QString path = QFileInfo(item->data(kPathRole).toString()).absoluteFilePath();
+                if (path.isEmpty() || !QFileInfo::exists(path))
+                    continue;
+                const std::string key = QDir::cleanPath(path).toStdString();
+                if (seenPaths.insert(key).second)
+                    maskPaths.push_back(key);
+            }
+        }
+
+        if (maskPaths.empty())
+        {
+            const int targetImageIndex = resolveMaskTargetImageIndex();
+            const std::vector<std::string> &fallbackPaths = (targetImageIndex >= 0 && targetImageIndex < static_cast<int>(m_images.size()))
+                                                                ? m_images[static_cast<size_t>(targetImageIndex)].maskPaths
+                                                                : m_unassignedMaskPaths;
+            seenPaths.reserve(fallbackPaths.size());
+            for (const std::string &maskPathStd : fallbackPaths)
+            {
+                const QString path = QFileInfo(QString::fromStdString(maskPathStd)).absoluteFilePath();
+                if (path.isEmpty() || !QFileInfo::exists(path))
+                    continue;
+                const std::string key = QDir::cleanPath(path).toStdString();
+                if (seenPaths.insert(key).second)
+                    maskPaths.push_back(key);
+            }
+        }
+        std::sort(maskPaths.begin(), maskPaths.end());
+        return maskPaths;
+    };
+
+    const unsigned int imgSX = m_image.getSizeX();
+    const unsigned int imgSY = m_image.getSizeY();
+    const unsigned int imgSZ = m_image.getSizeZ();
+    const std::vector<std::string> currentMaskPaths = collectCurrentMaskPaths();
+    if (currentMaskPaths.empty())
+    {
+        QMessageBox::information(this, "Masks On Point", "No masks available in the Masks list.");
+        return;
+    }
+
+    const bool cacheMatchesCurrent = (!m_heatmapPointQueryCache.empty() &&
+                                      m_heatmapPointQueryDimX > 0 &&
+                                      m_heatmapPointQueryDimY > 0 &&
+                                      m_heatmapPointQueryDimZ > 0 &&
+                                      m_heatmapPointQueryPaths == currentMaskPaths);
+
+    QStringList cacheBuildErrors;
+    bool cacheBuildCanceled = false;
+    if (!cacheMatchesCurrent)
+    {
+        preloadMasksForPointQuery(false);
+        if (m_cachedMasksForPointQuery.empty())
+        {
+            QMessageBox::information(this, "Masks On Point", "No readable masks are available for point query.");
+            return;
+        }
+
+        QProgressDialog buildProgress("Building point-query cache...", "Cancel", 0, static_cast<int>(m_cachedMasksForPointQuery.size()), this);
+        buildProgress.setWindowTitle("Masks On Point");
+        buildProgress.setWindowModality(Qt::WindowModal);
+        buildProgress.setMinimumDuration(0);
+        buildProgress.setValue(0);
+
+        std::vector<HeatmapPointQueryMaskCache> newCache;
+        newCache.reserve(m_cachedMasksForPointQuery.size());
+
+        for (int i = 0; i < static_cast<int>(m_cachedMasksForPointQuery.size()); ++i)
+        {
+            buildProgress.setValue(i);
+            if ((i % 8) == 0)
+                QCoreApplication::processEvents();
+            if (buildProgress.wasCanceled())
+            {
+                cacheBuildCanceled = true;
+                break;
+            }
+
+            const CachedMaskForPointQuery &maskEntry = m_cachedMasksForPointQuery[static_cast<size_t>(i)];
+            if (!maskEntry.error.isEmpty())
+            {
+                cacheBuildErrors.push_back(QString("%1: %2")
+                                               .arg(QString::fromStdString(maskEntry.path), maskEntry.error));
+                continue;
+            }
+            if (!maskEntry.metadataLoaded)
+                continue;
+
+            using MaskImageType = itk::Image<int32_t, 3>;
+            using MaskReaderType = itk::ImageFileReader<MaskImageType>;
+            try
+            {
+                MaskReaderType::Pointer reader = MaskReaderType::New();
+                reader->SetFileName(maskEntry.path);
+                reader->Update();
+                MaskImageType::Pointer maskImage = reader->GetOutput();
+                if (!maskImage)
+                    continue;
+
+                HeatmapPointQueryMaskCache cacheEntry;
+                cacheEntry.path = maskEntry.path;
+                cacheEntry.fileName = maskEntry.fileName;
+                if (!buildResampledMaskBounds(maskImage.GetPointer(), imgSX, imgSY, imgSZ,
+                                              cacheEntry.minXPerZ,
+                                              cacheEntry.maxXPerZ,
+                                              cacheEntry.minYPerZ,
+                                              cacheEntry.maxYPerZ))
+                {
+                    continue;
+                }
+                newCache.push_back(std::move(cacheEntry));
+            }
+            catch (const std::exception &e)
+            {
+                cacheBuildErrors.push_back(QString("%1: %2")
+                                               .arg(QString::fromStdString(maskEntry.path), QString::fromUtf8(e.what())));
+            }
+        }
+        buildProgress.setValue(static_cast<int>(m_cachedMasksForPointQuery.size()));
+
+        m_heatmapPointQueryCache = std::move(newCache);
+        m_heatmapPointQueryPaths = currentMaskPaths;
+        m_heatmapPointQueryDimX = imgSX;
+        m_heatmapPointQueryDimY = imgSY;
+        m_heatmapPointQueryDimZ = imgSZ;
+        rebuildPointQueryBuckets();
+    }
+    else if (m_heatmapPointQueryBucketCols == 0 || m_heatmapPointQueryBucketRows == 0)
+    {
+        rebuildPointQueryBuckets();
+    }
+
+    if (m_heatmapPointQueryCache.empty())
+    {
+        QMessageBox::information(this, "Masks On Point", "Point-query cache is empty for current masks.");
+        return;
+    }
+
+    const unsigned int qx = mapDepthIndex(static_cast<unsigned int>(std::max(0, x)), std::max(1u, imgSX), m_heatmapPointQueryDimX);
+    const unsigned int qy = mapDepthIndex(static_cast<unsigned int>(std::max(0, y)), std::max(1u, imgSY), m_heatmapPointQueryDimY);
+    const unsigned int qz = mapDepthIndex(static_cast<unsigned int>(std::max(0, z)), std::max(1u, imgSZ), m_heatmapPointQueryDimZ);
+
+    const unsigned int bucketSize = std::max(1u, kPointQueryBucketSizeXY);
+    const unsigned int bx = std::min(qx / bucketSize, (m_heatmapPointQueryBucketCols > 0) ? (m_heatmapPointQueryBucketCols - 1u) : 0u);
+    const unsigned int by = std::min(qy / bucketSize, (m_heatmapPointQueryBucketRows > 0) ? (m_heatmapPointQueryBucketRows - 1u) : 0u);
+    const uint64_t bucketKey = makePointQueryBucketKey(qz, bx, by);
+    const auto bucketIt = m_heatmapPointQueryBuckets.find(bucketKey);
+
+    QStringList hitEntries;
+    QStringList hitPaths;
+    if (bucketIt != m_heatmapPointQueryBuckets.end())
+        hitEntries.reserve(static_cast<int>(bucketIt->second.size()));
+    else
+        hitEntries.reserve(static_cast<int>(m_heatmapPointQueryCache.size()));
+
+    auto testEntry = [qx, qy, qz, this, &hitEntries, &hitPaths](int idx)
+    {
+        if (idx < 0 || idx >= static_cast<int>(m_heatmapPointQueryCache.size()))
+            return;
+        const HeatmapPointQueryMaskCache &entry = m_heatmapPointQueryCache[static_cast<size_t>(idx)];
+        if (qz >= entry.minXPerZ.size() ||
+            qz >= entry.maxXPerZ.size() ||
+            qz >= entry.minYPerZ.size() ||
+            qz >= entry.maxYPerZ.size())
+            return;
+
+        const int minX = entry.minXPerZ[qz];
+        const int maxX = entry.maxXPerZ[qz];
+        const int minY = entry.minYPerZ[qz];
+        const int maxY = entry.maxYPerZ[qz];
+        if (maxX < 0 || maxY < 0 || minX < 0 || minY < 0)
+            return;
+
+        if (static_cast<int>(qx) >= minX && static_cast<int>(qx) <= maxX &&
+            static_cast<int>(qy) >= minY && static_cast<int>(qy) <= maxY)
+        {
+            hitEntries.push_back(QString::fromStdString(entry.fileName));
+            hitPaths.push_back(QString::fromStdString(entry.path));
+        }
+    };
+
+    if (bucketIt != m_heatmapPointQueryBuckets.end())
+    {
+        for (const int idx : bucketIt->second)
+            testEntry(idx);
+    }
+    else
+    {
+        for (int idx = 0; idx < static_cast<int>(m_heatmapPointQueryCache.size()); ++idx)
+            testEntry(idx);
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString("Masks at point x:%1 y:%2 z:%3").arg(x).arg(y).arg(z));
+    dialog.resize(560, 420);
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLabel *summary = new QLabel();
+    summary->setWordWrap(true);
+    if (!hitEntries.isEmpty())
+    {
+        summary->setText(QString("Found %1 mask(s) containing this point.").arg(hitEntries.size()));
+    }
+    else
+    {
+        summary->setText("No mask contains this point.");
+    }
+    layout->addWidget(summary);
+
+    QListWidget *list = new QListWidget(&dialog);
+    for (const QString &entry : hitEntries)
+        list->addItem(entry);
+    layout->addWidget(list, 1);
+
+    if (!cacheBuildErrors.isEmpty())
+    {
+        QLabel *errorsLabel = new QLabel(QString("Skipped %1 unreadable mask file(s).").arg(cacheBuildErrors.size()), &dialog);
+        errorsLabel->setWordWrap(true);
+        layout->addWidget(errorsLabel);
+    }
+
+    QLabel *note = new QLabel(cacheBuildCanceled
+                                  ? "Source: partial point-query cache (build canceled)."
+                                  : "Source: point-query cache (fast lookup).",
+                              &dialog);
+    note->setWordWrap(true);
+    layout->addWidget(note);
+
+    if (cacheBuildCanceled)
+    {
+        QLabel *warning = new QLabel("Cache build was canceled. Some masks may be missing from this result.", &dialog);
+        warning->setWordWrap(true);
+        layout->addWidget(warning);
+    }
+
+    if (m_statusLabel)
+    {
+        if (cacheBuildCanceled)
+            m_statusLabel->setText("Masks on point: used partial cache (build canceled).");
+        else if (!cacheBuildErrors.isEmpty())
+            m_statusLabel->setText(QString("Masks on point: cache ready with %1 read error(s).").arg(cacheBuildErrors.size()));
+        else
+            m_statusLabel->setText("Masks on point: cache lookup completed.");
+    }
+
+    if (!cacheBuildErrors.isEmpty())
+    {
+        QLabel *details = new QLabel("Open terminal/log for detailed file read errors.", &dialog);
+        details->setWordWrap(true);
+        layout->addWidget(details);
+    }
+
+    QHBoxLayout *buttonsLayout = new QHBoxLayout();
+    buttonsLayout->addStretch(1);
+
+    QPushButton *saveCsvBtn = new QPushButton("Save CSV", &dialog);
+    connect(saveCsvBtn, &QPushButton::clicked, this, [this, &dialog, hitEntries, hitPaths, x, y, z]()
+            {
+        QString defaultName = QString("masks_on_point_x%1_y%2_z%3.csv").arg(x).arg(y).arg(z);
+        QString outputPath = QFileDialog::getSaveFileName(&dialog,
+                                                          "Save Masks On Point CSV",
+                                                          defaultName,
+                                                          "CSV files (*.csv);;All files (*)");
+        if (outputPath.isEmpty())
+            return;
+        if (!outputPath.toLower().endsWith(".csv"))
+            outputPath += ".csv";
+
+        QFile outputFile(outputPath);
+        if (!outputFile.open(QIODevice::WriteOnly | QIODevice::Text))
+        {
+            QMessageBox::warning(&dialog, "Save CSV", QString("Failed to save CSV:\n%1").arg(outputPath));
+            return;
+        }
+
+        QTextStream stream(&outputFile);
+        stream << "x,y,z,mask_filename,mask_path\n";
+        const int count = std::min(hitEntries.size(), hitPaths.size());
+        for (int i = 0; i < count; ++i)
+        {
+            stream << x << "," << y << "," << z << ","
+                   << csvEscapeCell(hitEntries[i]) << ","
+                   << csvEscapeCell(hitPaths[i]) << "\n";
+        }
+        outputFile.close();
+
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Saved %1 mask entries to %2").arg(count).arg(outputPath));
+    });
+    buttonsLayout->addWidget(saveCsvBtn);
+
+    QPushButton *closeBtn = new QPushButton("Close", &dialog);
+    connect(closeBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    buttonsLayout->addWidget(closeBtn);
+
+    layout->addLayout(buttonsLayout);
+
+    dialog.exec();
+}
+
+void ManualSeedSelector::stopHeatmapWorker(bool waitForJoin)
+{
+    m_heatmapCancelRequested.store(true);
+    if (!waitForJoin)
+    {
+        if (m_heatmapProgressTimer && !m_heatmapProgressTimer->isActive())
+            m_heatmapProgressTimer->start();
+        return;
+    }
+
+    if (m_heatmapProgressTimer)
+        m_heatmapProgressTimer->stop();
+    if (m_heatmapWorker.joinable())
+        m_heatmapWorker.join();
+
+    m_heatmapBuildReferencePath.clear();
+    m_heatmapBuildDimX = 0;
+    m_heatmapBuildDimY = 0;
+    m_heatmapBuildDimZ = 0;
+    m_heatmapBuildMaskPaths.clear();
+
+    m_heatmapWorkerActive.store(false);
+    if (m_btnMaskHeatmap)
+        m_btnMaskHeatmap->setEnabled(true);
+    if (m_heatmapProgressBar)
+        m_heatmapProgressBar->setVisible(false);
+    if (m_heatmapCancelButton)
+    {
+        m_heatmapCancelButton->setVisible(false);
+        m_heatmapCancelButton->setEnabled(true);
+    }
+}
+
+void ManualSeedSelector::startHeatmapBuildAsync(bool showFailureDialog)
+{
+    if (m_heatmapWorkerActive.load())
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText("Heatmap is already being generated in background...");
+        return;
+    }
+
+    if (m_heatmapWorker.joinable())
+        m_heatmapWorker.join();
+
+    std::vector<std::string> maskPaths;
+    std::unordered_set<std::string> seenPaths;
+    if (m_maskList && m_maskList->count() > 0)
+    {
+        maskPaths.reserve(static_cast<size_t>(m_maskList->count()));
+        seenPaths.reserve(static_cast<size_t>(m_maskList->count()));
+        for (int i = 0; i < m_maskList->count(); ++i)
+        {
+            QListWidgetItem *item = m_maskList->item(i);
+            if (!item)
+                continue;
+            const QString path = QFileInfo(item->data(kPathRole).toString()).absoluteFilePath();
+            if (path.isEmpty() || !QFileInfo::exists(path))
+                continue;
+            const std::string key = path.toStdString();
+            if (seenPaths.insert(key).second)
+                maskPaths.push_back(key);
+        }
+    }
+
+    if (maskPaths.empty())
+    {
+        const int targetImageIndex = resolveMaskTargetImageIndex();
+        if (targetImageIndex >= 0 && targetImageIndex < static_cast<int>(m_images.size()))
+            maskPaths = m_images[static_cast<size_t>(targetImageIndex)].maskPaths;
+        else
+            maskPaths = m_unassignedMaskPaths;
+    }
+
+    if (!maskPaths.empty())
+    {
+        std::vector<std::string> normalizedMaskPaths;
+        std::unordered_set<std::string> seenNormalizedPaths;
+        normalizedMaskPaths.reserve(maskPaths.size());
+        seenNormalizedPaths.reserve(maskPaths.size());
+        for (const std::string &maskPathStd : maskPaths)
+        {
+            const QString absolutePath = QFileInfo(QString::fromStdString(maskPathStd)).absoluteFilePath();
+            if (absolutePath.isEmpty() || !QFileInfo::exists(absolutePath))
+                continue;
+            const std::string key = QDir::cleanPath(absolutePath).toStdString();
+            if (seenNormalizedPaths.insert(key).second)
+                normalizedMaskPaths.push_back(key);
+        }
+        maskPaths.swap(normalizedMaskPaths);
+        std::sort(maskPaths.begin(), maskPaths.end());
+    }
+
+    if (maskPaths.empty())
+    {
+        m_heatmapEnabled = false;
+        if (m_btnMaskHeatmap)
+        {
+            QSignalBlocker blocker(m_btnMaskHeatmap);
+            m_btnMaskHeatmap->setChecked(false);
+        }
+        if (m_heatmapCancelButton)
+        {
+            m_heatmapCancelButton->setVisible(false);
+            m_heatmapCancelButton->setEnabled(true);
+        }
+        if (showFailureDialog)
+            QMessageBox::warning(this, "Heatmap", "No masks available in the Masks list.");
+        return;
+    }
+
+    unsigned int sx = 0;
+    unsigned int sy = 0;
+    unsigned int sz = 0;
+    QString referencePath;
+    quint64 bestVolume = 0;
+    const int buildImageIndex = m_currentImageIndex;
+
+    using ProbeImageType = itk::Image<int32_t, 3>;
+    using ProbeReaderType = itk::ImageFileReader<ProbeImageType>;
+    for (const std::string &maskPathStd : maskPaths)
+    {
+        try
+        {
+            ProbeReaderType::Pointer reader = ProbeReaderType::New();
+            reader->SetFileName(maskPathStd);
+            reader->UpdateOutputInformation();
+            ProbeImageType::Pointer img = reader->GetOutput();
+            if (!img)
+                continue;
+            const auto size = img->GetLargestPossibleRegion().GetSize();
+            const unsigned int mx = static_cast<unsigned int>(size[0]);
+            const unsigned int my = static_cast<unsigned int>(size[1]);
+            const unsigned int mz = static_cast<unsigned int>(size[2]);
+            if (mx == 0 || my == 0 || mz == 0)
+                continue;
+
+            sx = std::max(sx, mx);
+            sy = std::max(sy, my);
+            sz = std::max(sz, mz);
+
+            const quint64 vol = static_cast<quint64>(mx) * static_cast<quint64>(my) * static_cast<quint64>(mz);
+            if (vol > bestVolume)
+            {
+                bestVolume = vol;
+                referencePath = QFileInfo(QString::fromStdString(maskPathStd)).absoluteFilePath();
+            }
+        }
+        catch (...)
+        {
+        }
+    }
+
+    if (sx == 0 || sy == 0 || sz == 0)
+    {
+        m_heatmapEnabled = false;
+        if (m_btnMaskHeatmap)
+        {
+            QSignalBlocker blocker(m_btnMaskHeatmap);
+            m_btnMaskHeatmap->setChecked(false);
+        }
+        if (m_heatmapCancelButton)
+        {
+            m_heatmapCancelButton->setVisible(false);
+            m_heatmapCancelButton->setEnabled(true);
+        }
+        if (showFailureDialog)
+            QMessageBox::warning(this, "Heatmap", "Could not determine dimensions for heatmap generation.");
+        return;
+    }
+
+    const size_t totalVoxels = static_cast<size_t>(sx) * static_cast<size_t>(sy) * static_cast<size_t>(sz);
+    m_heatmapBuildImageIndex = buildImageIndex;
+    m_heatmapBuildReferencePath = referencePath;
+    m_heatmapBuildDimX = sx;
+    m_heatmapBuildDimY = sy;
+    m_heatmapBuildDimZ = sz;
+    m_heatmapBuildMaskPaths = maskPaths;
+
+    {
+        std::lock_guard<std::mutex> lock(m_heatmapMutex);
+        m_heatmapResultReady = false;
+        m_heatmapResultSuccess = false;
+        m_heatmapShowFailureDialog = showFailureDialog;
+        m_heatmapResultError.clear();
+        m_heatmapResultData.clear();
+        m_heatmapResultMaskCount = 0;
+        m_heatmapResultPointQueryCache.clear();
+    }
+
+    m_heatmapProgressDone.store(0);
+    m_heatmapProgressTotal.store(static_cast<int>(maskPaths.size()));
+    m_heatmapCancelRequested.store(false);
+    m_heatmapWorkerActive.store(true);
+
+    if (m_heatmapProgressBar)
+    {
+        m_heatmapProgressBar->setRange(0, std::max(1, static_cast<int>(maskPaths.size())));
+        m_heatmapProgressBar->setValue(0);
+        m_heatmapProgressBar->setFormat("Heatmap %p%");
+        m_heatmapProgressBar->setVisible(true);
+    }
+    if (m_heatmapCancelButton)
+    {
+        m_heatmapCancelButton->setVisible(true);
+        m_heatmapCancelButton->setEnabled(true);
+    }
+    if (m_btnMaskHeatmap)
+        m_btnMaskHeatmap->setEnabled(false);
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Building heatmap in background... 0/%1 masks").arg(maskPaths.size()));
+    if (m_heatmapProgressTimer && !m_heatmapProgressTimer->isActive())
+        m_heatmapProgressTimer->start();
+
+    std::cerr << "[Heatmap] Building heatmap from " << maskPaths.size() << " masks..." << std::endl;
+    m_heatmapWorker = std::thread([this, maskPaths, sx, sy, sz, totalVoxels]()
+                                  {
+        using MaskImageType = itk::Image<int32_t, 3>;
+        using MaskReaderType = itk::ImageFileReader<MaskImageType>;
+
+        std::vector<float> votes(totalVoxels, 0.0f);
+        std::vector<HeatmapPointQueryMaskCache> pointQueryCache;
+        pointQueryCache.reserve(maskPaths.size());
+        int usedMasks = 0;
+        int doneMasks = 0;
+
+        const int totalMasks = static_cast<int>(maskPaths.size());
+        for (const std::string &maskPathStd : maskPaths)
+        {
+            if (m_heatmapCancelRequested.load())
+                break;
+
+            try
+            {
+                MaskReaderType::Pointer reader = MaskReaderType::New();
+                reader->SetFileName(maskPathStd);
+                reader->Update();
+                MaskImageType::Pointer img = reader->GetOutput();
+                if (img)
+                {
+                    HeatmapPointQueryMaskCache maskCacheEntry;
+                    maskCacheEntry.path = QFileInfo(QString::fromStdString(maskPathStd)).absoluteFilePath().toStdString();
+                    maskCacheEntry.fileName = QFileInfo(QString::fromStdString(maskCacheEntry.path)).fileName().toStdString();
+                    maskCacheEntry.minXPerZ.assign(sz, std::numeric_limits<int>::max());
+                    maskCacheEntry.maxXPerZ.assign(sz, -1);
+                    maskCacheEntry.minYPerZ.assign(sz, std::numeric_limits<int>::max());
+                    maskCacheEntry.maxYPerZ.assign(sz, -1);
+
+                    if (accumulateResampledMaskVotes(img.GetPointer(), sx, sy, sz, votes,
+                                                     &maskCacheEntry.minXPerZ,
+                                                     &maskCacheEntry.maxXPerZ,
+                                                     &maskCacheEntry.minYPerZ,
+                                                     &maskCacheEntry.maxYPerZ))
+                    {
+                        for (unsigned int zi = 0; zi < sz; ++zi)
+                        {
+                            if (maskCacheEntry.maxXPerZ[zi] < 0 || maskCacheEntry.maxYPerZ[zi] < 0)
+                            {
+                                maskCacheEntry.minXPerZ[zi] = -1;
+                                maskCacheEntry.minYPerZ[zi] = -1;
+                            }
+                        }
+                        pointQueryCache.push_back(std::move(maskCacheEntry));
+                        ++usedMasks;
+                    }
+                }
+            }
+            catch (...)
+            {
+            }
+
+            ++doneMasks;
+            m_heatmapProgressDone.store(doneMasks);
+            std::cerr << "\r[Heatmap] "
+                      << makeTerminalProgressBar(doneMasks, totalMasks)
+                      << " " << doneMasks << "/" << totalMasks << std::flush;
+        }
+
+        bool success = false;
+        QString error;
+        std::vector<float> heatmap;
+
+        if (m_heatmapCancelRequested.load())
+        {
+            error = "Heatmap generation canceled.";
+        }
+        else if (usedMasks == 0)
+        {
+            error = "Could not read mask volumes for heatmap.";
+        }
+        else
+        {
+            heatmap.resize(totalVoxels);
+            const float invCount = 1.0f / static_cast<float>(usedMasks);
+            for (size_t i = 0; i < totalVoxels; ++i)
+                heatmap[i] = std::clamp(votes[i] * invCount, 0.0f, 1.0f);
+            success = true;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(m_heatmapMutex);
+            m_heatmapResultReady = true;
+            m_heatmapResultSuccess = success;
+            m_heatmapResultError = error;
+            m_heatmapResultData = std::move(heatmap);
+            m_heatmapResultMaskCount = usedMasks;
+            m_heatmapResultPointQueryCache = std::move(pointQueryCache);
+        }
+
+        m_heatmapWorkerActive.store(false);
+        if (totalMasks > 0)
+            std::cerr << std::endl; });
+}
+
+void ManualSeedSelector::onHeatmapProgressTimer()
+{
+    const int totalMasks = std::max(1, m_heatmapProgressTotal.load());
+    const int doneMasks = std::clamp(m_heatmapProgressDone.load(), 0, totalMasks);
+
+    if (m_heatmapProgressBar && m_heatmapProgressBar->isVisible())
+    {
+        m_heatmapProgressBar->setRange(0, totalMasks);
+        m_heatmapProgressBar->setValue(doneMasks);
+        m_heatmapProgressBar->setFormat(QString("Heatmap %1/%2 (%p%)").arg(doneMasks).arg(totalMasks));
+    }
+    if (m_statusLabel && m_heatmapWorkerActive.load())
+    {
+        m_statusLabel->setText(QString("Building heatmap in background... %1/%2 masks").arg(doneMasks).arg(totalMasks));
+    }
+
+    bool ready = false;
+    bool success = false;
+    bool showFailureDialog = false;
+    QString error;
+    std::vector<float> heatmap;
+    int usedMasks = 0;
+    std::vector<HeatmapPointQueryMaskCache> pointQueryCache;
+    {
+        std::lock_guard<std::mutex> lock(m_heatmapMutex);
+        ready = m_heatmapResultReady;
+        if (ready)
+        {
+            success = m_heatmapResultSuccess;
+            showFailureDialog = m_heatmapShowFailureDialog;
+            error = m_heatmapResultError;
+            heatmap = std::move(m_heatmapResultData);
+            usedMasks = m_heatmapResultMaskCount;
+            pointQueryCache = std::move(m_heatmapResultPointQueryCache);
+            m_heatmapResultData.clear();
+            m_heatmapResultPointQueryCache.clear();
+            m_heatmapResultReady = false;
+        }
+    }
+
+    if (!ready)
+        return;
+
+    if (m_heatmapProgressTimer)
+        m_heatmapProgressTimer->stop();
+    if (m_heatmapWorker.joinable())
+        m_heatmapWorker.join();
+
+    if (m_btnMaskHeatmap)
+        m_btnMaskHeatmap->setEnabled(true);
+    if (m_heatmapProgressBar)
+        m_heatmapProgressBar->setVisible(false);
+    if (m_heatmapCancelButton)
+    {
+        m_heatmapCancelButton->setVisible(false);
+        m_heatmapCancelButton->setEnabled(true);
+    }
+
+    if (!success)
+    {
+        clearPointQueryCache();
+        m_heatmapEnabled = false;
+        m_heatmapData.clear();
+        m_heatmapMaskCount = 0;
+        if (m_btnMaskHeatmap)
+        {
+            QSignalBlocker blocker(m_btnMaskHeatmap);
+            m_btnMaskHeatmap->setChecked(false);
+        }
+        updateViews();
+        if (m_statusLabel)
+            m_statusLabel->setText(error.isEmpty() ? "Heatmap disabled." : error);
+        if (showFailureDialog && !error.contains("canceled", Qt::CaseInsensitive))
+            QMessageBox::warning(this, "Heatmap", error.isEmpty() ? "Could not build heatmap for current image." : error);
+        return;
+    }
+
+    if (m_heatmapBuildImageIndex >= 0 && m_currentImageIndex != m_heatmapBuildImageIndex)
+    {
+        clearPointQueryCache();
+        if (m_statusLabel)
+            m_statusLabel->setText("Heatmap finished, but active image changed. Ignoring outdated result.");
+        return;
+    }
+
+    m_heatmapPointQueryCache = std::move(pointQueryCache);
+    m_heatmapPointQueryPaths = m_heatmapBuildMaskPaths;
+    m_heatmapPointQueryDimX = m_heatmapBuildDimX;
+    m_heatmapPointQueryDimY = m_heatmapBuildDimY;
+    m_heatmapPointQueryDimZ = m_heatmapBuildDimZ;
+    rebuildPointQueryBuckets();
+
+    // Prevent recursive rebuilds while saveHeatmapAsNifti may refresh lists
+    // (for example with auto-detect enabled).
+    m_heatmapEnabled = false;
+    if (m_btnMaskHeatmap)
+    {
+        QSignalBlocker blocker(m_btnMaskHeatmap);
+        m_btnMaskHeatmap->setChecked(false);
+    }
+
+    QString savedPath;
+    QString saveError;
+    const bool saved = saveHeatmapAsNifti(heatmap, usedMasks, &savedPath, &saveError);
+
+    m_heatmapData.clear();
+    m_heatmapMaskCount = 0;
+    updateViews();
+
+    if (!saved)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(saveError.isEmpty() ? "Heatmap generated but failed to save NIfTI." : saveError);
+        QMessageBox::warning(this, "Heatmap", saveError.isEmpty() ? "Heatmap generated but failed to save NIfTI." : saveError);
+        return;
+    }
+
+    QMessageBox::information(this, "Heatmap", QString("Heatmap NIfTI generated successfully:\n%1").arg(savedPath));
+}
+
+bool ManualSeedSelector::rebuildHeatmapForCurrentImage(QString *errorMessage)
+{
+    if (errorMessage)
+        errorMessage->clear();
+
+    m_heatmapData.clear();
+    m_heatmapMaskCount = 0;
+
+    if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
+    {
+        if (errorMessage)
+            *errorMessage = "Select an image first.";
+        return false;
+    }
+
+    const auto &maskPaths = m_images[m_currentImageIndex].maskPaths;
+    if (maskPaths.empty())
+    {
+        if (errorMessage)
+            *errorMessage = "No masks in the Masks list for this image.";
+        return false;
+    }
+
+    unsigned int sx = 0;
+    unsigned int sy = 0;
+    unsigned int sz = 0;
+    using MaskImageType = itk::Image<int32_t, 3>;
+    using MaskReaderType = itk::ImageFileReader<MaskImageType>;
+    for (const std::string &maskPathStd : maskPaths)
+    {
+        try
+        {
+            MaskReaderType::Pointer reader = MaskReaderType::New();
+            reader->SetFileName(maskPathStd);
+            reader->UpdateOutputInformation();
+            MaskImageType::Pointer img = reader->GetOutput();
+            if (!img)
+                continue;
+
+            const auto size = img->GetLargestPossibleRegion().GetSize();
+            const unsigned int mx = static_cast<unsigned int>(size[0]);
+            const unsigned int my = static_cast<unsigned int>(size[1]);
+            const unsigned int mz = static_cast<unsigned int>(size[2]);
+            if (mx == 0 || my == 0 || mz == 0)
+                continue;
+
+            sx = std::max(sx, mx);
+            sy = std::max(sy, my);
+            sz = std::max(sz, mz);
+        }
+        catch (...)
+        {
+        }
+    }
+    if (sx == 0 || sy == 0 || sz == 0)
+    {
+        if (errorMessage)
+            *errorMessage = "Could not determine a valid heatmap volume from masks.";
+        return false;
+    }
+
+    const size_t total = static_cast<size_t>(sx) * static_cast<size_t>(sy) * static_cast<size_t>(sz);
+    std::vector<float> votes(total, 0.0f);
+
+    int usedMasks = 0;
+    for (const std::string &maskPathStd : maskPaths)
+    {
+        try
+        {
+            MaskReaderType::Pointer reader = MaskReaderType::New();
+            reader->SetFileName(maskPathStd);
+            reader->Update();
+            MaskImageType::Pointer img = reader->GetOutput();
+            if (img && accumulateResampledMaskVotes(img.GetPointer(), sx, sy, sz, votes))
+                ++usedMasks;
+        }
+        catch (...)
+        {
+            continue;
+        }
+    }
+
+    if (usedMasks == 0)
+    {
+        if (errorMessage)
+            *errorMessage = "Could not read mask volumes for heatmap.";
+        return false;
+    }
+
+    m_heatmapData.resize(total);
+    const float invCount = 1.0f / static_cast<float>(usedMasks);
+    for (size_t i = 0; i < total; ++i)
+        m_heatmapData[i] = std::clamp(votes[i] * invCount, 0.0f, 1.0f);
+
+    m_heatmapMaskCount = usedMasks;
+    return true;
+}
+
 void ManualSeedSelector::addSeed(int x, int y, int z)
 {
     Seed s;
@@ -3573,7 +6015,7 @@ void ManualSeedSelector::addSeed(int x, int y, int z)
     s.internal = 1;
     s.fromFile = false;
     m_seeds.push_back(s);
-    updateViews();
+    requestViewUpdate(false);
 }
 
 void ManualSeedSelector::eraseNear(int x, int y, int z, int r)
@@ -3588,7 +6030,7 @@ void ManualSeedSelector::eraseNear(int x, int y, int z, int r)
             keep.push_back(s);
     }
     m_seeds.swap(keep);
-    updateViews();
+    requestViewUpdate(false);
 }
 
 void ManualSeedSelector::updateLabelColor(int label)
@@ -3613,7 +6055,7 @@ void ManualSeedSelector::resetWindowToFullRange()
 void ManualSeedSelector::applyWindowFromValues(float low, float high, bool fromSlider)
 {
     if (m_windowGlobalMax <= m_windowGlobalMin)
-        m_windowGlobalMax = m_windowGlobalMin + 1.0f;
+        m_windowGlobalMax = m_windowGlobalMin + 1e-3f;
 
     float clampedLow = std::max(m_windowGlobalMin, std::min(low, m_windowGlobalMax));
     float clampedHigh = std::max(clampedLow + 1e-3f, std::min(high, m_windowGlobalMax));
@@ -3628,8 +6070,8 @@ void ManualSeedSelector::applyWindowFromValues(float low, float high, bool fromS
     if (!fromSlider && m_windowSlider)
     {
         bool prevBlocked = m_windowSlider->blockSignals(true);
-        m_windowSlider->setLowerValue(static_cast<int>(std::round(clampedLow)));
-        m_windowSlider->setUpperValue(static_cast<int>(std::round(clampedHigh)));
+        m_windowSlider->setLowerValue(windowValueToSliderTick(clampedLow, m_windowGlobalMin, m_windowGlobalMax));
+        m_windowSlider->setUpperValue(windowValueToSliderTick(clampedHigh, m_windowGlobalMin, m_windowGlobalMax));
         m_windowSlider->blockSignals(prevBlocked);
     }
     if (m_windowLevelSpin)
@@ -3662,6 +6104,22 @@ static QImage makeQImageFromRGB(const std::vector<unsigned char> &rgb, int w, in
         std::memcpy(dst + size_t(y) * bpl, src + size_t(y) * w * 3, size_t(w * 3));
     }
     return img;
+}
+
+void ManualSeedSelector::requestViewUpdate(bool immediate)
+{
+    if (immediate || !m_viewUpdateTimer)
+    {
+        m_viewUpdatePending = false;
+        if (m_viewUpdateTimer && m_viewUpdateTimer->isActive())
+            m_viewUpdateTimer->stop();
+        updateViews();
+        return;
+    }
+
+    m_viewUpdatePending = true;
+    if (!m_viewUpdateTimer->isActive())
+        m_viewUpdateTimer->start();
 }
 
 void ManualSeedSelector::updateViews()
@@ -3703,7 +6161,10 @@ void ManualSeedSelector::updateViews()
 
     if (sizeX == 0 || sizeY == 0 || sizeZ == 0)
     {
-        std::cerr << "[WARN] updateViews: image dimensions invalid\n";
+        // Mask-only mode: keep 3D renderer active, but clear 2D orthogonal views.
+        m_axialView->setImage(QImage());
+        m_sagittalView->setImage(QImage());
+        m_coronalView->setImage(QImage());
         return;
     }
 
@@ -3716,30 +6177,59 @@ void ManualSeedSelector::updateViews()
         hi = m_windowGlobalMax;
     }
 
-    // Validate mask buffer size
-    if (!m_maskData.empty())
+    const size_t expectedTotal = size_t(sizeX) * size_t(sizeY) * size_t(sizeZ);
+    const bool maskDimsKnown = (m_maskDimX > 0 && m_maskDimY > 0 && m_maskDimZ > 0);
+    const size_t expectedMaskTotal = maskDimsKnown ? (size_t(m_maskDimX) * size_t(m_maskDimY) * size_t(m_maskDimZ)) : 0;
+    const bool maskBufferShapeValid = (!m_maskData.empty() && maskDimsKnown && m_maskData.size() == expectedMaskTotal);
+    const bool maskXYMatchImage = (m_maskDimX == sizeX && m_maskDimY == sizeY);
+    bool maskOverlayReady = (maskBufferShapeValid && maskXYMatchImage);
+    if (!m_maskData.empty() && !maskOverlayReady)
     {
-        size_t expected = size_t(sizeX) * size_t(sizeY) * size_t(sizeZ);
-        if (m_maskData.size() != expected)
-        {
-            std::cerr << "updateViews: mask buffer size mismatch, clearing\n";
-            m_maskData.clear();
-            m_maskSpacingX = m_image.getSpacingX();
-            m_maskSpacingY = m_image.getSpacingY();
-            m_maskSpacingZ = m_image.getSpacingZ();
-            m_mask3DDirty = true;
-        }
+        std::cerr << "updateViews: mask/image mismatch in X/Y or invalid mask buffer, skipping overlay and clearing mask buffer\n";
+        m_maskData.clear();
+        m_maskDimX = 0;
+        m_maskDimY = 0;
+        m_maskDimZ = 0;
+        m_maskSpacingX = m_image.getSpacingX();
+        m_maskSpacingY = m_image.getSpacingY();
+        m_maskSpacingZ = m_image.getSpacingZ();
+        m_mask3DDirty = true;
+        maskOverlayReady = false;
     }
+    const bool heatmapReady = m_heatmapEnabled && (m_heatmapData.size() == expectedTotal);
 
     // Axial view
     auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
-    if (m_enableAxialMask && !m_maskData.empty())
+    if (m_enableAxialMask && heatmapReady)
     {
         for (unsigned int yy = 0; yy < sizeY; ++yy)
         {
             for (unsigned int xx = 0; xx < sizeX; ++xx)
             {
-                size_t idx3 = size_t(xx) + size_t(yy) * sizeX + size_t(z) * sizeX * sizeY;
+                const size_t idx3 = size_t(xx) + size_t(yy) * sizeX + size_t(z) * sizeX * sizeY;
+                const float score = m_heatmapData[idx3];
+                if (score <= 0.0f)
+                    continue;
+
+                const QColor col = heatmapColorFromNormalized(score);
+                const unsigned char r = static_cast<unsigned char>(col.red());
+                const unsigned char g = static_cast<unsigned char>(col.green());
+                const unsigned char b = static_cast<unsigned char>(col.blue());
+                const size_t pix = (yy * sizeX + xx) * 3;
+                axial_rgb[pix + 0] = static_cast<unsigned char>(m_maskOpacity * r + (1.0f - m_maskOpacity) * axial_rgb[pix + 0]);
+                axial_rgb[pix + 1] = static_cast<unsigned char>(m_maskOpacity * g + (1.0f - m_maskOpacity) * axial_rgb[pix + 1]);
+                axial_rgb[pix + 2] = static_cast<unsigned char>(m_maskOpacity * b + (1.0f - m_maskOpacity) * axial_rgb[pix + 2]);
+            }
+        }
+    }
+    else if (m_enableAxialMask && maskOverlayReady)
+    {
+        const unsigned int mappedZ = mapDepthIndex(static_cast<unsigned int>(z), sizeZ, m_maskDimZ);
+        for (unsigned int yy = 0; yy < sizeY; ++yy)
+        {
+            for (unsigned int xx = 0; xx < sizeX; ++xx)
+            {
+                const size_t idx3 = size_t(xx) + size_t(yy) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
                 int lbl = m_maskData[idx3];
                 if (lbl != 0)
                 {
@@ -3762,13 +6252,36 @@ void ManualSeedSelector::updateViews()
     // Sagittal view
     int sagX = m_sagittalSlider->value();
     auto sagittal_rgb = m_image.getSagittalSliceAsRGB(sagX, lo, hi);
-    if (m_enableSagittalMask && !m_maskData.empty())
+    if (m_enableSagittalMask && heatmapReady)
     {
         for (unsigned int zz = 0; zz < sizeZ; ++zz)
         {
             for (unsigned int yy = 0; yy < sizeY; ++yy)
             {
-                size_t idx3 = size_t(sagX) + size_t(yy) * sizeX + size_t(zz) * sizeX * sizeY;
+                const size_t idx3 = size_t(sagX) + size_t(yy) * sizeX + size_t(zz) * sizeX * sizeY;
+                const float score = m_heatmapData[idx3];
+                if (score <= 0.0f)
+                    continue;
+
+                const QColor col = heatmapColorFromNormalized(score);
+                const unsigned char r = static_cast<unsigned char>(col.red());
+                const unsigned char g = static_cast<unsigned char>(col.green());
+                const unsigned char b = static_cast<unsigned char>(col.blue());
+                const size_t pix = (zz * sizeY + yy) * 3;
+                sagittal_rgb[pix + 0] = static_cast<unsigned char>(m_maskOpacity * r + (1.0f - m_maskOpacity) * sagittal_rgb[pix + 0]);
+                sagittal_rgb[pix + 1] = static_cast<unsigned char>(m_maskOpacity * g + (1.0f - m_maskOpacity) * sagittal_rgb[pix + 1]);
+                sagittal_rgb[pix + 2] = static_cast<unsigned char>(m_maskOpacity * b + (1.0f - m_maskOpacity) * sagittal_rgb[pix + 2]);
+            }
+        }
+    }
+    else if (m_enableSagittalMask && maskOverlayReady)
+    {
+        for (unsigned int zz = 0; zz < sizeZ; ++zz)
+        {
+            const unsigned int mappedZ = mapDepthIndex(zz, sizeZ, m_maskDimZ);
+            for (unsigned int yy = 0; yy < sizeY; ++yy)
+            {
+                const size_t idx3 = size_t(sagX) + size_t(yy) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
                 int lbl = m_maskData[idx3];
                 if (lbl != 0)
                 {
@@ -3791,13 +6304,36 @@ void ManualSeedSelector::updateViews()
     // Coronal view
     int corY = m_coronalSlider->value();
     auto coronal_rgb = m_image.getCoronalSliceAsRGB(corY, lo, hi);
-    if (m_enableCoronalMask && !m_maskData.empty())
+    if (m_enableCoronalMask && heatmapReady)
     {
         for (unsigned int zz = 0; zz < sizeZ; ++zz)
         {
             for (unsigned int xx = 0; xx < sizeX; ++xx)
             {
-                size_t idx3 = size_t(xx) + size_t(corY) * sizeX + size_t(zz) * sizeX * sizeY;
+                const size_t idx3 = size_t(xx) + size_t(corY) * sizeX + size_t(zz) * sizeX * sizeY;
+                const float score = m_heatmapData[idx3];
+                if (score <= 0.0f)
+                    continue;
+
+                const QColor col = heatmapColorFromNormalized(score);
+                const unsigned char r = static_cast<unsigned char>(col.red());
+                const unsigned char g = static_cast<unsigned char>(col.green());
+                const unsigned char b = static_cast<unsigned char>(col.blue());
+                const size_t pix = (zz * sizeX + xx) * 3;
+                coronal_rgb[pix + 0] = static_cast<unsigned char>(m_maskOpacity * r + (1.0f - m_maskOpacity) * coronal_rgb[pix + 0]);
+                coronal_rgb[pix + 1] = static_cast<unsigned char>(m_maskOpacity * g + (1.0f - m_maskOpacity) * coronal_rgb[pix + 1]);
+                coronal_rgb[pix + 2] = static_cast<unsigned char>(m_maskOpacity * b + (1.0f - m_maskOpacity) * coronal_rgb[pix + 2]);
+            }
+        }
+    }
+    else if (m_enableCoronalMask && maskOverlayReady)
+    {
+        for (unsigned int zz = 0; zz < sizeZ; ++zz)
+        {
+            const unsigned int mappedZ = mapDepthIndex(zz, sizeZ, m_maskDimZ);
+            for (unsigned int xx = 0; xx < sizeX; ++xx)
+            {
+                const size_t idx3 = size_t(xx) + size_t(corY) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
                 int lbl = m_maskData[idx3];
                 if (lbl != 0)
                 {
@@ -3914,10 +6450,53 @@ void ManualSeedSelector::update3DMaskView()
     if (!m_mask3DView)
         return;
     m_mask3DView->setVoxelSpacing(m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
-    unsigned int sx = m_image.getSizeX();
-    unsigned int sy = m_image.getSizeY();
-    unsigned int sz = m_image.getSizeZ();
-    m_mask3DView->setMaskData(m_maskData, sx, sy, sz, m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
+    const unsigned int sx = m_image.getSizeX();
+    const unsigned int sy = m_image.getSizeY();
+    const unsigned int sz = m_image.getSizeZ();
+
+    const bool maskDimsValid = (m_maskDimX > 0 && m_maskDimY > 0 && m_maskDimZ > 0);
+    const size_t expectedMaskTotal = size_t(m_maskDimX) * size_t(m_maskDimY) * size_t(m_maskDimZ);
+    const bool maskBufferValid = (!m_maskData.empty() && maskDimsValid && m_maskData.size() == expectedMaskTotal);
+    const bool hasImageVolume = (sx > 0 && sy > 0 && sz > 0);
+
+    if (!maskBufferValid)
+    {
+        m_mask3DView->clearMask();
+    }
+    else if (!hasImageVolume)
+    {
+        // No reference CT loaded: render the mask volume directly in 3D.
+        m_mask3DView->setMaskData(m_maskData, m_maskDimX, m_maskDimY, m_maskDimZ,
+                                  m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
+    }
+    else
+    {
+        const bool maskXYMatchImage = (m_maskDimX == sx && m_maskDimY == sy);
+        if (!maskXYMatchImage)
+        {
+            m_mask3DView->clearMask();
+        }
+        else if (m_maskDimZ == sz)
+        {
+            m_mask3DView->setMaskData(m_maskData, sx, sy, sz, m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ());
+        }
+        else
+        {
+            std::vector<int> remappedMask(size_t(sx) * size_t(sy) * size_t(sz), 0);
+            const size_t planeStride = size_t(sx) * size_t(sy);
+            const size_t sourcePlaneStride = size_t(m_maskDimX) * size_t(m_maskDimY);
+            for (unsigned int z = 0; z < sz; ++z)
+            {
+                const unsigned int mappedZ = mapDepthIndex(z, sz, m_maskDimZ);
+                const size_t srcOffset = size_t(mappedZ) * sourcePlaneStride;
+                const size_t dstOffset = size_t(z) * planeStride;
+                std::copy_n(m_maskData.begin() + static_cast<std::ptrdiff_t>(srcOffset),
+                            static_cast<std::ptrdiff_t>(planeStride),
+                            remappedMask.begin() + static_cast<std::ptrdiff_t>(dstOffset));
+            }
+            m_mask3DView->setMaskData(remappedMask, sx, sy, sz, m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ());
+        }
+    }
 
     std::vector<SeedRenderData> seedRenderData;
     seedRenderData.reserve(m_seeds.size());
@@ -3947,6 +6526,9 @@ void ManualSeedSelector::setMaskMode(int mode)
 void ManualSeedSelector::cleanMask()
 {
     m_maskData.clear();
+    m_maskDimX = m_image.getSizeX();
+    m_maskDimY = m_image.getSizeY();
+    m_maskDimZ = m_image.getSizeZ();
     m_maskSpacingX = m_image.getSpacingX();
     m_maskSpacingY = m_image.getSpacingY();
     m_maskSpacingZ = m_image.getSpacingZ();
@@ -3983,13 +6565,37 @@ bool ManualSeedSelector::saveMaskToFile(const std::string &path)
         out->Allocate();
 
         if (m_maskData.empty())
+        {
             m_maskData.assign(size_t(sx) * size_t(sy) * size_t(sz), 0);
+            m_maskDimX = sx;
+            m_maskDimY = sy;
+            m_maskDimZ = sz;
+        }
+
+        const bool maskDimsKnown = (m_maskDimX > 0 && m_maskDimY > 0 && m_maskDimZ > 0);
+        const size_t expectedMaskTotal = maskDimsKnown ? (size_t(m_maskDimX) * size_t(m_maskDimY) * size_t(m_maskDimZ)) : 0;
+        const bool canSampleMask = (!m_maskData.empty() &&
+                                    maskDimsKnown &&
+                                    m_maskData.size() == expectedMaskTotal &&
+                                    m_maskDimX == sx &&
+                                    m_maskDimY == sy);
 
         itk::ImageRegionIterator<ImageType> it(out, region);
         size_t idx = 0;
+        const size_t imagePlaneStride = size_t(sx) * size_t(sy);
+        const size_t maskPlaneStride = size_t(m_maskDimX) * size_t(m_maskDimY);
         for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++idx)
         {
-            int v = m_maskData[idx];
+            int v = 0;
+            if (canSampleMask)
+            {
+                const unsigned int x = static_cast<unsigned int>(idx % sx);
+                const unsigned int y = static_cast<unsigned int>((idx / sx) % sy);
+                const unsigned int z = static_cast<unsigned int>(idx / imagePlaneStride);
+                const unsigned int mappedZ = mapDepthIndex(z, sz, m_maskDimZ);
+                const size_t maskIdx = size_t(x) + size_t(y) * m_maskDimX + size_t(mappedZ) * maskPlaneStride;
+                v = m_maskData[maskIdx];
+            }
             if (v < std::numeric_limits<PixelType>::min())
                 v = std::numeric_limits<PixelType>::min();
             if (v > std::numeric_limits<PixelType>::max())
@@ -4028,6 +6634,9 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
 {
     try
     {
+        const QString absoluteMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath());
+        const bool hasImage = (m_image.getSizeX() > 0 && m_image.getSizeY() > 0 && m_image.getSizeZ() > 0);
+
         using ImageType = itk::Image<int32_t, 3>;
         using ReaderType = itk::ImageFileReader<ImageType>;
         ReaderType::Pointer reader = ReaderType::New();
@@ -4039,30 +6648,90 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
         unsigned int sx = static_cast<unsigned int>(size[0]);
         unsigned int sy = static_cast<unsigned int>(size[1]);
         unsigned int sz = static_cast<unsigned int>(size[2]);
-        const auto spacing = img->GetSpacing();
-        m_maskSpacingX = std::abs(static_cast<double>(spacing[0]));
-        m_maskSpacingY = std::abs(static_cast<double>(spacing[1]));
-        m_maskSpacingZ = std::abs(static_cast<double>(spacing[2]));
-        if (!std::isfinite(m_maskSpacingX) || m_maskSpacingX <= 0.0)
+
+        if (hasImage &&
+            (sx != m_image.getSizeX() || sy != m_image.getSizeY()))
+        {
+            m_maskData.clear();
+            m_maskDimX = 0;
+            m_maskDimY = 0;
+            m_maskDimZ = 0;
             m_maskSpacingX = m_image.getSpacingX();
-        if (!std::isfinite(m_maskSpacingY) || m_maskSpacingY <= 0.0)
             m_maskSpacingY = m_image.getSpacingY();
-        if (!std::isfinite(m_maskSpacingZ) || m_maskSpacingZ <= 0.0)
             m_maskSpacingZ = m_image.getSpacingZ();
+            m_mask3DDirty = true;
+
+            const QString msg = QString("Mask dimensions (%1 x %2 x %3) do not match image dimensions (%4 x %5 x %6). "
+                                        "Overlay requires matching X/Y dimensions.")
+                                    .arg(sx)
+                                    .arg(sy)
+                                    .arg(sz)
+                                    .arg(m_image.getSizeX())
+                                    .arg(m_image.getSizeY())
+                                    .arg(m_image.getSizeZ());
+            QMessageBox::warning(this, "Load Mask", msg);
+            if (m_statusLabel)
+                m_statusLabel->setText("Mask not overlaid: X/Y dimensions do not match current image.");
+            m_loadedMaskPath.clear();
+            return false;
+        }
+
+        const auto spacing = img->GetSpacing();
+        if (hasImage)
+        {
+            m_maskSpacingX = m_image.getSpacingX();
+            m_maskSpacingY = m_image.getSpacingY();
+            m_maskSpacingZ = m_image.getSpacingZ();
+        }
+        else
+        {
+            m_maskSpacingX = std::abs(static_cast<double>(spacing[0]));
+            m_maskSpacingY = std::abs(static_cast<double>(spacing[1]));
+            m_maskSpacingZ = std::abs(static_cast<double>(spacing[2]));
+            if (!std::isfinite(m_maskSpacingX) || m_maskSpacingX <= 0.0)
+                m_maskSpacingX = 1.0;
+            if (!std::isfinite(m_maskSpacingY) || m_maskSpacingY <= 0.0)
+                m_maskSpacingY = 1.0;
+            if (!std::isfinite(m_maskSpacingZ) || m_maskSpacingZ <= 0.0)
+                m_maskSpacingZ = 1.0;
+        }
         size_t tot = size_t(sx) * size_t(sy) * size_t(sz);
         m_maskData.clear();
         m_maskData.resize(tot);
+        m_maskDimX = sx;
+        m_maskDimY = sy;
+        m_maskDimZ = sz;
         itk::ImageRegionConstIterator<ImageType> it(img, region);
         size_t idx = 0;
         for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++idx)
         {
             m_maskData[idx] = static_cast<int>(it.Get());
         }
+
+        if (hasImage && sz != m_image.getSizeZ() && m_statusLabel)
+        {
+            m_statusLabel->setText(QString("Loaded mask with depth mismatch (%1 vs %2): overlay adapted to image height.")
+                                       .arg(sz)
+                                       .arg(m_image.getSizeZ()));
+        }
+
+        if (!hasImage && m_show3DCheck && !m_show3DCheck->isChecked())
+        {
+            // In mask-only mode, ensure render window actually shows the loaded mask.
+            QSignalBlocker blocker(m_show3DCheck);
+            m_show3DCheck->setChecked(true);
+            m_enable3DView = true;
+            if (m_mask3DView)
+                m_mask3DView->setMaskVisible(true);
+        }
+
         m_mask3DDirty = true;
+        m_loadedMaskPath = absoluteMaskPath.toStdString();
         return true;
     }
     catch (const std::exception &e)
     {
+        m_loadedMaskPath.clear();
         QMessageBox::critical(this, "Load Mask", QString("Failed: %1").arg(e.what()));
         return false;
     }
@@ -4075,7 +6744,7 @@ void ManualSeedSelector::paintAxialMask(int x, int y)
     int z = m_axialSlider->value();
     bool erase = (m_maskMode == 2);
     applyBrushToMask({x, y, z}, {0, 1}, m_maskBrushRadius, m_labelSelector->value(), erase);
-    updateViews();
+    requestViewUpdate(false);
 }
 
 void ManualSeedSelector::paintSagittalMask(int x, int y)
@@ -4083,7 +6752,7 @@ void ManualSeedSelector::paintSagittalMask(int x, int y)
     int sx = m_sagittalSlider->value();
     bool erase = (m_maskMode == 2);
     applyBrushToMask({sx, x, y}, {1, 2}, m_maskBrushRadius, m_labelSelector->value(), erase);
-    updateViews();
+    requestViewUpdate(false);
 }
 
 void ManualSeedSelector::paintCoronalMask(int x, int y)
@@ -4091,40 +6760,55 @@ void ManualSeedSelector::paintCoronalMask(int x, int y)
     int cy = m_coronalSlider->value();
     bool erase = (m_maskMode == 2);
     applyBrushToMask({x, cy, y}, {0, 2}, m_maskBrushRadius, m_labelSelector->value(), erase);
-    updateViews();
+    requestViewUpdate(false);
 }
 
 void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, int radius, int labelValue, bool erase)
 {
-    unsigned int sx = m_image.getSizeX();
-    unsigned int sy = m_image.getSizeY();
-    unsigned int sz = m_image.getSizeZ();
-    if (sx == 0)
+    const unsigned int imageSX = m_image.getSizeX();
+    const unsigned int imageSY = m_image.getSizeY();
+    const unsigned int imageSZ = m_image.getSizeZ();
+    if (imageSX == 0)
         return;
     if (m_maskData.empty())
-        m_maskData.assign(sx * sy * sz, 0);
+    {
+        m_maskData.assign(size_t(imageSX) * size_t(imageSY) * size_t(imageSZ), 0);
+        m_maskDimX = imageSX;
+        m_maskDimY = imageSY;
+        m_maskDimZ = imageSZ;
+    }
+
+    if (m_maskDimX != imageSX || m_maskDimY != imageSY || m_maskDimZ == 0)
+        return;
+
+    const unsigned int maskSX = m_maskDimX;
+    const unsigned int maskSY = m_maskDimY;
+    const unsigned int maskSZ = m_maskDimZ;
+
+    std::array<int, 3> mappedCenter = center;
+    mappedCenter[2] = static_cast<int>(mapDepthIndex(static_cast<unsigned int>(std::max(0, center[2])), imageSZ, maskSZ));
 
     int a0 = axes.first;
     int a1 = axes.second;
-    int min0 = std::max(0, center[a0] - radius);
-    int max0 = std::min(int((a0 == 0 ? sx : (a0 == 1 ? sy : sz))) - 1, center[a0] + radius);
-    int min1 = std::max(0, center[a1] - radius);
-    int max1 = std::min(int((a1 == 0 ? sx : (a1 == 1 ? sy : sz))) - 1, center[a1] + radius);
+    int min0 = std::max(0, mappedCenter[a0] - radius);
+    int max0 = std::min(int((a0 == 0 ? maskSX : (a0 == 1 ? maskSY : maskSZ))) - 1, mappedCenter[a0] + radius);
+    int min1 = std::max(0, mappedCenter[a1] - radius);
+    int max1 = std::min(int((a1 == 0 ? maskSX : (a1 == 1 ? maskSY : maskSZ))) - 1, mappedCenter[a1] + radius);
 
     for (int i = min0; i <= max0; ++i)
     {
         for (int j = min1; j <= max1; ++j)
         {
-            int di = i - center[a0];
-            int dj = j - center[a1];
+            int di = i - mappedCenter[a0];
+            int dj = j - mappedCenter[a1];
             if (di * di + dj * dj <= radius * radius)
             {
-                int xi = (a0 == 0) ? i : ((a1 == 0) ? j : center[0]);
-                int yi = (a0 == 1) ? i : ((a1 == 1) ? j : center[1]);
-                int zi = (a0 == 2) ? i : ((a1 == 2) ? j : center[2]);
-                if (xi < 0 || yi < 0 || zi < 0 || xi >= int(sx) || yi >= int(sy) || zi >= int(sz))
+                int xi = (a0 == 0) ? i : ((a1 == 0) ? j : mappedCenter[0]);
+                int yi = (a0 == 1) ? i : ((a1 == 1) ? j : mappedCenter[1]);
+                int zi = (a0 == 2) ? i : ((a1 == 2) ? j : mappedCenter[2]);
+                if (xi < 0 || yi < 0 || zi < 0 || xi >= int(maskSX) || yi >= int(maskSY) || zi >= int(maskSZ))
                     continue;
-                size_t idx = size_t(xi) + size_t(yi) * sx + size_t(zi) * sx * sy;
+                const size_t idx = size_t(xi) + size_t(yi) * maskSX + size_t(zi) * maskSX * maskSY;
                 if (erase)
                 {
                     if (m_maskData[idx] == labelValue)
@@ -4280,6 +6964,39 @@ bool ManualSeedSelector::handleSliceKey(QKeyEvent *event)
 
 bool ManualSeedSelector::eventFilter(QObject *obj, QEvent *event)
 {
+    if (obj == (m_niftiList ? m_niftiList->viewport() : nullptr) && event->type() == QEvent::MouseButtonPress)
+    {
+        QMouseEvent *me = static_cast<QMouseEvent *>(event);
+        if (me && me->button() == Qt::RightButton)
+        {
+            QListWidgetItem *item = m_niftiList ? m_niftiList->itemAt(me->pos()) : nullptr;
+            if (!item)
+                return true; // consume right-click and keep current viewer image
+
+            QString path = item->data(Qt::UserRole).toString().trimmed();
+            if (path.isEmpty() && m_niftiList)
+            {
+                const int row = m_niftiList->row(item);
+                if (row >= 0 && row < static_cast<int>(m_images.size()))
+                    path = QString::fromStdString(m_images[static_cast<size_t>(row)].imagePath);
+            }
+            path = QFileInfo(path).absoluteFilePath();
+            if (path.isEmpty())
+                return true;
+
+            QMenu menu(this);
+            QAction *copyPathAction = menu.addAction("Copy Path");
+            QAction *selectedAction = menu.exec(m_niftiList->viewport()->mapToGlobal(me->pos()));
+            if (selectedAction == copyPathAction)
+            {
+                QApplication::clipboard()->setText(path);
+                if (m_statusLabel)
+                    m_statusLabel->setText(QString("Copied path: %1").arg(path));
+            }
+            return true; // prevent selection change on right-click
+        }
+    }
+
     if (event->type() == QEvent::KeyPress)
     {
         if (obj == m_axialView || obj == m_sagittalView || obj == m_coronalView)
@@ -4309,33 +7026,68 @@ QColor ManualSeedSelector::getColorForImageIndex(int index)
 
 void ManualSeedSelector::updateMaskSeedLists()
 {
+    clearPointQueryCache();
+
     // Clear lists
     m_maskList->clear();
     m_seedList->clear();
+    const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
+    int activeMaskRow = -1;
 
-    if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
-        return;
-
-    const ImageData &currentImage = m_images[m_currentImageIndex];
-    QColor color = currentImage.color;
-
-    // Populate mask list with masks for current image
-    for (const auto &maskPath : currentImage.maskPaths)
+    auto appendMaskItem = [this, &activeMaskPath, &activeMaskRow](const std::string &maskPath, const QColor &color, int sourceImageIndex, bool markAsGlobal)
     {
-        std::string filename = std::filesystem::path(maskPath).filename().string();
-        QListWidgetItem *item = new QListWidgetItem(QString::fromStdString(filename));
+        const QString absolutePath = QFileInfo(QString::fromStdString(maskPath)).absoluteFilePath();
+        const QString fileName = QFileInfo(absolutePath).fileName();
+        const int rowNumber = m_maskList->count() + 1;
+        const QString baseLabel = markAsGlobal ? QString("%1 [global]").arg(fileName) : fileName;
+        const QString label = QString("%1. %2").arg(rowNumber).arg(baseLabel);
+        QListWidgetItem *item = new QListWidgetItem(label);
         item->setForeground(QBrush(color));
-        item->setData(Qt::UserRole, QFileInfo(QString::fromStdString(maskPath)).absoluteFilePath());
+        item->setData(kPathRole, absolutePath);
+        item->setData(kMaskSourceImageRole, sourceImageIndex);
         m_maskList->addItem(item);
+        const int row = m_maskList->count() - 1;
+        if (!activeMaskPath.isEmpty() && activeMaskRow < 0 && QDir::cleanPath(absolutePath) == activeMaskPath)
+            activeMaskRow = row;
+    };
+
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        const ImageData &currentImage = m_images[m_currentImageIndex];
+        const QColor color = currentImage.color;
+
+        for (const std::string &maskPath : currentImage.maskPaths)
+            appendMaskItem(maskPath, color, m_currentImageIndex, false);
+
+        for (const auto &seedPath : currentImage.seedPaths)
+        {
+            const int rowNumber = m_seedList->count() + 1;
+            const QString absoluteSeedPath = QFileInfo(QString::fromStdString(seedPath)).absoluteFilePath();
+            const QString filename = QFileInfo(absoluteSeedPath).fileName();
+            QListWidgetItem *item = new QListWidgetItem(QString("%1. %2").arg(rowNumber).arg(filename.isEmpty() ? absoluteSeedPath : filename));
+            item->setForeground(QBrush(color));
+            item->setData(Qt::UserRole, absoluteSeedPath);
+            m_seedList->addItem(item);
+        }
     }
 
-    // Populate seed list with seeds for current image
-    for (const auto &seedPath : currentImage.seedPaths)
+    for (const std::string &maskPath : m_unassignedMaskPaths)
+        appendMaskItem(maskPath, QColor(200, 200, 200), -1, m_currentImageIndex >= 0);
+
+    if (activeMaskRow >= 0)
+        m_maskList->setCurrentRow(activeMaskRow);
+
+    if (m_maskData.empty() && hasImage())
     {
-        std::string filename = std::filesystem::path(seedPath).filename().string();
-        QListWidgetItem *item = new QListWidgetItem(QString::fromStdString(filename));
-        item->setForeground(QBrush(color));
-        item->setData(Qt::UserRole, QFileInfo(QString::fromStdString(seedPath)).absoluteFilePath());
-        m_seedList->addItem(item);
+        QString autoLoadSummary;
+        if (autoLoadAnatomyMasksForCurrentImage(&autoLoadSummary) && m_statusLabel && !autoLoadSummary.isEmpty())
+            m_statusLabel->setText(autoLoadSummary);
+    }
+
+    preloadMasksForPointQuery(false);
+
+    if (m_heatmapEnabled)
+    {
+        startHeatmapBuildAsync(false);
     }
 }

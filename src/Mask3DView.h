@@ -39,6 +39,18 @@ class Mask3DView : public QWidget
 {
     Q_OBJECT
 public:
+    struct CameraState
+    {
+        bool valid = false;
+        double position[3] = {0.0, 0.0, 1.0};
+        double focalPoint[3] = {0.0, 0.0, 0.0};
+        double viewUp[3] = {0.0, 1.0, 0.0};
+        double clippingRange[2] = {0.1, 1000.0};
+        double parallelScale = 1.0;
+        double viewAngle = 30.0;
+        int parallelProjection = 0;
+    };
+
     explicit Mask3DView(QWidget *parent = nullptr);
     void setMaskData(const std::vector<int> &mask,
                      unsigned int sizeX,
@@ -53,6 +65,8 @@ public:
     void setSeedsVisible(bool visible);
     void clearMask();
     void setSeedRectangleEraseEnabled(bool enabled);
+    CameraState captureCameraState() const;
+    void restoreCameraState(const CameraState &state, bool render = true);
 
 signals:
     void eraseSeedsInRectangle(const QVector<int> &seedIndices);
