@@ -16,7 +16,7 @@
 
 #include <vtkActor.h>
 #include <vtkCamera.h>
-#include <vtkFlyingEdges3D.h>
+#include <vtkDiscreteFlyingEdges3D.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
 #include <vtkLight.h>
@@ -144,14 +144,16 @@ void Mask3DView::buildPipeline()
     m_mapper->SetLookupTable(m_lookupTable);
     m_mapper->SetColorModeToMapScalars();
     m_mapper->UseLookupTableScalarRangeOn();
+    m_mapper->InterpolateScalarsBeforeMappingOff();
     m_actor->SetMapper(m_mapper);
 
-    // FlyingEdges3D - GPU-accelerated alternative to Marching Cubes
-    m_flyingEdges = vtkSmartPointer<vtkFlyingEdges3D>::New();
+    // Use the discrete variant so integer labels produce independent
+    // categorical surfaces instead of cumulative isovalues.
+    m_flyingEdges = vtkSmartPointer<vtkDiscreteFlyingEdges3D>::New();
     m_flyingEdges->SetComputeNormals(true);
     m_flyingEdges->SetComputeScalars(true);
-    m_flyingEdges->SetComputeGradients(true);
-    m_flyingEdges->InterpolateAttributesOn();
+    m_flyingEdges->SetComputeGradients(false);
+    m_flyingEdges->InterpolateAttributesOff();
 
     // WindowedSinc smoother - GPU-friendly, better than Laplacian
     m_smoother = vtkSmartPointer<vtkWindowedSincPolyDataFilter>::New();

@@ -36,6 +36,7 @@
 #include <QTabWidget>
 #include <QGroupBox>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QRadioButton>
 #include <QButtonGroup>
 #include <QSpinBox>
@@ -48,10 +49,12 @@
 #include <QSplitter>
 #include <QListWidget>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QTreeWidget>
 #include <QProgressBar>
 #include <QSignalBlocker>
 #include <QTimer>
+#include <QTime>
 #include <QResizeEvent>
 #include <QMoveEvent>
 #include <QWindow>
@@ -954,7 +957,236 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
 
 ManualSeedSelector::~ManualSeedSelector()
 {
+    stopSegmentationWorker(true);
     stopHeatmapWorker(true);
+}
+
+bool ManualSeedSelector::useLegacyBinaryMode() const
+{
+    return m_segmentationModeCombo && m_segmentationModeCombo->currentIndex() == 1;
+}
+
+void ManualSeedSelector::refreshSegmentationProgressDisplay()
+{
+    if (!m_segmentationProgressBar)
+        return;
+
+    const QString label = m_segmentationProgressLabel.trimmed().isEmpty()
+                              ? "Segmentation running..."
+                              : m_segmentationProgressLabel.trimmed();
+    const int queuedCount = static_cast<int>(m_pendingSegmentationTasks.size());
+    const QString queueSuffix =
+        queuedCount > 0 ? QString(" | queue %1").arg(queuedCount) : QString();
+
+    if (m_segmentationProgressTotal > 0)
+    {
+        const int clampedTotal = std::max(1, m_segmentationProgressTotal);
+        const int clampedDone = std::clamp(m_segmentationProgressDone, 0, clampedTotal);
+        m_segmentationProgressBar->setRange(0, clampedTotal);
+        m_segmentationProgressBar->setValue(clampedDone);
+        m_segmentationProgressBar->setFormat(QString("%1 %2/%3 (%p%)%4")
+                                                 .arg(label)
+                                                 .arg(clampedDone)
+                                                 .arg(clampedTotal)
+                                                 .arg(queueSuffix));
+    }
+    else
+    {
+        m_segmentationProgressBar->setRange(0, 0);
+        m_segmentationProgressBar->setFormat(label + queueSuffix);
+    }
+    m_segmentationProgressBar->setVisible(m_segmentationWorkerActive.load());
+}
+
+void ManualSeedSelector::launchSegmentationTask(PendingSegmentationTask &&task)
+{
+    if (m_segmentationWorker.joinable())
+        m_segmentationWorker.join();
+
+    m_segmentationWorkerActive.store(true);
+
+    if (!task.initialMessage.trimmed().isEmpty())
+        appendSegmentationLog(task.initialMessage);
+    for (const QString &line : task.initialLogs)
+        appendSegmentationLog(line);
+    if (m_statusLabel)
+        m_statusLabel->setText("Segmentation started in background.");
+
+    m_segmentationProgressLabel = task.progressLabel;
+    m_segmentationProgressDone = 0;
+    m_segmentationProgressTotal = task.progressTotal;
+    refreshSegmentationProgressDisplay();
+
+    m_segmentationWorker = std::thread([task = std::move(task.task)]() mutable
+                                       { task(); });
+}
+
+bool ManualSeedSelector::startSegmentationTask(std::function<void()> task,
+                                               const QString &initialMessage,
+                                               const QStringList &initialLogs,
+                                               const QString &progressLabel,
+                                               int progressTotal)
+{
+    if (!task)
+        return false;
+
+    PendingSegmentationTask pendingTask{
+        std::move(task),
+        initialMessage,
+        initialLogs,
+        progressLabel,
+        progressTotal};
+
+    if (m_segmentationWorkerActive.load())
+    {
+        m_pendingSegmentationTasks.push_back(std::move(pendingTask));
+        const int queueSize = static_cast<int>(m_pendingSegmentationTasks.size());
+        appendSegmentationLog(QString("Queued segmentation task #%1.").arg(queueSize));
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Segmentation queued. Pending: %1").arg(queueSize));
+        refreshSegmentationProgressDisplay();
+        return true;
+    }
+
+    launchSegmentationTask(std::move(pendingTask));
+    return true;
+}
+
+void ManualSeedSelector::appendSegmentationLog(const QString &message)
+{
+    if (!m_logConsole)
+        return;
+
+    const QString trimmed = message.trimmed();
+    if (trimmed.isEmpty())
+        return;
+
+    const QString stamped = QString("[%1] %2")
+                                .arg(QTime::currentTime().toString("HH:mm:ss"),
+                                     trimmed);
+    m_logConsole->appendPlainText(stamped);
+    m_logConsole->ensureCursorVisible();
+}
+
+void ManualSeedSelector::setSegmentationTaskProgress(const QString &message, int done, int total)
+{
+    m_segmentationProgressLabel = message.trimmed().isEmpty() ? "Segmentation running..." : message.trimmed();
+    m_segmentationProgressDone = done;
+    m_segmentationProgressTotal = total;
+    refreshSegmentationProgressDisplay();
+}
+
+int ManualSeedSelector::findImageIndexByPath(const QString &imagePath) const
+{
+    const QString normalizedTarget = QDir::cleanPath(QFileInfo(imagePath).absoluteFilePath());
+    if (normalizedTarget.isEmpty())
+        return -1;
+
+    for (int i = 0; i < static_cast<int>(m_images.size()); ++i)
+    {
+        const QString candidate = QDir::cleanPath(
+            QFileInfo(QString::fromStdString(m_images[static_cast<size_t>(i)].imagePath)).absoluteFilePath());
+        if (candidate == normalizedTarget)
+            return i;
+    }
+    return -1;
+}
+
+void ManualSeedSelector::completeSegmentationTask(bool success,
+                                                  const QString &summary,
+                                                  const QString &sourceImagePath,
+                                                  const QStringList &generatedMaskPaths)
+{
+    m_segmentationWorkerActive.store(false);
+    if (m_segmentationWorker.joinable())
+        m_segmentationWorker.join();
+
+    const int sourceImageIndex = findImageIndexByPath(sourceImagePath);
+    bool refreshCurrentLists = false;
+    std::unordered_set<std::string> seenMaskPaths;
+    for (const QString &maskPath : generatedMaskPaths)
+    {
+        const QString normalizedMaskPath = QDir::cleanPath(QFileInfo(maskPath).absoluteFilePath());
+        if (normalizedMaskPath.isEmpty() || !QFileInfo::exists(normalizedMaskPath))
+            continue;
+
+        const std::string key = normalizedMaskPath.toStdString();
+        if (!seenMaskPaths.insert(key).second)
+            continue;
+
+        if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size()))
+        {
+            auto &maskPaths = m_images[static_cast<size_t>(sourceImageIndex)].maskPaths;
+            if (std::find(maskPaths.begin(), maskPaths.end(), key) == maskPaths.end())
+                maskPaths.push_back(key);
+            if (sourceImageIndex == m_currentImageIndex)
+                refreshCurrentLists = true;
+        }
+        else
+        {
+            if (std::find(m_unassignedMaskPaths.begin(), m_unassignedMaskPaths.end(), key) == m_unassignedMaskPaths.end())
+                m_unassignedMaskPaths.push_back(key);
+            if (m_currentImageIndex < 0)
+                refreshCurrentLists = true;
+        }
+    }
+
+    if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size()))
+    {
+        autoDetectAssociatedFilesForImage(sourceImageIndex, false);
+        if (sourceImageIndex == m_currentImageIndex)
+            refreshCurrentLists = true;
+    }
+
+    if (refreshCurrentLists)
+        updateMaskSeedLists();
+
+    if (!summary.trimmed().isEmpty())
+    {
+        appendSegmentationLog(summary);
+        if (m_statusLabel)
+            m_statusLabel->setText(summary);
+    }
+    else if (m_statusLabel)
+    {
+        m_statusLabel->setText(success ? "Background segmentation finished." : "Background segmentation failed.");
+    }
+
+    if (!m_pendingSegmentationTasks.empty())
+    {
+        PendingSegmentationTask nextTask = std::move(m_pendingSegmentationTasks.front());
+        m_pendingSegmentationTasks.pop_front();
+        appendSegmentationLog(
+            QString("Starting queued segmentation. Remaining queue: %1")
+                .arg(m_pendingSegmentationTasks.size()));
+        launchSegmentationTask(std::move(nextTask));
+        return;
+    }
+
+    m_segmentationProgressLabel.clear();
+    m_segmentationProgressDone = -1;
+    m_segmentationProgressTotal = -1;
+    if (m_segmentationProgressBar)
+    {
+        m_segmentationProgressBar->setVisible(false);
+        m_segmentationProgressBar->setRange(0, 100);
+        m_segmentationProgressBar->setValue(0);
+        m_segmentationProgressBar->setFormat("Segmentation");
+    }
+}
+
+void ManualSeedSelector::stopSegmentationWorker(bool waitForJoin)
+{
+    if (waitForJoin && m_segmentationWorker.joinable())
+        m_segmentationWorker.join();
+
+    m_pendingSegmentationTasks.clear();
+    m_segmentationWorkerActive.store(false);
+    m_segmentationProgressLabel.clear();
+    m_segmentationProgressDone = -1;
+    m_segmentationProgressTotal = -1;
+    if (m_segmentationProgressBar)
+        m_segmentationProgressBar->setVisible(false);
 }
 
 void ManualSeedSelector::clampWindowToCurrentScreen()
@@ -1591,6 +1823,11 @@ void ManualSeedSelector::setupUi()
         updateViews(); });
     maskFileLayout->addWidget(btnMaskClear);
 
+    QPushButton *btnMaskThreshold = new QPushButton("Threshold");
+    btnMaskThreshold->setToolTip("Remove mask voxels using the current image intensity threshold");
+    connect(btnMaskThreshold, &QPushButton::clicked, this, &ManualSeedSelector::filterActiveMaskByThreshold);
+    maskFileLayout->addWidget(btnMaskThreshold);
+
     maskLayout->addWidget(maskFileGroup);
 
     QGroupBox *maskAdvancedGroup = new QGroupBox("Advanced");
@@ -1640,35 +1877,42 @@ void ManualSeedSelector::setupUi()
     QGridLayout *paramsGrid = new QGridLayout(paramsGroup);
     paramsGrid->setSpacing(4);
 
-    paramsGrid->addWidget(new QLabel("Polarity:"), 0, 0);
+    paramsGrid->addWidget(new QLabel("Mode:"), 0, 0);
+    m_segmentationModeCombo = new QComboBox();
+    m_segmentationModeCombo->addItem("Multi-label");
+    m_segmentationModeCombo->addItem("Legacy binary");
+    m_segmentationModeCombo->setToolTip("Multi-label runs all labels in one execution. Legacy binary restores the original internal-versus-external workflow.");
+    paramsGrid->addWidget(m_segmentationModeCombo, 0, 1, 1, 2);
+
+    paramsGrid->addWidget(new QLabel("Polarity:"), 1, 0);
     m_polSlider = new QSlider(Qt::Horizontal);
     m_polSlider->setRange(-100, 100);
     m_polSlider->setValue(100);
     m_polSlider->setToolTip("+1.0=bright inside, -1.0=dark inside");
-    paramsGrid->addWidget(m_polSlider, 0, 1);
+    paramsGrid->addWidget(m_polSlider, 1, 1);
     m_polValue = new QLabel("1.00");
     m_polValue->setMinimumWidth(40);
-    paramsGrid->addWidget(m_polValue, 0, 2);
+    paramsGrid->addWidget(m_polValue, 1, 2);
 
-    paramsGrid->addWidget(new QLabel("Relax iters:"), 1, 0);
+    paramsGrid->addWidget(new QLabel("Relax iters:"), 2, 0);
     m_niterSlider = new QSlider(Qt::Horizontal);
     m_niterSlider->setRange(0, 100);
     m_niterSlider->setValue(0);
     m_niterSlider->setToolTip("Relaxation iterations");
-    paramsGrid->addWidget(m_niterSlider, 1, 1);
+    paramsGrid->addWidget(m_niterSlider, 2, 1);
     m_niterValue = new QLabel("0");
     m_niterValue->setMinimumWidth(40);
-    paramsGrid->addWidget(m_niterValue, 1, 2);
+    paramsGrid->addWidget(m_niterValue, 2, 2);
 
-    paramsGrid->addWidget(new QLabel("Percentile:"), 2, 0);
+    paramsGrid->addWidget(new QLabel("Percentile:"), 3, 0);
     m_percSlider = new QSlider(Qt::Horizontal);
     m_percSlider->setRange(0, 100);
     m_percSlider->setValue(0);
     m_percSlider->setToolTip("Arc-weight percentile threshold");
-    paramsGrid->addWidget(m_percSlider, 2, 1);
+    paramsGrid->addWidget(m_percSlider, 3, 1);
     m_percValue = new QLabel("0");
     m_percValue->setMinimumWidth(40);
-    paramsGrid->addWidget(m_percValue, 2, 2);
+    paramsGrid->addWidget(m_percValue, 3, 2);
 
     connect(m_polSlider, &QSlider::valueChanged, [this](int v)
             { m_polValue->setText(QString::number(v / 100.0, 'f', 2)); });
@@ -1684,8 +1928,8 @@ void ManualSeedSelector::setupUi()
     QVBoxLayout *optionsLayout = new QVBoxLayout(optionsGroup);
     optionsLayout->setSpacing(4);
 
-    m_segmentAllBox = new QCheckBox("Legacy batch per label");
-    m_segmentAllBox->setToolTip("Optional legacy mode: run one binary segmentation per label. Default run already uses multi-label competition in a single execution.");
+    m_segmentAllBox = new QCheckBox("Batch per label");
+    m_segmentAllBox->setToolTip("Run one binary segmentation per label and merge the outputs into a multilabel mask.");
     optionsLayout->addWidget(m_segmentAllBox);
 
     m_polSweepBox = new QCheckBox("Polarity sweep");
@@ -1699,7 +1943,9 @@ void ManualSeedSelector::setupUi()
     connect(m_segmentAllBox, &QCheckBox::toggled, [this](bool on)
             {
         m_polSweepBox->setChecked(false);
-        m_polSweepBox->setEnabled(!on); });
+        m_polSweepBox->setEnabled(!on);
+        if (m_segmentationModeCombo)
+            m_segmentationModeCombo->setEnabled(!on); });
 
     segLayout->addWidget(optionsGroup);
 
@@ -1707,10 +1953,10 @@ void ManualSeedSelector::setupUi()
     QGroupBox *runGroup = new QGroupBox("Execute");
     QVBoxLayout *runLayout = new QVBoxLayout(runGroup);
 
-    QPushButton *btnRunSegment = new QPushButton("Run");
-    btnRunSegment->setToolTip("Start ROIFT segmentation (Ctrl+Shift+S)");
-    btnRunSegment->setShortcut(QKeySequence("Ctrl+Shift+S"));
-    btnRunSegment->setStyleSheet(R"(
+    m_btnRunSegment = new QPushButton("Run");
+    m_btnRunSegment->setToolTip("Start ROIFT segmentation (Ctrl+Shift+S)");
+    m_btnRunSegment->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    m_btnRunSegment->setStyleSheet(R"(
         QPushButton {
             background-color: #0e639c;
             color: white;
@@ -1724,11 +1970,10 @@ void ManualSeedSelector::setupUi()
             background-color: #0d5a8a;
         }
     )");
-    connect(btnRunSegment, &QPushButton::clicked, [this]()
+    connect(m_btnRunSegment, &QPushButton::clicked, [this]()
             {
-        SegmentationRunner::runSegmentation(this);
-        refreshAssociatedFilesForCurrentImage(); });
-    runLayout->addWidget(btnRunSegment);
+        SegmentationRunner::runSegmentation(this); });
+    runLayout->addWidget(m_btnRunSegment);
 
     segLayout->addWidget(runGroup);
     segLayout->addStretch();
@@ -2654,8 +2899,37 @@ void ManualSeedSelector::setupUi()
     mainLayout->addWidget(contentSplitter, 1);
 
     // =====================================================
-    // BOTTOM: Status bar
+    // BOTTOM: Logs + status bar
     // =====================================================
+    QVBoxLayout *bottomSectionLayout = new QVBoxLayout();
+    bottomSectionLayout->setContentsMargins(0, 0, 0, 0);
+    bottomSectionLayout->setSpacing(6);
+
+    QLabel *logHeader = new QLabel("Logs");
+    logHeader->setStyleSheet("QLabel { color: #007acc; font-weight: 600; padding-left: 2px; }");
+    bottomSectionLayout->addWidget(logHeader, 0);
+
+    m_logConsole = new QPlainTextEdit();
+    m_logConsole->setReadOnly(true);
+    m_logConsole->setMinimumHeight(84);
+    m_logConsole->setMaximumHeight(120);
+    m_logConsole->setFrameShape(QFrame::NoFrame);
+    m_logConsole->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_logConsole->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_logConsole->setPlaceholderText("Background segmentation logs will appear here.");
+    m_logConsole->document()->setMaximumBlockCount(500);
+    m_logConsole->setStyleSheet(R"(
+        QPlainTextEdit {
+            background-color: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            color: #d8d8d8;
+        }
+    )");
+    bottomSectionLayout->addWidget(m_logConsole, 0);
+
     QHBoxLayout *bottomStatusLayout = new QHBoxLayout();
     bottomStatusLayout->setContentsMargins(0, 0, 0, 0);
     bottomStatusLayout->setSpacing(8);
@@ -2674,6 +2948,29 @@ void ManualSeedSelector::setupUi()
         }
     )");
     bottomStatusLayout->addWidget(m_statusLabel, 1);
+
+    m_segmentationProgressBar = new QProgressBar();
+    m_segmentationProgressBar->setRange(0, 0);
+    m_segmentationProgressBar->setValue(0);
+    m_segmentationProgressBar->setFormat("Segmentation running...");
+    m_segmentationProgressBar->setTextVisible(true);
+    m_segmentationProgressBar->setVisible(false);
+    m_segmentationProgressBar->setMinimumWidth(240);
+    m_segmentationProgressBar->setStyleSheet(R"(
+        QProgressBar {
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            color: #d8d8d8;
+            padding: 2px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #2d7d46;
+            border-radius: 3px;
+        }
+    )");
+    bottomStatusLayout->addWidget(m_segmentationProgressBar, 0);
 
     m_heatmapProgressBar = new QProgressBar();
     m_heatmapProgressBar->setRange(0, 100);
@@ -2733,7 +3030,8 @@ void ManualSeedSelector::setupUi()
         if (m_statusLabel)
             m_statusLabel->setText("Canceling heatmap generation..."); });
     bottomStatusLayout->addWidget(m_heatmapCancelButton, 0);
-    mainLayout->addLayout(bottomStatusLayout);
+    bottomSectionLayout->addLayout(bottomStatusLayout);
+    mainLayout->addLayout(bottomSectionLayout);
 
     m_heatmapProgressTimer = new QTimer(this);
     m_heatmapProgressTimer->setInterval(80);
@@ -6534,6 +6832,99 @@ void ManualSeedSelector::cleanMask()
     m_maskSpacingY = m_image.getSpacingY();
     m_maskSpacingZ = m_image.getSpacingZ();
     m_mask3DDirty = true;
+}
+
+void ManualSeedSelector::filterActiveMaskByThreshold()
+{
+    if (!hasImage())
+    {
+        QMessageBox::information(this, "Mask Threshold", "Load an image before filtering a mask by threshold.");
+        return;
+    }
+
+    QString selectedMaskPath;
+    if (m_maskList && m_maskList->currentItem())
+        selectedMaskPath = QDir::cleanPath(QFileInfo(m_maskList->currentItem()->data(kPathRole).toString()).absoluteFilePath());
+
+    QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
+    if (!selectedMaskPath.isEmpty() && selectedMaskPath != activeMaskPath)
+    {
+        if (!loadMaskFromFile(selectedMaskPath.toStdString()))
+            return;
+        activeMaskPath = selectedMaskPath;
+        updateViews();
+    }
+
+    if (m_maskData.empty() || m_maskDimX == 0 || m_maskDimY == 0 || m_maskDimZ == 0)
+    {
+        QMessageBox::information(this, "Mask Threshold", "Load a mask before applying threshold filtering.");
+        return;
+    }
+
+    if (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY())
+    {
+        QMessageBox::warning(this, "Mask Threshold", "Threshold filtering requires matching X/Y dimensions between image and mask.");
+        return;
+    }
+
+    bool ok = false;
+    const double threshold = QInputDialog::getDouble(
+        this,
+        "Mask Threshold",
+        "Remove mask voxels where image intensity is >= threshold (HU):",
+        -200.0,
+        -4096.0,
+        4096.0,
+        1,
+        &ok);
+    if (!ok)
+        return;
+
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    const unsigned int imageSX = m_image.getSizeX();
+    const unsigned int imageSY = m_image.getSizeY();
+    const unsigned int imageSZ = m_image.getSizeZ();
+    const size_t maskPlaneStride = size_t(m_maskDimX) * size_t(m_maskDimY);
+
+    size_t removedCount = 0;
+    for (unsigned int z = 0; z < imageSZ; ++z)
+    {
+        const unsigned int mappedZ = mapDepthIndex(z, imageSZ, m_maskDimZ);
+        const size_t maskZOffset = size_t(mappedZ) * maskPlaneStride;
+        for (unsigned int y = 0; y < imageSY; ++y)
+        {
+            const size_t rowOffset = size_t(y) * m_maskDimX;
+            for (unsigned int x = 0; x < imageSX; ++x)
+            {
+                const size_t maskIdx = size_t(x) + rowOffset + maskZOffset;
+                if (m_maskData[maskIdx] == 0)
+                    continue;
+                if (m_image.getVoxelValue(x, y, z) >= static_cast<float>(threshold))
+                {
+                    m_maskData[maskIdx] = 0;
+                    ++removedCount;
+                }
+            }
+        }
+    }
+
+    QApplication::restoreOverrideCursor();
+
+    m_mask3DDirty = true;
+    updateViews();
+
+    const QString maskName = !activeMaskPath.isEmpty()
+                                 ? QFileInfo(activeMaskPath).fileName()
+                                 : QString("current mask");
+    if (m_statusLabel)
+    {
+        m_statusLabel->setText(
+            QString("Mask threshold applied to %1: removed %2 voxel(s) with image intensity >= %3 HU.")
+                .arg(maskName)
+                .arg(removedCount)
+                .arg(threshold, 0, 'f', 1));
+    }
 }
 
 bool ManualSeedSelector::saveMaskToFile(const std::string &path)

@@ -8,6 +8,8 @@
 #include <QPushButton>
 #include <QColor>
 #include <QStringList>
+#include <functional>
+#include <deque>
 #include <cstdint>
 #include <atomic>
 #include <mutex>
@@ -20,9 +22,11 @@
 
 class QDoubleSpinBox;
 class QCheckBox;
+class QComboBox;
 class QListWidget;
 class QTabWidget;
 class QProgressBar;
+class QPlainTextEdit;
 class QTimer;
 class QResizeEvent;
 class QMoveEvent;
@@ -62,11 +66,24 @@ public:
     void refreshAssociatedFilesForCurrentImage(bool forceDetect = false);
     // add multiple NIfTI images to the list (used by CLI startup)
     int addImagesFromPaths(const QStringList &paths);
+    bool isSegmentationTaskRunning() const { return m_segmentationWorkerActive.load(); }
+    bool startSegmentationTask(std::function<void()> task,
+                               const QString &initialMessage,
+                               const QStringList &initialLogs = {},
+                               const QString &progressLabel = QString(),
+                               int progressTotal = 0);
+    void appendSegmentationLog(const QString &message);
+    void setSegmentationTaskProgress(const QString &message, int done = -1, int total = -1);
+    void completeSegmentationTask(bool success,
+                                  const QString &summary,
+                                  const QString &sourceImagePath = QString(),
+                                  const QStringList &generatedMaskPaths = {});
 
     // Expose segmentation parameters
     double getPolarity() const { return m_polSlider ? m_polSlider->value() / 100.0 : 1.0; }
     int getNiter() const { return m_niterSlider ? m_niterSlider->value() : 1; }
     int getPercentile() const { return m_percSlider ? m_percSlider->value() : 0; }
+    bool useLegacyBinaryMode() const;
     bool getSegmentAll() const { return m_segmentAllBox ? m_segmentAllBox->isChecked() : false; }
     bool getPolaritySweep() const { return m_polSweepBox ? m_polSweepBox->isChecked() : false; }
     bool getUseGPU() const { return m_useGPUBox ? m_useGPUBox->isChecked() : false; }
@@ -83,6 +100,7 @@ private slots:
     void runRibsSeedGeneration();
     void runSuperResolution();
     void runMaskPostProcessing();
+    void filterActiveMaskByThreshold();
     void saveSeeds();
     void loadSeeds();
     bool saveImageToFile(const std::string &path);
@@ -134,6 +152,18 @@ private:
     void startHeatmapBuildAsync(bool showFailureDialog);
     void onHeatmapProgressTimer();
     void stopHeatmapWorker(bool waitForJoin);
+    void stopSegmentationWorker(bool waitForJoin);
+    void refreshSegmentationProgressDisplay();
+    int findImageIndexByPath(const QString &imagePath) const;
+    struct PendingSegmentationTask
+    {
+        std::function<void()> task;
+        QString initialMessage;
+        QStringList initialLogs;
+        QString progressLabel;
+        int progressTotal = 0;
+    };
+    void launchSegmentationTask(PendingSegmentationTask &&task);
     struct SliceDragState
     {
         bool active = false;
@@ -168,6 +198,7 @@ private:
     QSpinBox *m_labelSelector;
     QLabel *m_labelColorIndicator;
     QLabel *m_statusLabel;
+    QPlainTextEdit *m_logConsole = nullptr;
     // backup copy used to undo destructive edits like threshold
     NiftiImage m_imageBackup;
     bool m_hasImageBackup = false;
@@ -202,6 +233,7 @@ private:
     QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
     QProgressBar *m_heatmapProgressBar = nullptr;
+    QProgressBar *m_segmentationProgressBar = nullptr;
     QPushButton *m_heatmapCancelButton = nullptr;
     QTimer *m_heatmapProgressTimer = nullptr;
     QTimer *m_viewUpdateTimer = nullptr;
@@ -297,9 +329,17 @@ private:
     QLabel *m_niterValue = nullptr;
     QSlider *m_percSlider = nullptr;
     QLabel *m_percValue = nullptr;
+    QComboBox *m_segmentationModeCombo = nullptr;
     QCheckBox *m_segmentAllBox = nullptr;
     QCheckBox *m_polSweepBox = nullptr;
     QCheckBox *m_useGPUBox = nullptr;
+    QPushButton *m_btnRunSegment = nullptr;
+    std::deque<PendingSegmentationTask> m_pendingSegmentationTasks;
+    std::thread m_segmentationWorker;
+    std::atomic<bool> m_segmentationWorkerActive{false};
+    QString m_segmentationProgressLabel;
+    int m_segmentationProgressDone = -1;
+    int m_segmentationProgressTotal = -1;
 
     // Multiple files support with image-specific masks and seeds
     struct ImageData

@@ -16,7 +16,7 @@ QT_FORWARD_DECLARE_CLASS(QSlider)
 
 class QVTKOpenGLNativeWidget;
 class vtkActor;
-class vtkFlyingEdges3D;
+class vtkDiscreteFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
 class vtkGlyph3DMapper;
 class vtkLookupTable;
@@ -99,7 +99,7 @@ private:
     vtkSmartPointer<vtkGlyph3DMapper> m_seedMapper;
     vtkSmartPointer<vtkPolyData> m_seedPolyData;
     vtkSmartPointer<vtkPolyDataMapper> m_mapper;
-    vtkSmartPointer<vtkFlyingEdges3D> m_flyingEdges;
+    vtkSmartPointer<vtkDiscreteFlyingEdges3D> m_flyingEdges;
     vtkSmartPointer<vtkWindowedSincPolyDataFilter> m_smoother;
     vtkSmartPointer<vtkLookupTable> m_lookupTable;
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
