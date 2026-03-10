@@ -30,6 +30,7 @@ class QPlainTextEdit;
 class QTimer;
 class QResizeEvent;
 class QMoveEvent;
+class QPainter;
 
 struct Seed
 {
@@ -173,6 +174,32 @@ private:
     void beginSliceDrag(SliceDragState &state, int coord, QSlider *slider);
     void updateSliceDrag(SliceDragState &state, int coord, int coordRange, QSlider *slider);
     void endSliceDrag(SliceDragState &state);
+    struct RulerMeasurement
+    {
+        bool visible = false;
+        bool dragging = false;
+        int sliceIndex = -1;
+        QPoint start;
+        QPoint end;
+    };
+    void setRulerEnabled(bool enabled);
+    void clearRulerMeasurements();
+    void updateRulerCursor();
+    bool handleRulerMousePress(SlicePlane plane, int planeX, int planeY, Qt::MouseButton button);
+    bool handleRulerMouseMove(SlicePlane plane, int planeX, int planeY, Qt::MouseButtons buttons);
+    bool handleRulerMouseRelease(SlicePlane plane, int planeX, int planeY, Qt::MouseButton button);
+    void beginRulerMeasurement(SlicePlane plane, int planeX, int planeY);
+    void updateRulerMeasurement(SlicePlane plane, int planeX, int planeY, bool finalize);
+    void endRulerMeasurement(SlicePlane plane, int planeX, int planeY);
+    RulerMeasurement &rulerForPlane(SlicePlane plane);
+    const RulerMeasurement &rulerForPlane(SlicePlane plane) const;
+    void drawRulerOverlay(QPainter &p,
+                          float scale,
+                          const RulerMeasurement &ruler,
+                          int activeSliceIndex,
+                          double spacingU,
+                          double spacingV) const;
+    QString formatRulerDistance(double millimeters) const;
     const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
     void updateHoverStatus(SlicePlane plane, int x, int y, int z);
     void addSeed(int x, int y, int z);
@@ -359,11 +386,16 @@ private:
     QTabWidget *m_ribbonTabs = nullptr;
     int m_seedTabIndex = -1;
     int m_maskTabIndex = -1;
+    QPushButton *m_btnRuler = nullptr;
     std::vector<ImageData> m_images;
     std::vector<std::string> m_unassignedMaskPaths;
     std::string m_loadedMaskPath;
     int m_currentImageIndex = -1;
     bool m_clampingWindowGeometry = false;
+    bool m_rulerEnabled = false;
+    RulerMeasurement m_axialRuler;
+    RulerMeasurement m_sagittalRuler;
+    RulerMeasurement m_coronalRuler;
 
     void updateMaskSeedLists();
     QColor getColorForImageIndex(int index);

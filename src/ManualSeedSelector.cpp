@@ -30,6 +30,7 @@
 #include <QByteArray>
 #include <QPixmap>
 #include <QPainter>
+#include <QFontMetrics>
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QProgressDialog>
@@ -81,6 +82,7 @@
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QVector>
+#include <QUrl>
 #if defined(ROIFT_HAS_QT_SVG)
 #include <QSvgRenderer>
 #endif
@@ -103,7 +105,8 @@ enum class NiftiButtonIcon
     Remove,
     RemoveAll,
     Load,
-    Refresh
+    Refresh,
+    Ruler
 };
 
 QIcon makeFallbackButtonIcon(NiftiButtonIcon type, const QSize &size)
@@ -173,6 +176,21 @@ QIcon makeFallbackButtonIcon(NiftiButtonIcon type, const QSize &size)
             painter.drawArc(QRectF(0.18 * w, 0.18 * h, 0.64 * w, 0.64 * h), 35 * 16, 285 * 16);
             painter.drawLine(QPointF(0.77 * w, 0.27 * h), QPointF(0.86 * w, 0.32 * h));
             painter.drawLine(QPointF(0.77 * w, 0.27 * h), QPointF(0.79 * w, 0.37 * h));
+            break;
+        }
+        case NiftiButtonIcon::Ruler:
+        {
+            painter.drawRoundedRect(QRectF(0.18 * w, 0.22 * h, 0.64 * w, 0.32 * h), 1.2, 1.2);
+            painter.drawLine(QPointF(0.27 * w, 0.23 * h), QPointF(0.27 * w, 0.46 * h));
+            painter.drawLine(QPointF(0.38 * w, 0.23 * h), QPointF(0.38 * w, 0.40 * h));
+            painter.drawLine(QPointF(0.49 * w, 0.23 * h), QPointF(0.49 * w, 0.46 * h));
+            painter.drawLine(QPointF(0.60 * w, 0.23 * h), QPointF(0.60 * w, 0.40 * h));
+            painter.drawLine(QPointF(0.71 * w, 0.23 * h), QPointF(0.71 * w, 0.46 * h));
+            painter.drawLine(QPointF(0.27 * w, 0.63 * h), QPointF(0.74 * w, 0.63 * h));
+            painter.drawLine(QPointF(0.27 * w, 0.63 * h), QPointF(0.36 * w, 0.55 * h));
+            painter.drawLine(QPointF(0.27 * w, 0.63 * h), QPointF(0.36 * w, 0.71 * h));
+            painter.drawLine(QPointF(0.74 * w, 0.63 * h), QPointF(0.65 * w, 0.55 * h));
+            painter.drawLine(QPointF(0.74 * w, 0.63 * h), QPointF(0.65 * w, 0.71 * h));
             break;
         }
         }
@@ -279,6 +297,15 @@ constexpr const char *kRefreshIconSvg = R"svg(
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
   <path d="M18.8 8.8A7 7 0 1 0 19 14.4" stroke="#d8d8d8" stroke-width="1.5" stroke-linecap="round"/>
   <path d="M18.8 5.2V9.6H14.4" stroke="#d8d8d8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+)svg";
+
+constexpr const char *kRulerIconSvg = R"svg(
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <path d="M5.2 7.3H18.8V12.5H5.2V7.3Z" stroke="#d8d8d8" stroke-width="1.35" stroke-linejoin="round"/>
+  <path d="M7.2 7.5V11.6M9.4 7.5V10.7M11.6 7.5V11.6M13.8 7.5V10.7M16 7.5V11.6" stroke="#d8d8d8" stroke-width="1.25" stroke-linecap="round"/>
+  <path d="M6.3 17H17.7" stroke="#d8d8d8" stroke-width="1.45" stroke-linecap="round"/>
+  <path d="M6.3 17L8.2 15.2M6.3 17L8.2 18.8M17.7 17L15.8 15.2M17.7 17L15.8 18.8" stroke="#d8d8d8" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 )svg";
 
@@ -547,6 +574,106 @@ QString resolveProjectScriptPath(const QString &relativePath)
         return fromAppDir;
 
     return {};
+}
+
+bool revealPathInFileManager(const QString &path, QString *openedPath = nullptr, QString *errorMessage = nullptr)
+{
+    if (openedPath)
+        openedPath->clear();
+    if (errorMessage)
+        errorMessage->clear();
+
+    const QFileInfo info(path);
+    const QString absolutePath = QDir::cleanPath(info.absoluteFilePath());
+    if (absolutePath.isEmpty())
+    {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("Invalid path.");
+        return false;
+    }
+
+    const bool isDirectory = info.exists() && info.isDir();
+    const QString directoryPath = isDirectory ? absolutePath : QDir::cleanPath(info.absolutePath());
+    if (directoryPath.isEmpty())
+    {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("Could not determine the containing directory.");
+        return false;
+    }
+
+#if defined(Q_OS_WIN)
+    if (!isDirectory)
+    {
+        if (QProcess::startDetached(QStringLiteral("explorer.exe"),
+                                    {QStringLiteral("/select,"), QDir::toNativeSeparators(absolutePath)}))
+        {
+            if (openedPath)
+                *openedPath = absolutePath;
+            return true;
+        }
+    }
+
+    if (QProcess::startDetached(QStringLiteral("explorer.exe"),
+                                {QDir::toNativeSeparators(directoryPath)}))
+    {
+        if (openedPath)
+            *openedPath = directoryPath;
+        return true;
+    }
+#elif defined(Q_OS_LINUX)
+    if (!isDirectory)
+    {
+        const QString dbusSend = QStandardPaths::findExecutable(QStringLiteral("dbus-send"));
+        if (!dbusSend.isEmpty())
+        {
+            const QString fileUri = QUrl::fromLocalFile(absolutePath).toString();
+            if (QProcess::startDetached(
+                    dbusSend,
+                    {QStringLiteral("--session"),
+                     QStringLiteral("--dest=org.freedesktop.FileManager1"),
+                     QStringLiteral("--type=method_call"),
+                     QStringLiteral("/org/freedesktop/FileManager1"),
+                     QStringLiteral("org.freedesktop.FileManager1.ShowItems"),
+                     QStringLiteral("array:string:%1").arg(fileUri),
+                     QStringLiteral("string:")}))
+            {
+                if (openedPath)
+                    *openedPath = absolutePath;
+                return true;
+            }
+        }
+
+        const QString nautilus = QStandardPaths::findExecutable(QStringLiteral("nautilus"));
+        if (!nautilus.isEmpty() &&
+            QProcess::startDetached(nautilus, {QStringLiteral("--select"), absolutePath}))
+        {
+            if (openedPath)
+                *openedPath = absolutePath;
+            return true;
+        }
+
+        const QString dolphin = QStandardPaths::findExecutable(QStringLiteral("dolphin"));
+        if (!dolphin.isEmpty() &&
+            QProcess::startDetached(dolphin, {QStringLiteral("--select"), absolutePath}))
+        {
+            if (openedPath)
+                *openedPath = absolutePath;
+            return true;
+        }
+    }
+
+    const QString xdgOpen = QStandardPaths::findExecutable(QStringLiteral("xdg-open"));
+    if (!xdgOpen.isEmpty() && QProcess::startDetached(xdgOpen, {directoryPath}))
+    {
+        if (openedPath)
+            *openedPath = directoryPath;
+        return true;
+    }
+#endif
+
+    if (errorMessage)
+        *errorMessage = QStringLiteral("Could not launch a file manager for this path.");
+    return false;
 }
 
 QString stripNiftiSuffix(const QString &fileName)
@@ -950,6 +1077,7 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
                                     &m_windowLow,
                                     &m_windowHigh);
 
+            clearRulerMeasurements();
             updateViews();
         }
     }
@@ -1542,6 +1670,21 @@ void ManualSeedSelector::setupUi()
     srLayout->addWidget(btnPostprocessMask);
 
     filesLayout->addWidget(srGroup);
+
+    QGroupBox *toolsGroup = new QGroupBox("Tools");
+    QHBoxLayout *toolsLayout = new QHBoxLayout(toolsGroup);
+    toolsLayout->setSpacing(8);
+
+    m_btnRuler = new QPushButton("Ruler");
+    m_btnRuler->setCheckable(true);
+    m_btnRuler->setIcon(makeMonochromeIcon(kRulerIconSvg, QSize(16, 16), makeFallbackButtonIcon(NiftiButtonIcon::Ruler, QSize(16, 16))));
+    m_btnRuler->setIconSize(QSize(16, 16));
+    m_btnRuler->setToolTip("Enable the ruler tool in axial, sagittal and coronal views using physical spacing. Drag with left mouse button. Esc clears.");
+    connect(m_btnRuler, &QPushButton::toggled, this, [this](bool enabled)
+            { setRulerEnabled(enabled); });
+    toolsLayout->addWidget(m_btnRuler);
+
+    filesLayout->addWidget(toolsGroup);
 
     filesLayout->addStretch();
 
@@ -2281,6 +2424,7 @@ void ManualSeedSelector::setupUi()
                 m_maskSpacingX = 1.0;
                 m_maskSpacingY = 1.0;
                 m_maskSpacingZ = 1.0;
+                clearRulerMeasurements();
                 updateMaskSeedLists();
                 updateViews();
             } else if (m_currentImageIndex > currentRow) {
@@ -2322,6 +2466,7 @@ void ManualSeedSelector::setupUi()
         m_maskSpacingY = 1.0;
         m_maskSpacingZ = 1.0;
         m_mask3DDirty = true;
+        clearRulerMeasurements();
 
         m_axialSlider->setRange(0, 0);
         m_sagittalSlider->setRange(0, 0);
@@ -2392,6 +2537,7 @@ void ManualSeedSelector::setupUi()
                 m_maskSpacingY = m_image.getSpacingY();
                 m_maskSpacingZ = m_image.getSpacingZ();
                 m_mask3DDirty = true;
+                clearRulerMeasurements();
                 
                 // Update slider ranges and restore last saved position for this image.
                 const int axialMax = std::max(0, static_cast<int>(m_image.getSizeZ()) - 1);
@@ -2826,35 +2972,71 @@ void ManualSeedSelector::setupUi()
                 m_statusLabel->setText(QString("Loaded seeds: %1").arg(QFileInfo(seedPath).fileName()));
         } });
 
-    auto installCopyPathContextMenu = [this](QListWidget *listWidget, auto resolvePath)
+    auto handlePathContextAction = [this](const QString &resolvedPath, const QPoint &globalPos)
+    {
+        const QString cleanPath = QDir::cleanPath(QFileInfo(resolvedPath.trimmed()).absoluteFilePath());
+        if (cleanPath.isEmpty())
+            return;
+
+        QMenu menu(this);
+        QAction *copyPathAction = menu.addAction("Copy Path");
+        QAction *revealPathAction = menu.addAction("Reveal File in Explorer");
+        QAction *selectedAction = menu.exec(globalPos);
+        if (!selectedAction)
+            return;
+
+        if (selectedAction == copyPathAction)
+        {
+            QApplication::clipboard()->setText(cleanPath);
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Copied path: %1").arg(cleanPath));
+            return;
+        }
+
+        if (selectedAction == revealPathAction)
+        {
+            QString openedPath;
+            QString errorMessage;
+            if (revealPathInFileManager(cleanPath, &openedPath, &errorMessage))
+            {
+                if (m_statusLabel)
+                {
+                    const QString shownPath = openedPath.isEmpty() ? cleanPath : openedPath;
+                    m_statusLabel->setText(QString("Opened in file explorer: %1").arg(shownPath));
+                }
+            }
+            else
+            {
+                QMessageBox::warning(this,
+                                     "Reveal File in Explorer",
+                                     errorMessage.isEmpty()
+                                         ? QString("Failed to open the file explorer for:\n%1").arg(cleanPath)
+                                         : QString("%1\n\nPath:\n%2").arg(errorMessage, cleanPath));
+            }
+        }
+    };
+
+    auto installPathContextMenu = [this, handlePathContextAction](QListWidget *listWidget, auto resolvePath)
     {
         if (!listWidget)
             return;
         listWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(listWidget, &QListWidget::customContextMenuRequested, this, [this, listWidget, resolvePath](const QPoint &pos)
+        connect(listWidget, &QListWidget::customContextMenuRequested, this, [listWidget, resolvePath, handlePathContextAction](const QPoint &pos)
                 {
             QListWidgetItem *item = listWidget->itemAt(pos);
             if (!item)
                 return;
 
-            QString resolvedPath = resolvePath(item).trimmed();
+            const QString resolvedPath = resolvePath(item).trimmed();
             if (resolvedPath.isEmpty())
                 return;
 
-            QMenu menu(this);
-            QAction *copyPathAction = menu.addAction("Copy Path");
-            QAction *selectedAction = menu.exec(listWidget->viewport()->mapToGlobal(pos));
-            if (selectedAction != copyPathAction)
-                return;
-
-            QApplication::clipboard()->setText(resolvedPath);
-            if (m_statusLabel)
-                m_statusLabel->setText(QString("Copied path: %1").arg(resolvedPath));
+            handlePathContextAction(resolvedPath, listWidget->viewport()->mapToGlobal(pos));
         });
     };
 
-    installCopyPathContextMenu(m_maskList, [this](QListWidgetItem *item) -> QString
-                               {
+    installPathContextMenu(m_maskList, [this](QListWidgetItem *item) -> QString
+                           {
         if (!item)
             return {};
         QString path = item->data(Qt::UserRole).toString().trimmed();
@@ -2868,8 +3050,8 @@ void ManualSeedSelector::setupUi()
             return {};
         return QFileInfo(QString::fromStdString(m_images[m_currentImageIndex].maskPaths[static_cast<size_t>(row)])).absoluteFilePath(); });
 
-    installCopyPathContextMenu(m_seedList, [this](QListWidgetItem *item) -> QString
-                               {
+    installPathContextMenu(m_seedList, [this](QListWidgetItem *item) -> QString
+                           {
         if (!item)
             return {};
         QString path = item->data(Qt::UserRole).toString().trimmed();
@@ -3163,6 +3345,8 @@ void ManualSeedSelector::setupUi()
     // Mouse events for views
     connect(m_axialView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (handleRulerMousePress(SlicePlane::Axial, x, y, b))
+            return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
             paintAxialMask(x, y);
         else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
@@ -3172,6 +3356,8 @@ void ManualSeedSelector::setupUi()
     connect(m_axialView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
         updateHoverStatus(SlicePlane::Axial, x, y, m_axialSlider->value());
+        if (handleRulerMouseMove(SlicePlane::Axial, x, y, buttons))
+            return;
         if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
             paintAxialMask(x, y);
         else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 1)
@@ -3182,13 +3368,20 @@ void ManualSeedSelector::setupUi()
             updateSliceDrag(m_axialSliceDrag, y, static_cast<int>(m_image.getSizeY()), m_axialSlider);
         else
             endSliceDrag(m_axialSliceDrag); });
-    connect(m_axialView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
+    connect(m_axialView, &OrthogonalView::mouseReleased, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (handleRulerMouseRelease(SlicePlane::Axial, x, y, b))
+        {
+            requestViewUpdate(true);
+            return;
+        }
         endSliceDrag(m_axialSliceDrag);
         requestViewUpdate(true); });
 
     connect(m_sagittalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (handleRulerMousePress(SlicePlane::Sagittal, x, y, b))
+            return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
             paintSagittalMask(x, y);
         else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
@@ -3198,6 +3391,8 @@ void ManualSeedSelector::setupUi()
     connect(m_sagittalView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
         updateHoverStatus(SlicePlane::Sagittal, m_sagittalSlider->value(), x, y);
+        if (handleRulerMouseMove(SlicePlane::Sagittal, x, y, buttons))
+            return;
         if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
             paintSagittalMask(x, y);
         else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 1)
@@ -3208,13 +3403,20 @@ void ManualSeedSelector::setupUi()
             updateSliceDrag(m_sagittalSliceDrag, y, static_cast<int>(m_image.getSizeZ()), m_sagittalSlider);
         else
             endSliceDrag(m_sagittalSliceDrag); });
-    connect(m_sagittalView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
+    connect(m_sagittalView, &OrthogonalView::mouseReleased, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (handleRulerMouseRelease(SlicePlane::Sagittal, x, y, b))
+        {
+            requestViewUpdate(true);
+            return;
+        }
         endSliceDrag(m_sagittalSliceDrag);
         requestViewUpdate(true); });
 
     connect(m_coronalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (handleRulerMousePress(SlicePlane::Coronal, x, y, b))
+            return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
             paintCoronalMask(x, y);
         else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
@@ -3224,6 +3426,8 @@ void ManualSeedSelector::setupUi()
     connect(m_coronalView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
         updateHoverStatus(SlicePlane::Coronal, x, m_coronalSlider->value(), y);
+        if (handleRulerMouseMove(SlicePlane::Coronal, x, y, buttons))
+            return;
         if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
             paintCoronalMask(x, y);
         else if (isSeedsTabActive() && (buttons & Qt::LeftButton) && m_seedMode == 1)
@@ -3234,8 +3438,13 @@ void ManualSeedSelector::setupUi()
             updateSliceDrag(m_coronalSliceDrag, y, static_cast<int>(m_image.getSizeZ()), m_coronalSlider);
         else
             endSliceDrag(m_coronalSliceDrag); });
-    connect(m_coronalView, &OrthogonalView::mouseReleased, this, [this](int, int, Qt::MouseButton)
+    connect(m_coronalView, &OrthogonalView::mouseReleased, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (handleRulerMouseRelease(SlicePlane::Coronal, x, y, b))
+        {
+            requestViewUpdate(true);
+            return;
+        }
         endSliceDrag(m_coronalSliceDrag);
         requestViewUpdate(true); });
 
@@ -5016,6 +5225,206 @@ bool ManualSeedSelector::isMaskTabActive() const
     return m_ribbonTabs && m_maskTabIndex >= 0 && m_ribbonTabs->currentIndex() == m_maskTabIndex;
 }
 
+void ManualSeedSelector::setRulerEnabled(bool enabled)
+{
+    m_rulerEnabled = enabled;
+    if (!enabled)
+        clearRulerMeasurements();
+    updateRulerCursor();
+    requestViewUpdate(true);
+
+    if (m_statusLabel)
+    {
+        m_statusLabel->setText(enabled
+                                   ? "Ruler enabled. Drag with the left mouse button on any slice view to measure real distance."
+                                   : "Ruler disabled.");
+    }
+}
+
+void ManualSeedSelector::clearRulerMeasurements()
+{
+    m_axialRuler = RulerMeasurement{};
+    m_sagittalRuler = RulerMeasurement{};
+    m_coronalRuler = RulerMeasurement{};
+}
+
+void ManualSeedSelector::updateRulerCursor()
+{
+    const Qt::CursorShape cursorShape = m_rulerEnabled ? Qt::CrossCursor : Qt::ArrowCursor;
+    for (OrthogonalView *view : {m_axialView, m_sagittalView, m_coronalView})
+    {
+        if (!view)
+            continue;
+        view->setCursor(cursorShape);
+    }
+}
+
+ManualSeedSelector::RulerMeasurement &ManualSeedSelector::rulerForPlane(SlicePlane plane)
+{
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        return m_axialRuler;
+    case SlicePlane::Sagittal:
+        return m_sagittalRuler;
+    case SlicePlane::Coronal:
+        return m_coronalRuler;
+    }
+
+    return m_axialRuler;
+}
+
+const ManualSeedSelector::RulerMeasurement &ManualSeedSelector::rulerForPlane(SlicePlane plane) const
+{
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        return m_axialRuler;
+    case SlicePlane::Sagittal:
+        return m_sagittalRuler;
+    case SlicePlane::Coronal:
+        return m_coronalRuler;
+    }
+
+    return m_axialRuler;
+}
+
+void ManualSeedSelector::beginRulerMeasurement(SlicePlane plane, int planeX, int planeY)
+{
+    if (planeX < 0 || planeY < 0)
+        return;
+
+    RulerMeasurement &ruler = rulerForPlane(plane);
+    ruler.visible = true;
+    ruler.dragging = true;
+    ruler.start = QPoint(planeX, planeY);
+    ruler.end = QPoint(planeX, planeY);
+
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        ruler.sliceIndex = m_axialSlider ? m_axialSlider->value() : -1;
+        break;
+    case SlicePlane::Sagittal:
+        ruler.sliceIndex = m_sagittalSlider ? m_sagittalSlider->value() : -1;
+        break;
+    case SlicePlane::Coronal:
+        ruler.sliceIndex = m_coronalSlider ? m_coronalSlider->value() : -1;
+        break;
+    }
+}
+
+void ManualSeedSelector::updateRulerMeasurement(SlicePlane plane, int planeX, int planeY, bool finalize)
+{
+    RulerMeasurement &ruler = rulerForPlane(plane);
+    if (!ruler.dragging && !finalize)
+        return;
+
+    if (planeX >= 0 && planeY >= 0)
+        ruler.end = QPoint(planeX, planeY);
+
+    if (finalize)
+        ruler.dragging = false;
+
+    ruler.visible = true;
+}
+
+QString ManualSeedSelector::formatRulerDistance(double millimeters) const
+{
+    if (!std::isfinite(millimeters))
+        return "n/a";
+
+    if (millimeters >= 10.0)
+        return QString("%1 mm").arg(millimeters, 0, 'f', 1);
+    return QString("%1 mm").arg(millimeters, 0, 'f', 2);
+}
+
+void ManualSeedSelector::endRulerMeasurement(SlicePlane plane, int planeX, int planeY)
+{
+    updateRulerMeasurement(plane, planeX, planeY, true);
+
+    const RulerMeasurement &ruler = rulerForPlane(plane);
+    if (!ruler.visible || !m_statusLabel)
+        return;
+
+    double spacingU = 1.0;
+    double spacingV = 1.0;
+    QString viewName;
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        spacingU = m_image.getSpacingX();
+        spacingV = m_image.getSpacingY();
+        viewName = "Axial";
+        break;
+    case SlicePlane::Sagittal:
+        spacingU = m_image.getSpacingY();
+        spacingV = m_image.getSpacingZ();
+        viewName = "Sagittal";
+        break;
+    case SlicePlane::Coronal:
+        spacingU = m_image.getSpacingX();
+        spacingV = m_image.getSpacingZ();
+        viewName = "Coronal";
+        break;
+    }
+
+    const double du = std::abs(static_cast<double>(ruler.end.x() - ruler.start.x())) * spacingU;
+    const double dv = std::abs(static_cast<double>(ruler.end.y() - ruler.start.y())) * spacingV;
+    const double total = std::hypot(du, dv);
+    m_statusLabel->setText(QString("%1 ruler | %2 | Δu %3 | Δv %4")
+                               .arg(viewName)
+                               .arg(formatRulerDistance(total))
+                               .arg(formatRulerDistance(du))
+                               .arg(formatRulerDistance(dv)));
+}
+
+bool ManualSeedSelector::handleRulerMousePress(SlicePlane plane, int planeX, int planeY, Qt::MouseButton button)
+{
+    if (!m_rulerEnabled || button != Qt::LeftButton)
+        return false;
+
+    beginRulerMeasurement(plane, planeX, planeY);
+    requestViewUpdate(true);
+    return true;
+}
+
+bool ManualSeedSelector::handleRulerMouseMove(SlicePlane plane, int planeX, int planeY, Qt::MouseButtons buttons)
+{
+    if (!m_rulerEnabled)
+        return false;
+
+    RulerMeasurement &ruler = rulerForPlane(plane);
+    if (!ruler.dragging)
+        return false;
+
+    if (!(buttons & Qt::LeftButton))
+    {
+        ruler.dragging = false;
+        return true;
+    }
+
+    if (planeX < 0 || planeY < 0)
+    {
+        ruler.dragging = false;
+        requestViewUpdate(true);
+        return true;
+    }
+
+    updateRulerMeasurement(plane, planeX, planeY, false);
+    requestViewUpdate();
+    return true;
+}
+
+bool ManualSeedSelector::handleRulerMouseRelease(SlicePlane plane, int planeX, int planeY, Qt::MouseButton button)
+{
+    if (!m_rulerEnabled || button != Qt::LeftButton)
+        return false;
+
+    endRulerMeasurement(plane, planeX, planeY);
+    return true;
+}
+
 void ManualSeedSelector::beginSliceDrag(SliceDragState &state, int coord, QSlider *slider)
 {
     if (!slider || coord < 0)
@@ -6421,6 +6830,64 @@ void ManualSeedSelector::requestViewUpdate(bool immediate)
         m_viewUpdateTimer->start();
 }
 
+void ManualSeedSelector::drawRulerOverlay(QPainter &p,
+                                          float scale,
+                                          const RulerMeasurement &ruler,
+                                          int activeSliceIndex,
+                                          double spacingU,
+                                          double spacingV) const
+{
+    if (!m_rulerEnabled || !ruler.visible || ruler.sliceIndex != activeSliceIndex || scale <= 0.0f)
+        return;
+
+    const QPointF startPoint(static_cast<qreal>(ruler.start.x()) * scale,
+                             static_cast<qreal>(ruler.start.y()) * scale);
+    const QPointF endPoint(static_cast<qreal>(ruler.end.x()) * scale,
+                           static_cast<qreal>(ruler.end.y()) * scale);
+
+    const double du = std::abs(static_cast<double>(ruler.end.x() - ruler.start.x())) * spacingU;
+    const double dv = std::abs(static_cast<double>(ruler.end.y() - ruler.start.y())) * spacingV;
+    const QString label = QString("%1 | %2 x %3")
+                              .arg(formatRulerDistance(std::hypot(du, dv)))
+                              .arg(formatRulerDistance(du))
+                              .arg(formatRulerDistance(dv));
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const QColor rulerColor(255, 214, 10);
+    p.setPen(QPen(rulerColor, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.drawLine(startPoint, endPoint);
+    p.setBrush(rulerColor);
+    p.drawEllipse(startPoint, 3.0, 3.0);
+    p.drawEllipse(endPoint, 3.0, 3.0);
+
+    const QPointF labelAnchor = (startPoint + endPoint) * 0.5 + QPointF(10.0, -10.0);
+    const QFontMetrics metrics(p.font());
+    const QRect textRect = metrics.boundingRect(label);
+    QRectF bubble(labelAnchor.x(),
+                  labelAnchor.y() - static_cast<qreal>(textRect.height()),
+                  static_cast<qreal>(textRect.width() + 14),
+                  static_cast<qreal>(textRect.height() + 8));
+
+    if (bubble.left() < 0.0)
+        bubble.moveLeft(0.0);
+    if (bubble.top() < 0.0)
+        bubble.moveTop(0.0);
+    if (bubble.right() > p.viewport().width())
+        bubble.moveRight(static_cast<qreal>(p.viewport().width()));
+    if (bubble.bottom() > p.viewport().height())
+        bubble.moveBottom(static_cast<qreal>(p.viewport().height()));
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 0, 0, 175));
+    p.drawRoundedRect(bubble, 5.0, 5.0);
+
+    p.setPen(Qt::white);
+    p.drawText(bubble.adjusted(7.0, 4.0, -7.0, -4.0), Qt::AlignLeft | Qt::AlignVCenter, label);
+    p.restore();
+}
+
 void ManualSeedSelector::updateViews()
 {
     unsigned int sizeX = m_image.getSizeX();
@@ -6664,84 +7131,90 @@ void ManualSeedSelector::updateViews()
 
     m_axialView->setOverlayDraw([this, z, minPixelSpacing, makeCellKey](QPainter &p, float scale)
                                 {
-        if (!m_enableAxialSeeds)
-            return;
-        std::unordered_set<std::uint64_t> occupiedCells;
-        if (minPixelSpacing > 1)
-            occupiedCells.reserve(m_seeds.size());
-        const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
-        for (const auto &s : m_seeds)
+        if (m_enableAxialSeeds)
         {
-            if (s.z != z)
-                continue;
-            const int px = static_cast<int>(std::lround(s.x * scale));
-            const int py = static_cast<int>(std::lround(s.y * scale));
+            std::unordered_set<std::uint64_t> occupiedCells;
             if (minPixelSpacing > 1)
+                occupiedCells.reserve(m_seeds.size());
+            const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
+            for (const auto &s : m_seeds)
             {
-                if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                if (s.z != z)
                     continue;
+                const int px = static_cast<int>(std::lround(s.x * scale));
+                const int py = static_cast<int>(std::lround(s.y * scale));
+                if (minPixelSpacing > 1)
+                {
+                    if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                        continue;
+                }
+                int lbl = std::max(0, std::min(255, s.label));
+                const QColor fillColor = colorForLabel(lbl);
+                const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
+                p.setPen(QPen(outlineColor, 1.0));
+                p.setBrush(fillColor);
+                p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
-            int lbl = std::max(0, std::min(255, s.label));
-            const QColor fillColor = colorForLabel(lbl);
-            const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
-            p.setPen(QPen(outlineColor, 1.0));
-            p.setBrush(fillColor);
-            p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
-        } });
+        }
+        drawRulerOverlay(p, scale, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY()); });
 
     m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scale)
                                    {
-        if (!m_enableSagittalSeeds)
-            return;
-        std::unordered_set<std::uint64_t> occupiedCells;
-        if (minPixelSpacing > 1)
-            occupiedCells.reserve(m_seeds.size());
-        const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
-        for (const auto &s : m_seeds)
+        if (m_enableSagittalSeeds)
         {
-            if (s.x != sagX)
-                continue;
-            const int px = static_cast<int>(std::lround(s.y * scale));
-            const int py = static_cast<int>(std::lround(s.z * scale));
+            std::unordered_set<std::uint64_t> occupiedCells;
             if (minPixelSpacing > 1)
+                occupiedCells.reserve(m_seeds.size());
+            const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
+            for (const auto &s : m_seeds)
             {
-                if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                if (s.x != sagX)
                     continue;
+                const int px = static_cast<int>(std::lround(s.y * scale));
+                const int py = static_cast<int>(std::lround(s.z * scale));
+                if (minPixelSpacing > 1)
+                {
+                    if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                        continue;
+                }
+                int lbl = std::max(0, std::min(255, s.label));
+                const QColor fillColor = colorForLabel(lbl);
+                const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
+                p.setPen(QPen(outlineColor, 1.0));
+                p.setBrush(fillColor);
+                p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
-            int lbl = std::max(0, std::min(255, s.label));
-            const QColor fillColor = colorForLabel(lbl);
-            const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
-            p.setPen(QPen(outlineColor, 1.0));
-            p.setBrush(fillColor);
-            p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
-        } });
+        }
+        drawRulerOverlay(p, scale, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ()); });
 
     m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scale)
                                   {
-        if (!m_enableCoronalSeeds)
-            return;
-        std::unordered_set<std::uint64_t> occupiedCells;
-        if (minPixelSpacing > 1)
-            occupiedCells.reserve(m_seeds.size());
-        const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
-        for (const auto &s : m_seeds)
+        if (m_enableCoronalSeeds)
         {
-            if (s.y != corY)
-                continue;
-            const int px = static_cast<int>(std::lround(s.x * scale));
-            const int py = static_cast<int>(std::lround(s.z * scale));
+            std::unordered_set<std::uint64_t> occupiedCells;
             if (minPixelSpacing > 1)
+                occupiedCells.reserve(m_seeds.size());
+            const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
+            for (const auto &s : m_seeds)
             {
-                if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                if (s.y != corY)
                     continue;
+                const int px = static_cast<int>(std::lround(s.x * scale));
+                const int py = static_cast<int>(std::lround(s.z * scale));
+                if (minPixelSpacing > 1)
+                {
+                    if (!occupiedCells.insert(makeCellKey(px, py)).second)
+                        continue;
+                }
+                int lbl = std::max(0, std::min(255, s.label));
+                const QColor fillColor = colorForLabel(lbl);
+                const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
+                p.setPen(QPen(outlineColor, 1.0));
+                p.setBrush(fillColor);
+                p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
-            int lbl = std::max(0, std::min(255, s.label));
-            const QColor fillColor = colorForLabel(lbl);
-            const QColor outlineColor = s.fromFile ? ((s.internal != 0) ? QColor(Qt::white) : QColor(Qt::black)) : fillColor;
-            p.setPen(QPen(outlineColor, 1.0));
-            p.setBrush(fillColor);
-            p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
-        } });
+        }
+        drawRulerOverlay(p, scale, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ()); });
 }
 
 void ManualSeedSelector::update3DMaskView()
@@ -7266,6 +7739,15 @@ void ManualSeedSelector::keyPressEvent(QKeyEvent *event)
         }
     }
 
+    if (event->key() == Qt::Key_Escape && m_rulerEnabled)
+    {
+        clearRulerMeasurements();
+        requestViewUpdate(true);
+        if (m_statusLabel)
+            m_statusLabel->setText("Ruler measurements cleared.");
+        return;
+    }
+
     int axial = m_axialSlider->value();
     int sag = m_sagittalSlider->value();
     int cor = m_coronalSlider->value();
@@ -7306,6 +7788,15 @@ void ManualSeedSelector::keyPressEvent(QKeyEvent *event)
 
 bool ManualSeedSelector::handleSliceKey(QKeyEvent *event)
 {
+    if (event->key() == Qt::Key_Escape && m_rulerEnabled)
+    {
+        clearRulerMeasurements();
+        requestViewUpdate(true);
+        if (m_statusLabel)
+            m_statusLabel->setText("Ruler measurements cleared.");
+        return true;
+    }
+
     if (!hasImage())
         return false;
     int axial = m_axialSlider->value();
@@ -7378,12 +7869,34 @@ bool ManualSeedSelector::eventFilter(QObject *obj, QEvent *event)
 
             QMenu menu(this);
             QAction *copyPathAction = menu.addAction("Copy Path");
+            QAction *revealPathAction = menu.addAction("Reveal File in Explorer");
             QAction *selectedAction = menu.exec(m_niftiList->viewport()->mapToGlobal(me->pos()));
             if (selectedAction == copyPathAction)
             {
                 QApplication::clipboard()->setText(path);
                 if (m_statusLabel)
                     m_statusLabel->setText(QString("Copied path: %1").arg(path));
+            }
+            else if (selectedAction == revealPathAction)
+            {
+                QString openedPath;
+                QString errorMessage;
+                if (revealPathInFileManager(path, &openedPath, &errorMessage))
+                {
+                    if (m_statusLabel)
+                    {
+                        const QString shownPath = openedPath.isEmpty() ? path : openedPath;
+                        m_statusLabel->setText(QString("Opened in file explorer: %1").arg(shownPath));
+                    }
+                }
+                else
+                {
+                    QMessageBox::warning(this,
+                                         "Reveal File in Explorer",
+                                         errorMessage.isEmpty()
+                                             ? QString("Failed to open the file explorer for:\n%1").arg(path)
+                                             : QString("%1\n\nPath:\n%2").arg(errorMessage, path));
+                }
             }
             return true; // prevent selection change on right-click
         }
