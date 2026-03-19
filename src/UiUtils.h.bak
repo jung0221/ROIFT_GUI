@@ -1,0 +1,196 @@
+#pragma once
+
+/**
+ * UiUtils.h — Shared UI utility functions extracted from ManualSeedSelector.
+ *
+ * Contains: icon rendering, CSV parsing, path resolution, windowing helpers,
+ * heatmap color mapping, axis mapping, and mask resampling utilities.
+ */
+
+#include <QColor>
+#include <QIcon>
+#include <QSize>
+#include <QString>
+#include <QStringList>
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include <itkImage.h>
+
+class QDoubleSpinBox;
+class RangeSlider;
+
+namespace UiUtils
+{
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Qt item data role for storing file paths in list widgets.
+constexpr int kPathRole = Qt::UserRole;
+/// Qt item data role for storing the source image path on mask list items.
+constexpr int kMaskSourceImageRole = Qt::UserRole + 1;
+/// Number of discrete ticks used by the window range slider.
+constexpr int kWindowSliderTicks = 4096;
+
+// ---------------------------------------------------------------------------
+// Icon rendering
+// ---------------------------------------------------------------------------
+
+/// Identifiers for the built-in button icons used in the NIfTI panel.
+enum class NiftiButtonIcon
+{
+    Add,
+    AddCsv,
+    ExportCsv,
+    Remove,
+    RemoveAll,
+    Load,
+    Refresh,
+    Ruler
+};
+
+/// Create a fallback (non-SVG) icon for the given button type.
+QIcon makeFallbackButtonIcon(NiftiButtonIcon type, const QSize &size);
+
+/// Render a monochrome icon from inline SVG data (requires Qt SVG).
+/// Falls back to @p fallback if SVG is unavailable or invalid.
+QIcon makeMonochromeIcon(const char *svgData, const QSize &size, const QIcon &fallback = QIcon());
+
+// SVG data strings for each icon type.
+extern const char *kAddIconSvg;
+extern const char *kAddCsvIconSvg;
+extern const char *kRemoveIconSvg;
+extern const char *kExportCsvIconSvg;
+extern const char *kRemoveAllIconSvg;
+extern const char *kLoadIconSvg;
+extern const char *kRefreshIconSvg;
+extern const char *kRulerIconSvg;
+
+// ---------------------------------------------------------------------------
+// CSV helpers
+// ---------------------------------------------------------------------------
+
+/// Trim and unquote a single CSV cell value.
+QString normalizeCsvCell(QString value);
+
+/// Escape a value for CSV output (handles commas, quotes, newlines).
+QString csvEscapeCell(const QString &value);
+
+/// Parse a single CSV row into a list of field values.
+QStringList parseCsvRow(const QString &line);
+
+/// Return true if the cell value looks like a NIfTI file path.
+bool isNiftiPathCell(const QString &value);
+
+/// Return true if the filename looks like a NIfTI mask (ends in .nii or .nii.gz).
+bool isNiftiMaskFilenameCandidate(const QString &fileName);
+
+/// Return true if the filename looks like a seed file (ends in .txt).
+bool isSeedFilenameCandidate(const QString &fileName);
+
+/// Heuristically choose the column most likely to contain NIfTI paths.
+int chooseNiftiColumn(const QStringList &headers, const std::vector<int> &niftiCounts);
+
+// ---------------------------------------------------------------------------
+// Path resolution
+// ---------------------------------------------------------------------------
+
+/// Walk up directory levels looking for @p relativePath starting from @p startDir.
+QString findPathByAscending(const QString &startDir, const QString &relativePath, int maxLevels = 12);
+
+/// Find the super-resolution Python script path.
+QString resolveSuperResolutionScriptPath();
+
+/// Find the super-resolution model weights path.
+QString resolveSuperResolutionModelPath(const QString &scriptPath);
+
+/// Find the mask post-processing Python script path.
+QString resolveMaskPostprocessScriptPath();
+
+/// Resolve a Python interpreter (sets @p program and optional @p prefixArgs).
+bool resolvePythonCommand(QString *program, QStringList *prefixArgs);
+
+/// Resolve an arbitrary project-relative script path.
+QString resolveProjectScriptPath(const QString &relativePath);
+
+/// Open the containing folder in the OS file manager, optionally selecting the file.
+bool revealPathInFileManager(const QString &path, QString *openedPath = nullptr, QString *errorMessage = nullptr);
+
+/// Strip .nii or .nii.gz suffix from a filename.
+QString stripNiftiSuffix(const QString &fileName);
+
+// ---------------------------------------------------------------------------
+// Progress / display helpers
+// ---------------------------------------------------------------------------
+
+/// Build an ASCII progress bar string like "[====      ]".
+std::string makeTerminalProgressBar(int done, int total, int width = 30);
+
+/// Map a normalised [0,1] value to a blue-cyan-green-yellow-red heatmap colour.
+QColor heatmapColorFromNormalized(float value);
+
+// ---------------------------------------------------------------------------
+// Axis / depth mapping
+// ---------------------------------------------------------------------------
+
+/// Map an index from one axis size to another (nearest-neighbour resampling).
+unsigned int mapDepthIndex(unsigned int sourceIndex, unsigned int sourceDepth, unsigned int targetDepth);
+
+/// Build a bucket key for the point-query spatial hash.
+uint64_t makePointQueryBucketKey(unsigned int z, unsigned int bx, unsigned int by);
+
+/// Build a full source→target index mapping for one axis.
+std::vector<unsigned int> buildAxisMapping(unsigned int sourceSize, unsigned int targetSize);
+
+// ---------------------------------------------------------------------------
+// Window / level controls
+// ---------------------------------------------------------------------------
+
+/// Configure the range slider and spin boxes for a given image intensity range.
+void configureWindowControls(float gmin,
+                             float gmax,
+                             RangeSlider *windowSlider,
+                             QDoubleSpinBox *windowLevelSpin,
+                             QDoubleSpinBox *windowWidthSpin,
+                             float *windowGlobalMin,
+                             float *windowGlobalMax,
+                             float *windowLow,
+                             float *windowHigh);
+
+/// Convert an intensity value to a slider tick position.
+int windowValueToSliderTick(float value, float gmin, float gmax);
+
+/// Convert a slider tick position back to an intensity value.
+float sliderTickToWindowValue(int tick, float gmin, float gmax);
+
+// ---------------------------------------------------------------------------
+// Mask resampling (ITK-based)
+// ---------------------------------------------------------------------------
+
+/// Accumulate non-zero voxels from @p img into @p votes, resampled to a target grid.
+/// Optionally computes per-Z bounding boxes in the output arrays.
+bool accumulateResampledMaskVotes(const itk::Image<int32_t, 3> *img,
+                                  unsigned int targetX,
+                                  unsigned int targetY,
+                                  unsigned int targetZ,
+                                  std::vector<float> &votes,
+                                  std::vector<int> *minXPerZ = nullptr,
+                                  std::vector<int> *maxXPerZ = nullptr,
+                                  std::vector<int> *minYPerZ = nullptr,
+                                  std::vector<int> *maxYPerZ = nullptr);
+
+/// Build per-Z bounding boxes for the resampled mask.
+bool buildResampledMaskBounds(const itk::Image<int32_t, 3> *img,
+                              unsigned int targetX,
+                              unsigned int targetY,
+                              unsigned int targetZ,
+                              std::vector<int> &minXPerZ,
+                              std::vector<int> &maxXPerZ,
+                              std::vector<int> &minYPerZ,
+                              std::vector<int> &maxYPerZ);
+
+} // namespace UiUtils
