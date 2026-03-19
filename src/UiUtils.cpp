@@ -639,4 +639,120 @@ std::string makeTerminalProgressBar(int done, int total, int width)
     return bar;
 }
 
+// ============================================================================
+// Axis / depth mapping
+// ============================================================================
+
+unsigned int mapDepthIndex(unsigned int sourceIndex, unsigned int sourceDepth, unsigned int targetDepth)
+{
+    if (targetDepth == 0)
+        return 0;
+    if (targetDepth == 1 || sourceDepth <= 1)
+        return 0;
+
+    const double ratio = static_cast<double>(sourceIndex) / static_cast<double>(sourceDepth - 1);
+    const double mapped = ratio * static_cast<double>(targetDepth - 1);
+    const unsigned int nearest = static_cast<unsigned int>(std::llround(mapped));
+    return std::min(nearest, targetDepth - 1);
+}
+
+// ============================================================================
+// Window / level controls
+// ============================================================================
+
+void configureWindowControls(float gmin,
+                             float gmax,
+                             RangeSlider *windowSlider,
+                             QDoubleSpinBox *windowLevelSpin,
+                             QDoubleSpinBox *windowWidthSpin,
+                             float *windowGlobalMin,
+                             float *windowGlobalMax,
+                             float *windowLow,
+                             float *windowHigh)
+{
+    if (!std::isfinite(gmin))
+        gmin = 0.0f;
+    if (!std::isfinite(gmax))
+        gmax = gmin + 1.0f;
+    if (gmax <= gmin)
+        gmax = gmin + 1e-3f;
+
+    const float span = gmax - gmin;
+
+    int decimals = 1;
+    double step = 1.0;
+    if (span <= 2.0f)
+    {
+        decimals = 3;
+        step = std::max(0.001, static_cast<double>(span) / 200.0);
+    }
+    else if (span <= 20.0f)
+    {
+        decimals = 2;
+        step = std::max(0.01, static_cast<double>(span) / 200.0);
+    }
+    else if (span <= 200.0f)
+    {
+        decimals = 1;
+        step = std::max(0.1, static_cast<double>(span) / 200.0);
+    }
+    else
+    {
+        decimals = 1;
+        step = std::max(1.0, static_cast<double>(span) / 200.0);
+    }
+
+    if (windowGlobalMin)
+        *windowGlobalMin = gmin;
+    if (windowGlobalMax)
+        *windowGlobalMax = gmax;
+    if (windowLow)
+        *windowLow = gmin;
+    if (windowHigh)
+        *windowHigh = gmax;
+
+    if (windowSlider)
+    {
+        windowSlider->setRange(0, kWindowSliderTicks);
+        windowSlider->setLowerValue(0);
+        windowSlider->setUpperValue(kWindowSliderTicks);
+    }
+
+    if (windowLevelSpin)
+    {
+        windowLevelSpin->setDecimals(decimals);
+        windowLevelSpin->setSingleStep(step);
+        windowLevelSpin->setRange(static_cast<double>(gmin), static_cast<double>(gmax));
+        windowLevelSpin->setValue(0.5 * (static_cast<double>(gmin) + static_cast<double>(gmax)));
+    }
+
+    if (windowWidthSpin)
+    {
+        const double widthMin = std::min(static_cast<double>(span), std::max(1e-3, step));
+        windowWidthSpin->setDecimals(decimals);
+        windowWidthSpin->setSingleStep(step);
+        windowWidthSpin->setRange(widthMin, static_cast<double>(span));
+        windowWidthSpin->setValue(static_cast<double>(span));
+    }
+}
+
+int windowValueToSliderTick(float value, float gmin, float gmax)
+{
+    if (!std::isfinite(gmin) || !std::isfinite(gmax) || gmax <= gmin)
+        return 0;
+    const double t = std::clamp((static_cast<double>(value) - static_cast<double>(gmin)) /
+                                    (static_cast<double>(gmax) - static_cast<double>(gmin)),
+                                0.0, 1.0);
+    return static_cast<int>(std::llround(t * static_cast<double>(kWindowSliderTicks)));
+}
+
+float sliderTickToWindowValue(int tick, float gmin, float gmax)
+{
+    if (!std::isfinite(gmin) || !std::isfinite(gmax) || gmax <= gmin)
+        return gmin;
+    const double t = std::clamp(static_cast<double>(tick) / static_cast<double>(kWindowSliderTicks), 0.0, 1.0);
+    return static_cast<float>(static_cast<double>(gmin) +
+                              t * (static_cast<double>(gmax) - static_cast<double>(gmin)));
+}
+
 } // namespace UiUtils

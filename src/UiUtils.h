@@ -4,7 +4,7 @@
  * UiUtils.h — Shared UI utility functions extracted from ManualSeedSelector.
  *
  * Contains: icon rendering, CSV parsing, path resolution, windowing helpers,
- * heatmap color mapping, axis mapping, and mask resampling utilities.
+ * * axis mapping, icon creation, CSV parsing, and windowing utilities.
  */
 
 #include <QColor>
