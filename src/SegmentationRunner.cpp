@@ -122,6 +122,7 @@ namespace
             "build/bin/Release",
             "build/bin/Debug",
             "build/src/ROIFT_GUI/roift",
+            "build/src/ROIFT_GUI/roift/gpu",
             "build/src/ROIFT_GUI/roift/gft_delta",
             "build/src/ROIFT_GUI/roift/Release",
             "build/src/ROIFT_GUI/roift/Debug",
@@ -540,7 +541,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
             QStringList args;
             args << QString::fromStdString(parent->getImagePath()) << seedPath << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp;
             if (useGpuExecution)
-                args << "--delta";
+                args << "8" << "" << "0";  // boundary_stride, pol_file (empty), cost_mode=fmax
             QStringList quotedArgs;
             for (const QString &a : args)
                 quotedArgs << '"' + a + '"';
@@ -861,6 +862,7 @@ namespace
         bool useGpuExecution = false;
         bool legacyBinaryMode = false;
         bool needsWindowing = false;
+        int gpuCostMode = 0;  // 0 = fmax, 1 = additive
         double pol = 1.0;
         int niter = 1;
         int percentile = 0;
@@ -1102,6 +1104,7 @@ namespace
         }
 
         request->useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
+        request->gpuCostMode = parent->getGPUCostMode();
         request->initialLogs << QString("Executable: %1").arg(request->executablePath);
         if (parent->getUseGPU() && !roiftExec.gpuBinary)
             request->initialLogs << QString("GPU requested, but oiftrelax_gpu was not found. Falling back to: %1").arg(request->executablePath);
@@ -1285,7 +1288,7 @@ namespace
              << QString::number(request.percentile)
              << request.outputPath;
         if (request.useGpuExecution)
-            args << "--delta";
+            args << "8" << "" << QString::number(request.gpuCostMode);
 
         if (callbacks.log)
             callbacks.log(QString("Running: %1").arg(quoteCommand(request.executablePath, args)));
@@ -1387,7 +1390,7 @@ namespace
                  << QString::number(request.percentile)
                  << outputPath;
             if (request.useGpuExecution)
-                args << "--delta";
+                args << "8" << "" << QString::number(request.gpuCostMode);
 
             QProcess *proc = new QProcess();
             proc->setProcessChannelMode(QProcess::SeparateChannels);
@@ -1537,7 +1540,7 @@ namespace
                  << QString::number(request.percentile)
                  << outputPath;
             if (request.useGpuExecution)
-                args << "--delta";
+                args << "8" << "" << QString::number(request.gpuCostMode);
 
             QProcess *proc = new QProcess();
             proc->setProcessChannelMode(QProcess::SeparateChannels);

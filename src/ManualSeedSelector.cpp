@@ -1135,6 +1135,18 @@ void ManualSeedSelector::setupUi()
     m_useGPUBox->setToolTip("Use GPU acceleration");
     optionsLayout->addWidget(m_useGPUBox);
 
+    QHBoxLayout *gpuCostRow = new QHBoxLayout();
+    gpuCostRow->addWidget(new QLabel("GPU cost:"));
+    m_gpuCostModeCombo = new QComboBox();
+    m_gpuCostModeCombo->addItem("fmax (bottleneck)");
+    m_gpuCostModeCombo->addItem("additive (shortest)");
+    m_gpuCostModeCombo->setToolTip("GPU cost function: fmax = max(path, edge), additive = sum of edges along path");
+    m_gpuCostModeCombo->setEnabled(false);
+    gpuCostRow->addWidget(m_gpuCostModeCombo);
+    optionsLayout->addLayout(gpuCostRow);
+
+    connect(m_useGPUBox, &QCheckBox::toggled, m_gpuCostModeCombo, &QComboBox::setEnabled);
+
     connect(m_segmentAllBox, &QCheckBox::toggled, [this](bool on)
             {
         m_polSweepBox->setChecked(false);
