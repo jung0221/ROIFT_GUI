@@ -123,6 +123,7 @@ namespace
             "build/bin/Debug",
             "build/src/ROIFT_GUI/roift",
             "build/src/ROIFT_GUI/roift/gpu",
+            "roift/gpu",
             "build/src/ROIFT_GUI/roift/gft_delta",
             "build/src/ROIFT_GUI/roift/Release",
             "build/src/ROIFT_GUI/roift/Debug",

@@ -1136,13 +1136,18 @@ void ManualSeedSelector::setupUi()
     optionsLayout->addWidget(m_useGPUBox);
 
     QHBoxLayout *gpuCostRow = new QHBoxLayout();
-    gpuCostRow->addWidget(new QLabel("GPU cost:"));
+    gpuCostRow->setContentsMargins(20, 0, 0, 0);  // indent under "Use GPU"
+    gpuCostRow->addWidget(new QLabel("Cost:"));
     m_gpuCostModeCombo = new QComboBox();
-    m_gpuCostModeCombo->addItem("fmax (bottleneck)");
-    m_gpuCostModeCombo->addItem("additive (shortest)");
-    m_gpuCostModeCombo->setToolTip("GPU cost function: fmax = max(path, edge), additive = sum of edges along path");
+    m_gpuCostModeCombo->addItem("Bottleneck (fmax)");
+    m_gpuCostModeCombo->addItem("Shortest path (additive)");
+    m_gpuCostModeCombo->setToolTip("GPU cost function:\n"
+                                    "  Bottleneck: cost = max(path_cost, edge_weight)\n"
+                                    "  Shortest path: cost = path_cost + edge_weight");
+    m_gpuCostModeCombo->setMinimumWidth(180);
     m_gpuCostModeCombo->setEnabled(false);
     gpuCostRow->addWidget(m_gpuCostModeCombo);
+    gpuCostRow->addStretch();
     optionsLayout->addLayout(gpuCostRow);
 
     connect(m_useGPUBox, &QCheckBox::toggled, m_gpuCostModeCombo, &QComboBox::setEnabled);
