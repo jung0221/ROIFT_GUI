@@ -99,8 +99,10 @@ namespace
         // Try likely paths for both in-source and out-of-source builds.
         const QStringList relativeSearchDirs = {
             "",
+            "roift/gpu",
             "roift",
             "roift/gft_delta",
+            "../roift/gpu",
             "../roift",
             "../roift/gft_delta",
             "../roift/Release",
