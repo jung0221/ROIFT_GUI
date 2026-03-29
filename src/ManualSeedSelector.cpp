@@ -663,17 +663,26 @@ void ManualSeedSelector::setupUi()
         }
         QCheckBox {
             spacing: 8px;
+            min-height: 24px;
         }
         QCheckBox::indicator {
-            width: 16px;
-            height: 16px;
+            width: 18px;
+            height: 18px;
             border-radius: 3px;
-            border: 1px solid #555555;
+            border: 2px solid #666666;
             background-color: #2d2d2d;
+        }
+        QCheckBox::indicator:hover {
+            border-color: #888888;
         }
         QCheckBox::indicator:checked {
             background-color: #0078d4;
             border-color: #0078d4;
+            image: none;
+        }
+        QCheckBox::indicator:disabled {
+            border-color: #444444;
+            background-color: #252525;
         }
         QLabel {
             color: #c0c0c0;
@@ -1135,22 +1144,7 @@ void ManualSeedSelector::setupUi()
     m_useGPUBox->setToolTip("Use GPU acceleration");
     optionsLayout->addWidget(m_useGPUBox);
 
-    QHBoxLayout *gpuCostRow = new QHBoxLayout();
-    gpuCostRow->setContentsMargins(20, 0, 0, 0);  // indent under "Use GPU"
-    gpuCostRow->addWidget(new QLabel("Cost:"));
-    m_gpuCostModeCombo = new QComboBox();
-    m_gpuCostModeCombo->addItem("Bottleneck (fmax)");
-    m_gpuCostModeCombo->addItem("Shortest path (additive)");
-    m_gpuCostModeCombo->setToolTip("GPU cost function:\n"
-                                    "  Bottleneck: cost = max(path_cost, edge_weight)\n"
-                                    "  Shortest path: cost = path_cost + edge_weight");
-    m_gpuCostModeCombo->setMinimumWidth(180);
-    m_gpuCostModeCombo->setEnabled(false);
-    gpuCostRow->addWidget(m_gpuCostModeCombo);
-    gpuCostRow->addStretch();
-    optionsLayout->addLayout(gpuCostRow);
-
-    connect(m_useGPUBox, &QCheckBox::toggled, m_gpuCostModeCombo, &QComboBox::setEnabled);
+    // GPU always uses additive (shortest path) cost — no combo needed
 
     connect(m_segmentAllBox, &QCheckBox::toggled, [this](bool on)
             {
