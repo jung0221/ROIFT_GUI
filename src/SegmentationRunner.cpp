@@ -183,6 +183,72 @@ namespace
             .arg(mode);
     }
 
+    // Map method index to experiment executable name
+    static QString experimentExecutableName(int methodIndex)
+    {
+        switch (methodIndex) {
+        case 1: return "exp_gradient_weight";
+        case 2: return "exp_gaussian_rbf_relax";
+        case 3: return "exp_coarse_to_fine";
+        case 4: return "exp_26connect";
+        case 5: return "exp_geodesic_seeds";
+        default: return QString(); // standard — use oiftrelax
+        }
+    }
+
+    static RoiftExecutable resolveExperimentExecutable(int methodIndex)
+    {
+        RoiftExecutable resolved;
+        QString name = experimentExecutableName(methodIndex);
+        if (name.isEmpty())
+            return resolved;
+
+#if defined(Q_OS_WIN)
+        name += ".exe";
+#endif
+
+        // Check PATH first
+        const QString inPath = QStandardPaths::findExecutable(name);
+        if (!inPath.isEmpty()) {
+            resolved.path = inPath;
+            resolved.gpuBinary = false;
+            return resolved;
+        }
+
+        // Search relative to app/cwd like the standard resolver
+        const QStringList relativeSearchDirs = {
+            "",
+            "roift/experiments",
+            "../roift/experiments",
+            "../../roift/experiments",
+            "build/src/ROIFT_GUI/roift/experiments",
+            "build_experiments/src/ROIFT_GUI/roift/experiments",
+        };
+
+        const QStringList roots = {
+            QCoreApplication::applicationDirPath(),
+            QDir::currentPath(),
+        };
+
+        for (const QString &root : roots) {
+            QDir dir(root);
+            if (!dir.exists()) continue;
+            for (int depth = 0; depth <= 12; ++depth) {
+                for (const QString &subDir : relativeSearchDirs) {
+                    const QString relPath = subDir.isEmpty() ? name : QString("%1/%2").arg(subDir, name);
+                    const QString candidate = QDir::cleanPath(dir.filePath(relPath));
+                    if (QFileInfo::exists(candidate)) {
+                        resolved.path = QFileInfo(candidate).absoluteFilePath();
+                        resolved.gpuBinary = false;
+                        return resolved;
+                    }
+                }
+                if (!dir.cdUp()) break;
+            }
+        }
+        return resolved;
+    }
+
     // Helper function to create a windowed image
     QString createWindowedImage(const std::string &originalPath, double windowLevel, double windowWidth)
     {
@@ -873,6 +939,9 @@ namespace
         double windowLevel = 0.0;
         double windowWidth = 1.0;
         int progressTotal = 0;
+        int segmentationMethod = 0;   // 0=standard, 1..5=experiments
+        double alpha = 0.5;           // for method 1
+        double sigma = 0.0;           // for method 2 (0=auto)
     };
 
     struct SegmentationExecutionResult
@@ -1053,6 +1122,19 @@ namespace
         return tag;
     }
 
+    static void appendExperimentArgs(QStringList &args, const SegmentationRequest &request)
+    {
+        if (request.segmentationMethod == 1) {
+            // exp_gradient_weight: --alpha
+            args << "--alpha" << QString::number(request.alpha, 'f', 3);
+        } else if (request.segmentationMethod == 2) {
+            // exp_gaussian_rbf_relax: --sigma (only if non-zero; 0 means auto)
+            if (request.sigma > 0.0)
+                args << "--sigma" << QString::number(request.sigma, 'f', 2);
+        }
+        // Methods 3, 4, 5 need no extra args
+    }
+
     bool prepareSegmentationRequest(ManualSeedSelector *parent, SegmentationRequest *request)
     {
         if (!parent || !request)
@@ -1084,6 +1166,9 @@ namespace
         request->legacyBinaryMode = parent->useLegacyBinaryMode();
         request->windowLevel = parent->getWindowLevel();
         request->windowWidth = parent->getWindowWidth();
+        request->segmentationMethod = parent->getSegmentationMethod();
+        request->alpha = parent->getAlpha();
+        request->sigma = parent->getSigma();
 
         const double imageMin = parent->getImageMin();
         const double imageMax = parent->getImageMax();
@@ -1098,19 +1183,33 @@ namespace
         const QString baseDir = QFileInfo(sourceImagePath).absolutePath();
         const QStringList labelChoices = buildLabelChoices(uniqueLabels);
 
-        const RoiftExecutable roiftExec = resolveRoiftExecutable(parent->getUseGPU());
-        request->executablePath = roiftExec.path;
-        if (request->executablePath.isEmpty())
-        {
-            QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
-            return false;
+        if (request->segmentationMethod > 0) {
+            const RoiftExecutable expExec = resolveExperimentExecutable(request->segmentationMethod);
+            request->executablePath = expExec.path;
+            if (request->executablePath.isEmpty()) {
+                QMessageBox::critical(parent, "Experiment not found",
+                    QString("Could not find experiment executable: %1\n"
+                            "Build the experiments first with cmake.")
+                        .arg(experimentExecutableName(request->segmentationMethod)));
+                return false;
+            }
+            request->useGpuExecution = false; // experiments are CPU only
+            request->gpuCostMode = 0;
+            request->initialLogs << QString("Experiment executable: %1").arg(request->executablePath);
+        } else {
+            const RoiftExecutable roiftExec = resolveRoiftExecutable(parent->getUseGPU());
+            request->executablePath = roiftExec.path;
+            if (request->executablePath.isEmpty())
+            {
+                QMessageBox::critical(parent, "ROIFT not found", roiftNotFoundMessage(parent->getUseGPU()));
+                return false;
+            }
+            request->useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
+            request->gpuCostMode = parent->getGPUCostMode();
+            request->initialLogs << QString("Executable: %1").arg(request->executablePath);
+            if (parent->getUseGPU() && !roiftExec.gpuBinary)
+                request->initialLogs << QString("GPU requested, but oiftrelax_gpu was not found. Falling back to: %1").arg(request->executablePath);
         }
-
-        request->useGpuExecution = parent->getUseGPU() && roiftExec.gpuBinary;
-        request->gpuCostMode = parent->getGPUCostMode();
-        request->initialLogs << QString("Executable: %1").arg(request->executablePath);
-        if (parent->getUseGPU() && !roiftExec.gpuBinary)
-            request->initialLogs << QString("GPU requested, but oiftrelax_gpu was not found. Falling back to: %1").arg(request->executablePath);
         if (request->needsWindowing)
             request->initialLogs << QString("Applying current window/level before segmentation (WL=%1, WW=%2).")
                                         .arg(request->windowLevel, 0, 'f', 1)
@@ -1292,6 +1391,7 @@ namespace
              << request.outputPath;
         if (request.useGpuExecution)
             args << "8" << "" << QString::number(request.gpuCostMode);
+        appendExperimentArgs(args, request);
 
         if (callbacks.log)
             callbacks.log(QString("Running: %1").arg(quoteCommand(request.executablePath, args)));
@@ -1394,6 +1494,7 @@ namespace
                  << outputPath;
             if (request.useGpuExecution)
                 args << "8" << "" << QString::number(request.gpuCostMode);
+            appendExperimentArgs(args, request);
 
             QProcess *proc = new QProcess();
             proc->setProcessChannelMode(QProcess::SeparateChannels);
@@ -1544,6 +1645,7 @@ namespace
                  << outputPath;
             if (request.useGpuExecution)
                 args << "8" << "" << QString::number(request.gpuCostMode);
+            appendExperimentArgs(args, request);
 
             QProcess *proc = new QProcess();
             proc->setProcessChannelMode(QProcess::SeparateChannels);

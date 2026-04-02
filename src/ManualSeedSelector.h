@@ -87,6 +87,9 @@ public:
     bool getSegmentAll() const { return m_segmentAllBox ? m_segmentAllBox->isChecked() : false; }
     bool getPolaritySweep() const { return m_polSweepBox ? m_polSweepBox->isChecked() : false; }
     bool getUseGPU() const { return m_useGPUBox ? m_useGPUBox->isChecked() : false; }
+    int getSegmentationMethod() const { return m_methodCombo ? m_methodCombo->currentIndex() : 0; }
+    double getAlpha() const { return m_alphaSpin ? m_alphaSpin->value() : 0.5; }
+    double getSigma() const { return m_sigmaSpin ? m_sigmaSpin->value() : 0.0; }
     int getGPUCostMode() const { return 1; }  // always additive (shortest path)
     double getWindowLevel() const { return m_windowLevelSpin ? m_windowLevelSpin->value() : 0.0; }
     double getWindowWidth() const { return m_windowWidthSpin ? m_windowWidthSpin->value() : 1.0; }
@@ -288,6 +291,11 @@ private:
     QSlider *m_percSlider = nullptr;
     QLabel *m_percValue = nullptr;
     QComboBox *m_segmentationModeCombo = nullptr;
+    QComboBox *m_methodCombo = nullptr;
+    QDoubleSpinBox *m_alphaSpin = nullptr;
+    QDoubleSpinBox *m_sigmaSpin = nullptr;
+    QLabel *m_alphaLabel = nullptr;
+    QLabel *m_sigmaLabel = nullptr;
     QCheckBox *m_segmentAllBox = nullptr;
     QCheckBox *m_polSweepBox = nullptr;
     QCheckBox *m_useGPUBox = nullptr;

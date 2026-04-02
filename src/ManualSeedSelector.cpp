@@ -1076,47 +1076,54 @@ void ManualSeedSelector::setupUi()
     segLayout->setSpacing(10);
     segLayout->setContentsMargins(8, 6, 8, 6);
 
-    // Parameters group
+    // Parameters group — split into two columns (left: core params, right: method)
+    // to fit within the 120px ribbon tab height.
     QGroupBox *paramsGroup = new QGroupBox("Parameters");
-    QGridLayout *paramsGrid = new QGridLayout(paramsGroup);
-    paramsGrid->setSpacing(4);
+    QHBoxLayout *paramsColumns = new QHBoxLayout(paramsGroup);
+    paramsColumns->setSpacing(12);
+    paramsColumns->setContentsMargins(6, 2, 6, 2);
 
-    paramsGrid->addWidget(new QLabel("Mode:"), 0, 0);
+    // Left column: Mode, Polarity, Relax iters, Percentile
+    QGridLayout *leftGrid = new QGridLayout();
+    leftGrid->setSpacing(2);
+    leftGrid->setContentsMargins(0, 0, 0, 0);
+
+    leftGrid->addWidget(new QLabel("Mode:"), 0, 0);
     m_segmentationModeCombo = new QComboBox();
     m_segmentationModeCombo->addItem("Multi-label");
     m_segmentationModeCombo->addItem("Legacy binary");
     m_segmentationModeCombo->setToolTip("Multi-label runs all labels in one execution. Legacy binary restores the original internal-versus-external workflow.");
-    paramsGrid->addWidget(m_segmentationModeCombo, 0, 1, 1, 2);
+    leftGrid->addWidget(m_segmentationModeCombo, 0, 1, 1, 2);
 
-    paramsGrid->addWidget(new QLabel("Polarity:"), 1, 0);
+    leftGrid->addWidget(new QLabel("Polarity:"), 1, 0);
     m_polSlider = new QSlider(Qt::Horizontal);
     m_polSlider->setRange(-100, 100);
     m_polSlider->setValue(100);
     m_polSlider->setToolTip("+1.0=bright inside, -1.0=dark inside");
-    paramsGrid->addWidget(m_polSlider, 1, 1);
+    leftGrid->addWidget(m_polSlider, 1, 1);
     m_polValue = new QLabel("1.00");
-    m_polValue->setMinimumWidth(40);
-    paramsGrid->addWidget(m_polValue, 1, 2);
+    m_polValue->setMinimumWidth(32);
+    leftGrid->addWidget(m_polValue, 1, 2);
 
-    paramsGrid->addWidget(new QLabel("Relax iters:"), 2, 0);
+    leftGrid->addWidget(new QLabel("Relax:"), 2, 0);
     m_niterSlider = new QSlider(Qt::Horizontal);
     m_niterSlider->setRange(0, 100);
     m_niterSlider->setValue(0);
     m_niterSlider->setToolTip("Relaxation iterations");
-    paramsGrid->addWidget(m_niterSlider, 2, 1);
+    leftGrid->addWidget(m_niterSlider, 2, 1);
     m_niterValue = new QLabel("0");
-    m_niterValue->setMinimumWidth(40);
-    paramsGrid->addWidget(m_niterValue, 2, 2);
+    m_niterValue->setMinimumWidth(32);
+    leftGrid->addWidget(m_niterValue, 2, 2);
 
-    paramsGrid->addWidget(new QLabel("Percentile:"), 3, 0);
+    leftGrid->addWidget(new QLabel("Pctile:"), 3, 0);
     m_percSlider = new QSlider(Qt::Horizontal);
     m_percSlider->setRange(0, 100);
     m_percSlider->setValue(0);
     m_percSlider->setToolTip("Arc-weight percentile threshold");
-    paramsGrid->addWidget(m_percSlider, 3, 1);
+    leftGrid->addWidget(m_percSlider, 3, 1);
     m_percValue = new QLabel("0");
-    m_percValue->setMinimumWidth(40);
-    paramsGrid->addWidget(m_percValue, 3, 2);
+    m_percValue->setMinimumWidth(32);
+    leftGrid->addWidget(m_percValue, 3, 2);
 
     connect(m_polSlider, &QSlider::valueChanged, [this](int v)
             { m_polValue->setText(QString::number(v / 100.0, 'f', 2)); });
@@ -1124,6 +1131,78 @@ void ManualSeedSelector::setupUi()
             { m_niterValue->setText(QString::number(v)); });
     connect(m_percSlider, &QSlider::valueChanged, [this](int v)
             { m_percValue->setText(QString::number(v)); });
+
+    paramsColumns->addLayout(leftGrid, 1);
+
+    // Right column: Method + conditional Alpha/Sigma
+    QGridLayout *rightGrid = new QGridLayout();
+    rightGrid->setSpacing(2);
+    rightGrid->setContentsMargins(0, 0, 0, 0);
+
+    rightGrid->addWidget(new QLabel("Method:"), 0, 0);
+    m_methodCombo = new QComboBox();
+    m_methodCombo->addItem("Standard OIFT");           // index 0
+    m_methodCombo->addItem("Gradient Weight (1A)");    // index 1
+    m_methodCombo->addItem("Gaussian RBF Relax (1B)"); // index 2
+    m_methodCombo->addItem("Coarse-to-Fine (1C)");     // index 3
+    m_methodCombo->addItem("26-Connectivity (1D)");    // index 4
+    m_methodCombo->addItem("Geodesic Seeds (1E)");     // index 5
+    m_methodCombo->setToolTip(
+        "Standard: baseline oiftrelax\n"
+        "Gradient Weight: blends intensity diff with Sobel gradient magnitude (alpha param)\n"
+        "Gaussian RBF: replaces 8th-power relaxation with exp(-diff\u00b2/\u03c3\u00b2)\n"
+        "Coarse-to-Fine: runs OIFT at 2\u00d7 downsampled then refines at full res\n"
+        "26-Connectivity: uses diagonal neighbors (26-connected vs 6-connected)\n"
+        "Geodesic Seeds: distance-aware boundary seed placement");
+    rightGrid->addWidget(m_methodCombo, 0, 1);
+
+    // Alpha param (only for Gradient Weight)
+    m_alphaLabel = new QLabel("Alpha:");
+    rightGrid->addWidget(m_alphaLabel, 1, 0);
+    m_alphaSpin = new QDoubleSpinBox();
+    m_alphaSpin->setRange(0.0, 1.0);
+    m_alphaSpin->setSingleStep(0.05);
+    m_alphaSpin->setValue(0.5);
+    m_alphaSpin->setToolTip("Blend factor: alpha*|I(p)-I(q)| + (1-alpha)*gradient_avg");
+    rightGrid->addWidget(m_alphaSpin, 1, 1);
+
+    // Sigma param (only for Gaussian RBF)
+    m_sigmaLabel = new QLabel("Sigma:");
+    rightGrid->addWidget(m_sigmaLabel, 2, 0);
+    m_sigmaSpin = new QDoubleSpinBox();
+    m_sigmaSpin->setRange(0.0, 10000.0);
+    m_sigmaSpin->setSingleStep(1.0);
+    m_sigmaSpin->setValue(0.0);
+    m_sigmaSpin->setToolTip("Gaussian RBF bandwidth. 0 = auto-estimate from image std dev.");
+    rightGrid->addWidget(m_sigmaSpin, 2, 1);
+
+    rightGrid->setRowStretch(3, 1); // push content up
+
+    // Show/hide alpha/sigma and disable GPU based on method selection
+    auto updateMethodParams = [this]() {
+        int method = m_methodCombo->currentIndex();
+        bool showAlpha = (method == 1); // Gradient Weight
+        bool showSigma = (method == 2); // Gaussian RBF
+        m_alphaLabel->setVisible(showAlpha);
+        m_alphaSpin->setVisible(showAlpha);
+        m_sigmaLabel->setVisible(showSigma);
+        m_sigmaSpin->setVisible(showSigma);
+    };
+    connect(m_methodCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            [this, updateMethodParams](int idx) {
+                updateMethodParams();
+                if (m_useGPUBox) {
+                    if (idx > 0) {
+                        m_useGPUBox->setChecked(false);
+                        m_useGPUBox->setEnabled(false);
+                    } else {
+                        m_useGPUBox->setEnabled(true);
+                    }
+                }
+            });
+    updateMethodParams(); // set initial visibility
+
+    paramsColumns->addLayout(rightGrid, 1);
 
     segLayout->addWidget(paramsGroup);
 

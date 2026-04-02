@@ -3,6 +3,14 @@ project(roift_gui LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+option(BUILD_ROIFT_GUI "Build the Qt/VTK/ITK GUI application" ON)
+
+# Include ROIFT (gft library + oiftrelax + experiments) — always built
+add_subdirectory(roift)
+
+if(BUILD_ROIFT_GUI)
+
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
@@ -92,9 +100,6 @@ endif()
 file(GLOB SRC_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
 )
-# if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
-#     list(APPEND SRC_FILES "${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp")
-# endif()
 
 # Find VTK
 find_package(VTK REQUIRED COMPONENTS
@@ -112,15 +117,10 @@ find_package(VTK REQUIRED COMPONENTS
   GUISupportQt
 )
 
-
-# Include ROIFT
-add_subdirectory(roift)
 add_executable(roift_gui ${SRC_FILES})
 
-
-
-target_include_directories(${PROJECT_NAME} PRIVATE src)
-target_link_libraries(${PROJECT_NAME}
+target_include_directories(roift_gui PRIVATE src)
+target_link_libraries(roift_gui
   PRIVATE
     Qt6::Widgets
     ${ITK_LIBRARIES}
@@ -128,23 +128,20 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 if(TARGET Qt6::Svg)
-  target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Svg)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE ROIFT_HAS_QT_SVG=1)
+  target_link_libraries(roift_gui PRIVATE Qt6::Svg)
+  target_compile_definitions(roift_gui PRIVATE ROIFT_HAS_QT_SVG=1)
 else()
   message(WARNING "Qt6 Svg module not found. NIfTI icon buttons will use non-SVG fallbacks.")
 endif()
 
 if(DEFINED _vcpkg_root AND _vcpkg_root)
-  # Ensure the vcpkg library directories are on the linker's search path so
-  # that plain-named libs (e.g. minc2.lib) provided by vcpkg are found.
-  target_link_directories(${PROJECT_NAME} PRIVATE
+  target_link_directories(roift_gui PRIVATE
     "$<$<CONFIG:Debug>:${_vcpkg_root}/debug/lib>"
     "$<$<NOT:$<CONFIG:Debug>>:${_vcpkg_root}/lib>"
   )
 endif()
 
-# For UIC/MOC if needed later
-set_target_properties(${PROJECT_NAME} PROPERTIES
+set_target_properties(roift_gui PROPERTIES
   AUTOMOC ON
   AUTOUIC ON
   AUTORCC ON
@@ -152,12 +149,16 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 # Deploy Qt runtime files (DLLs and plugins)
 if(WIN32 AND WINDEPLOYQT_EXECUTABLE AND ROIFT_COPY_RUNTIME)
-  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  add_custom_command(TARGET roift_gui POST_BUILD
     COMMAND "${WINDEPLOYQT_EXECUTABLE}"
       --no-translations
       --no-system-d3d-compiler
       --no-opengl-sw
-      "$<TARGET_FILE:${PROJECT_NAME}>"
+      "$<TARGET_FILE:roift_gui>"
     COMMENT "Running windeployqt to deploy Qt runtime files..."
   )
 endif()
+
+else() # BUILD_ROIFT_GUI=OFF
+  message(STATUS "BUILD_ROIFT_GUI=OFF: skipping Qt/VTK/ITK GUI build")
+endif() # BUILD_ROIFT_GUI
