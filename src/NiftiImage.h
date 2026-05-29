@@ -39,6 +39,11 @@ public:
     bool isMask() const { return m_isMask; }
 
 private:
+    // Loads a DICOM volume from a directory of slices or a single DICOM file.
+    bool loadDicomSeries(const std::string &path);
+    // Shared post-read processing (min/max, mask classification, logging).
+    void finalizeLoad(const std::string &path);
+
     ImageType::Pointer m_image;
     ImageType::RegionType m_region;
     float m_min = 0.0f;

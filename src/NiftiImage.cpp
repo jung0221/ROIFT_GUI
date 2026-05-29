@@ -1,8 +1,11 @@
 #include "NiftiImage.h"
 #include <itkImageFileReader.h>
+#include <itkImageSeriesReader.h>
 #include <itkMinimumMaximumImageCalculator.h>
 #include <itkImageFileWriter.h>
 #include <itkNiftiImageIO.h>
+#include <itkGDCMImageIO.h>
+#include <itkGDCMSeriesFileNames.h>
 #include <itkImageRegionIterator.h>
 #include <itkImageDuplicator.h>
 #include <algorithm>
@@ -30,6 +33,29 @@ bool NiftiImage::load(const std::string &path)
         return std::equal(suf.rbegin(), suf.rend(), p.rbegin(), p.rend(), [](char a, char b)
                           { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
     };
+
+    // Route DICOM input (a directory of slices, or a single .dcm/.dicom/.ima file)
+    // through the GDCM series reader; everything else is treated as NIfTI.
+    {
+        std::error_code ec;
+        const bool isDir = std::filesystem::is_directory(path, ec);
+        std::string ext = std::filesystem::path(path).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        const bool dicomExt = (ext == ".dcm" || ext == ".dicom" || ext == ".ima");
+        if (isDir || dicomExt)
+        {
+            if (!loadDicomSeries(path))
+                return false;
+            if (m_region.GetSize()[0] == 0 || m_region.GetSize()[1] == 0 || m_region.GetSize()[2] == 0)
+            {
+                std::cerr << "NiftiImage::load: DICOM image has zero size for '" << path << "'" << std::endl;
+                return false;
+            }
+            finalizeLoad(path);
+            return true;
+        }
+    }
 
     // If .nii.gz, decompress to a temporary .nii to avoid any plugin quirks.
     std::string actualPath = path;
@@ -171,6 +197,132 @@ bool NiftiImage::load(const std::string &path)
         return false;
     }
 
+    finalizeLoad(path);
+    cleanupTemp();
+    return true;
+}
+
+// Load a DICOM volume from either a directory of slices or a single DICOM file.
+// When given a single file, the whole series it belongs to is reconstructed.
+bool NiftiImage::loadDicomSeries(const std::string &path)
+{
+    try
+    {
+        std::error_code ec;
+        const bool isDir = std::filesystem::is_directory(path, ec);
+        std::string dir = isDir ? path : std::filesystem::path(path).parent_path().string();
+        if (dir.empty())
+            dir = ".";
+
+        itk::GDCMSeriesFileNames::Pointer names = itk::GDCMSeriesFileNames::New();
+        names->SetUseSeriesDetails(true);
+        names->SetDirectory(dir);
+
+        const std::vector<std::string> &seriesUIDs = names->GetSeriesUIDs();
+        if (seriesUIDs.empty())
+        {
+            std::cerr << "NiftiImage::loadDicomSeries: no DICOM series found in '" << dir << "'\n";
+            return false;
+        }
+
+        // If a single file was selected, prefer the series that contains it;
+        // otherwise fall back to the series with the most slices.
+        std::string targetFile;
+        if (!isDir)
+            targetFile = std::filesystem::absolute(path, ec).string();
+
+        std::string chosenUID;
+        std::vector<std::string> fileNames;
+        size_t bestCount = 0;
+        for (const std::string &uid : seriesUIDs)
+        {
+            const std::vector<std::string> f = names->GetFileNames(uid);
+            if (!targetFile.empty())
+            {
+                bool match = false;
+                for (const std::string &fn : f)
+                {
+                    std::error_code ec2;
+                    if (std::filesystem::equivalent(fn, targetFile, ec2))
+                    {
+                        match = true;
+                        break;
+                    }
+                }
+                if (match)
+                {
+                    chosenUID = uid;
+                    fileNames = f;
+                    break;
+                }
+            }
+            if (f.size() > bestCount)
+            {
+                bestCount = f.size();
+                chosenUID = uid;
+                fileNames = f;
+            }
+        }
+
+        if (fileNames.empty())
+        {
+            std::cerr << "NiftiImage::loadDicomSeries: empty file list for series in '" << dir << "'\n";
+            return false;
+        }
+
+        itk::GDCMImageIO::Pointer dicomIO = itk::GDCMImageIO::New();
+        using SeriesReaderType = itk::ImageSeriesReader<ImageType>;
+        SeriesReaderType::Pointer reader = SeriesReaderType::New();
+        reader->SetImageIO(dicomIO);
+        reader->SetFileNames(fileNames);
+        reader->Update();
+
+        m_image = reader->GetOutput();
+        if (!m_image)
+        {
+            std::cerr << "NiftiImage::loadDicomSeries: reader produced null output for '" << path << "'\n";
+            return false;
+        }
+        m_image->DisconnectPipeline();
+        m_region = m_image->GetLargestPossibleRegion();
+        m_component = dicomIO->GetComponentType();
+
+        const auto spacing = m_image->GetSpacing();
+        m_spacingX = std::abs(static_cast<double>(spacing[0]));
+        m_spacingY = std::abs(static_cast<double>(spacing[1]));
+        m_spacingZ = std::abs(static_cast<double>(spacing[2]));
+        if (!std::isfinite(m_spacingX) || m_spacingX <= 0.0)
+            m_spacingX = 1.0;
+        if (!std::isfinite(m_spacingY) || m_spacingY <= 0.0)
+            m_spacingY = 1.0;
+        if (!std::isfinite(m_spacingZ) || m_spacingZ <= 0.0)
+            m_spacingZ = 1.0;
+
+        std::cerr << "NiftiImage::loadDicomSeries: loaded series '" << chosenUID << "' from '" << dir
+                  << "' (" << fileNames.size() << " file(s), " << seriesUIDs.size() << " series in directory)\n";
+        return true;
+    }
+    catch (itk::ExceptionObject &e)
+    {
+        std::cerr << "NiftiImage::loadDicomSeries: ITK exception while reading '" << path << "': " << e << std::endl;
+        return false;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "NiftiImage::loadDicomSeries: std::exception while reading '" << path << "': " << e.what() << std::endl;
+        return false;
+    }
+    catch (...)
+    {
+        std::cerr << "NiftiImage::loadDicomSeries: unknown exception while reading '" << path << "'\n";
+        return false;
+    }
+}
+
+// Shared post-read processing: compute global min/max, classify mask vs. image,
+// and log the result. Used by both the NIfTI and DICOM loading paths.
+void NiftiImage::finalizeLoad(const std::string &path)
+{
     using MinMaxCalculatorType = itk::MinimumMaximumImageCalculator<ImageType>;
     MinMaxCalculatorType::Pointer calc = MinMaxCalculatorType::New();
     calc->SetImage(m_image);
@@ -219,9 +371,7 @@ bool NiftiImage::load(const std::string &path)
     }
 
     // Log loaded image properties for debugging
-    std::cerr << "NiftiImage::load: loaded '" << path << "' (actual='" << actualPath << "') size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ") spacing=(" << m_spacingX << "," << m_spacingY << "," << m_spacingZ << ") min=" << m_min << " max=" << m_max << " comp=" << m_component << " isMask=" << (m_isMask ? "yes" : "no") << " uniq=" << uniques.size() << " sampled=" << sampled << "\n";
-    cleanupTemp();
-    return true;
+    std::cerr << "NiftiImage::finalizeLoad: '" << path << "' size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ") spacing=(" << m_spacingX << "," << m_spacingY << "," << m_spacingZ << ") min=" << m_min << " max=" << m_max << " comp=" << m_component << " isMask=" << (m_isMask ? "yes" : "no") << " uniq=" << uniques.size() << " sampled=" << sampled << "\n";
 }
 
 unsigned int NiftiImage::getSizeX() const { return m_region.GetSize()[0]; }

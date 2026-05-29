@@ -721,13 +721,13 @@ void ManualSeedSelector::setupUi()
     filesLayout->setSpacing(10);
     filesLayout->setContentsMargins(8, 6, 8, 6);
 
-    // Grupo de operações NIfTI - Abrir e salvar imagens médicas
-    QGroupBox *niftiGroup = new QGroupBox("NIfTI Image");
+    // Grupo de operações de imagem - Abrir e salvar imagens médicas (NIfTI e DICOM)
+    QGroupBox *niftiGroup = new QGroupBox("CT Image");
     QHBoxLayout *niftiLayout = new QHBoxLayout(niftiGroup);
     niftiLayout->setSpacing(8);
 
     QPushButton *btnOpen = new QPushButton("Open");
-    btnOpen->setToolTip("Open a NIfTI image (Ctrl+O)");
+    btnOpen->setToolTip("Open a NIfTI image or DICOM series (Ctrl+O)");
     btnOpen->setShortcut(QKeySequence("Ctrl+O"));
     connect(btnOpen, &QPushButton::clicked, this, &ManualSeedSelector::openImage);
     niftiLayout->addWidget(btnOpen);
@@ -2568,7 +2568,9 @@ void ManualSeedSelector::setupUi()
 
 void ManualSeedSelector::openImage()
 {
-    QStringList files = QFileDialog::getOpenFileNames(this, "Open NIfTI Images", "", "NIfTI files (*.nii *.nii.gz)");
+    QStringList files = QFileDialog::getOpenFileNames(
+        this, "Open Medical Images", "",
+        "Medical images (*.nii *.nii.gz *.dcm *.dicom *.ima);;NIfTI files (*.nii *.nii.gz);;DICOM files (*.dcm *.dicom *.ima);;All files (*)");
     if (files.isEmpty())
         return;
 
@@ -2578,7 +2580,7 @@ void ManualSeedSelector::openImage()
 
     if (m_statusLabel)
     {
-        QString status = QString("Added %1 NIfTI image(s)").arg(added);
+        QString status = QString("Added %1 image(s)").arg(added);
         if (duplicateCount > 0)
             status += QString(", %1 duplicate(s) skipped").arg(duplicateCount);
         if (missingCount > 0)
