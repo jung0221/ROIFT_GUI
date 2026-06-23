@@ -3,7 +3,41 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QtGlobal>
+#include <algorithm>
+#include <cmath>
 #include <iostream>
+
+// Geometry of the image as drawn into the widget. The image is fitted into the
+// widget while preserving the *physical* aspect ratio (pixelAspect stretches the
+// vertical axis relative to the horizontal), then scaled by the user zoom and
+// centered with the pan offset. dispW/dispH are the on-screen size in pixels;
+// scaleX/scaleY convert image-pixel coords to on-screen coords. Both paint and
+// hit-testing go through this so they never diverge.
+namespace {
+struct DisplayRect {
+    double dispW = 0.0;
+    double dispH = 0.0;
+    int xoff = 0;
+    int yoff = 0;
+};
+
+DisplayRect computeDisplayRect(int imgW, int imgH, double pixelAspect,
+                               const QSize &widget, float userZoom, const QPoint &pan)
+{
+    DisplayRect r;
+    if (imgW <= 0 || imgH <= 0 || widget.width() <= 0 || widget.height() <= 0)
+        return r;
+    const double pw = static_cast<double>(imgW);
+    const double ph = static_cast<double>(imgH) * (pixelAspect > 0.0 ? pixelAspect : 1.0);
+    const double fit = std::min(static_cast<double>(widget.width()) / pw,
+                                static_cast<double>(widget.height()) / ph);
+    r.dispW = pw * fit * static_cast<double>(userZoom);
+    r.dispH = ph * fit * static_cast<double>(userZoom);
+    r.xoff = static_cast<int>((static_cast<double>(widget.width()) - r.dispW) / 2.0) + pan.x();
+    r.yoff = static_cast<int>((static_cast<double>(widget.height()) - r.dispH) / 2.0) + pan.y();
+    return r;
+}
+} // namespace
 
 OrthogonalView::OrthogonalView(QWidget *parent): QWidget(parent) {
     // enable mouse move events even when no button is pressed so callers
@@ -16,7 +50,7 @@ void OrthogonalView::setImage(const QImage &img) {
     update();
 }
 
-void OrthogonalView::setOverlayDraw(std::function<void(QPainter &p, float scale)> func) {
+void OrthogonalView::setOverlayDraw(std::function<void(QPainter &p, float scaleX, float scaleY)> func) {
     m_overlay = func;
 }
 
@@ -24,32 +58,32 @@ void OrthogonalView::paintEvent(QPaintEvent *event) {
     QPainter p(this);
     p.fillRect(rect(), Qt::black);
     if (!m_image.isNull()) {
-        // scale to fit while keeping aspect, then apply user zoom
-        QImage fit = m_image.scaled(size(), Qt::KeepAspectRatio, Qt::FastTransformation);
-        int w = int(fit.width() * m_userZoom);
-        int h = int(fit.height() * m_userZoom);
-        QImage scaled = m_image.scaled(w, h, Qt::KeepAspectRatio, Qt::FastTransformation);
-        float scale = float(scaled.width()) / float(m_image.width());
-        int x = (width() - scaled.width()) / 2 + m_pan.x();
-        int y = (height() - scaled.height()) / 2 + m_pan.y();
-        p.drawImage(QRect(x,y,scaled.width(), scaled.height()), scaled);
+        // Fit while keeping the physical aspect ratio, then apply user zoom.
+        const DisplayRect r = computeDisplayRect(m_image.width(), m_image.height(),
+                                                 m_pixelAspect, size(), m_userZoom, m_pan);
+        const int w = std::max(1, static_cast<int>(std::lround(r.dispW)));
+        const int h = std::max(1, static_cast<int>(std::lround(r.dispH)));
+        QImage scaled = m_image.scaled(w, h, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+        const float scaleX = float(scaled.width()) / float(m_image.width());
+        const float scaleY = float(scaled.height()) / float(m_image.height());
+        const int x = r.xoff;
+        const int y = r.yoff;
+        p.drawImage(QRect(x, y, scaled.width(), scaled.height()), scaled);
         p.translate(x, y);
-        if (m_overlay) m_overlay(p, scale);
+        if (m_overlay) m_overlay(p, scaleX, scaleY);
         p.translate(-x, -y);
     }
 }
 
 // helper: map widget coords to image coords, returns false if outside image
-static bool widgetToImage(const QImage &img, const QPoint &widgetPos, const QSize &widgetSize, float userZoom, const QPoint &pan, int &outX, int &outY) {
+static bool widgetToImage(const QImage &img, const QPoint &widgetPos, const QSize &widgetSize, float userZoom, const QPoint &pan, double pixelAspect, int &outX, int &outY) {
     if (img.isNull()) return false;
-    QImage fit = img.scaled(widgetSize, Qt::KeepAspectRatio);
-    int w = int(fit.width() * userZoom);
-    int h = int(fit.height() * userZoom);
-    QImage scaled = img.scaled(w, h, Qt::KeepAspectRatio);
-    int xoff = (widgetSize.width() - scaled.width()) / 2 + pan.x();
-    int yoff = (widgetSize.height() - scaled.height()) / 2 + pan.y();
-    int xi = int((widgetPos.x() - xoff) * float(img.width()) / float(scaled.width()));
-    int yi = int((widgetPos.y() - yoff) * float(img.height()) / float(scaled.height()));
+    const DisplayRect r = computeDisplayRect(img.width(), img.height(), pixelAspect, widgetSize, userZoom, pan);
+    if (r.dispW <= 0.0 || r.dispH <= 0.0) return false;
+    const double scaleX = r.dispW / static_cast<double>(img.width());
+    const double scaleY = r.dispH / static_cast<double>(img.height());
+    int xi = static_cast<int>((widgetPos.x() - r.xoff) / scaleX);
+    int yi = static_cast<int>((widgetPos.y() - r.yoff) / scaleY);
     if (xi < 0 || yi < 0 || xi >= img.width() || yi >= img.height()) return false;
     outX = xi; outY = yi; return true;
 }
@@ -63,7 +97,7 @@ void OrthogonalView::mousePressEvent(QMouseEvent *event) {
         return;
     }
     int xi, yi;
-    if (widgetToImage(m_image, event->pos(), size(), m_userZoom, m_pan, xi, yi)) {
+    if (widgetToImage(m_image, event->pos(), size(), m_userZoom, m_pan, m_pixelAspect, xi, yi)) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         const QPoint globalPos = event->globalPosition().toPoint();
 #else
@@ -86,7 +120,7 @@ void OrthogonalView::mouseReleaseEvent(QMouseEvent *event) {
         return;
     }
     int xi, yi;
-    if (widgetToImage(m_image, event->pos(), size(), m_userZoom, m_pan, xi, yi)) {
+    if (widgetToImage(m_image, event->pos(), size(), m_userZoom, m_pan, m_pixelAspect, xi, yi)) {
         emit mouseReleased(xi, yi, event->button());
     }
 }
@@ -111,7 +145,7 @@ void OrthogonalView::mouseMoveEvent(QMouseEvent *event) {
         return;
     }
     int xi, yi;
-    if (widgetToImage(m_image, event->pos(), size(), m_userZoom, m_pan, xi, yi)) {
+    if (widgetToImage(m_image, event->pos(), size(), m_userZoom, m_pan, m_pixelAspect, xi, yi)) {
         if (getenv("MANUAL_SEED_DEBUG")) std::cerr << "mouseMove mapped: widget("<<event->x()<<","<<event->y()<<") -> img("<<xi<<","<<yi<<")\n";
         emit mouseMoved(xi, yi, event->buttons());
     } else {

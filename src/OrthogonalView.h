@@ -12,7 +12,12 @@ public:
     explicit OrthogonalView(QWidget *parent = nullptr);
 
     void setImage(const QImage &img);
-    void setOverlayDraw(std::function<void(QPainter &p, float scale)> func);
+    void setOverlayDraw(std::function<void(QPainter &p, float scaleX, float scaleY)> func);
+    // Physical aspect ratio of one voxel as displayed in this view:
+    // (physical height per image row) / (physical width per image column).
+    // Used so anisotropic volumes (e.g. thick-slice CT) render with correct
+    // proportions instead of collapsing to a thin strip. 1.0 = isotropic.
+    void setPixelAspect(double aspect) { m_pixelAspect = (aspect > 0.0) ? aspect : 1.0; update(); }
     void setUserZoom(float z) { m_userZoom = z; update(); }
     float userZoom() const { return m_userZoom; }
     void resetView() { m_userZoom = 1.0f; m_pan = QPoint(0,0); update(); }
@@ -33,7 +38,8 @@ protected:
 
 private:
     QImage m_image;
-    std::function<void(QPainter &p, float scale)> m_overlay;
+    std::function<void(QPainter &p, float scaleX, float scaleY)> m_overlay;
+    double m_pixelAspect = 1.0;
     float m_userZoom = 1.0f;
     QPoint m_pan{0,0};
     bool m_middleDown = false;

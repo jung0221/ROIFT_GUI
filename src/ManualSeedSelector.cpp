@@ -34,9 +34,14 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QProgressDialog>
+#include <QScrollArea>
 #include <QTabWidget>
+#include <QToolBar>
+#include <QAction>
+#include <QSettings>
 #include <QGroupBox>
 #include <QCheckBox>
+#include "CollapsibleSection.h"
 #include <QComboBox>
 #include <QRadioButton>
 #include <QButtonGroup>
@@ -702,6 +707,65 @@ void ManualSeedSelector::setupUi()
         QSplitter::handle:hover {
             background-color: #0078d4;
         }
+        QToolBar {
+            background-color: #2d2d2d;
+            border-bottom: 1px solid #444444;
+            spacing: 4px;
+            padding: 3px;
+        }
+        QToolBar QToolButton {
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 3px;
+            padding: 4px 10px;
+            color: #ffffff;
+        }
+        QToolBar QToolButton:hover {
+            background-color: #3c3c3c;
+            border-color: #0078d4;
+        }
+        /* Run segmentation button (object-named, was an inline stylesheet). */
+        QPushButton#runButton {
+            background-color: #0e639c;
+            color: white;
+            font-weight: bold;
+            padding: 8px 16px;
+        }
+        QPushButton#runButton:hover { background-color: #1177bb; }
+        QPushButton#runButton:pressed { background-color: #0d5a8a; }
+        /* Bottom logs/status (object-named, were inline stylesheets). */
+        QLabel#logHeader {
+            color: #007acc;
+            font-weight: 600;
+            padding-left: 2px;
+        }
+        QPlainTextEdit#logConsole {
+            background-color: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            color: #d8d8d8;
+        }
+        QLabel#statusLabel {
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            padding: 6px 12px;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+        QProgressBar#progressBar {
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 4px;
+            color: #d8d8d8;
+            padding: 2px;
+            text-align: center;
+        }
+        QProgressBar#progressBar::chunk {
+            background-color: #2d7d46;
+            border-radius: 3px;
+        }
     )");
 
     setWindowTitle("ROIFT GUI");
@@ -713,59 +777,42 @@ void ManualSeedSelector::setupUi()
     mainLayout->setSpacing(6);
     mainLayout->setContentsMargins(6, 6, 6, 6);
 
-    m_ribbonTabs = new QTabWidget();
-    m_ribbonTabs->setMaximumHeight(120);
+    // =====================================================
+    // TOP TOOLBAR: global file/tool actions (was the "Files"/"Tools" ribbon)
+    // =====================================================
+    QToolBar *mainToolBar = addToolBar("Main");
+    mainToolBar->setObjectName("mainToolBar");
+    mainToolBar->setMovable(false);
+    mainToolBar->setFloatable(false);
 
-    QWidget *filesTab = new QWidget();
-    QHBoxLayout *filesLayout = new QHBoxLayout(filesTab);
-    filesLayout->setSpacing(10);
-    filesLayout->setContentsMargins(8, 6, 8, 6);
+    QAction *actOpen = mainToolBar->addAction("Open");
+    actOpen->setToolTip("Open a NIfTI image or DICOM series (Ctrl+O)");
+    actOpen->setShortcut(QKeySequence("Ctrl+O"));
+    connect(actOpen, &QAction::triggered, this, &ManualSeedSelector::openImage);
 
-    // Grupo de operações de imagem - Abrir e salvar imagens médicas (NIfTI e DICOM)
-    QGroupBox *niftiGroup = new QGroupBox("CT Image");
-    QHBoxLayout *niftiLayout = new QHBoxLayout(niftiGroup);
-    niftiLayout->setSpacing(8);
+    QAction *actOpenCsv = mainToolBar->addAction("Open CSV");
+    actOpenCsv->setToolTip("Open a CSV and add NIfTI paths listed in it");
+    connect(actOpenCsv, &QAction::triggered, this, &ManualSeedSelector::openImagesFromCsv);
 
-    QPushButton *btnOpen = new QPushButton("Open");
-    btnOpen->setToolTip("Open a NIfTI image or DICOM series (Ctrl+O)");
-    btnOpen->setShortcut(QKeySequence("Ctrl+O"));
-    connect(btnOpen, &QPushButton::clicked, this, &ManualSeedSelector::openImage);
-    niftiLayout->addWidget(btnOpen);
-
-    QPushButton *btnOpenCsv = new QPushButton("Open CSV");
-    btnOpenCsv->setToolTip("Open a CSV and add NIfTI paths listed in it");
-    connect(btnOpenCsv, &QPushButton::clicked, this, &ManualSeedSelector::openImagesFromCsv);
-    niftiLayout->addWidget(btnOpenCsv);
-
-    QPushButton *btnSave = new QPushButton("Save");
-    btnSave->setToolTip("Save current image as NIfTI");
-    connect(btnSave, &QPushButton::clicked, this, [this]()
+    QAction *actSave = mainToolBar->addAction("Save");
+    actSave->setToolTip("Save current image as NIfTI");
+    connect(actSave, &QAction::triggered, this, [this]()
             {
         QString f = QFileDialog::getSaveFileName(this, "Save NIfTI", "", "NIfTI files (*.nii *.nii.gz)");
         if (!f.isEmpty() && !saveImageToFile(f.toStdString()))
             QMessageBox::warning(this, "Save NIfTI", "Failed to save image."); });
-    niftiLayout->addWidget(btnSave);
 
-    filesLayout->addWidget(niftiGroup);
+    mainToolBar->addSeparator();
 
-    QGroupBox *srGroup = new QGroupBox("Super Resolution");
-    QHBoxLayout *srLayout = new QHBoxLayout(srGroup);
-    srLayout->setSpacing(8);
-    QPushButton *btnRunSuperResolution = new QPushButton("Run SR");
-    btnRunSuperResolution->setToolTip("Run super resolution on the current image using super_resolve_nifti.py");
-    connect(btnRunSuperResolution, &QPushButton::clicked, this, &ManualSeedSelector::runSuperResolution);
-    srLayout->addWidget(btnRunSuperResolution);
+    QAction *actRunSR = mainToolBar->addAction("Run SR");
+    actRunSR->setToolTip("Run super resolution on the current image using super_resolve_nifti.py");
+    connect(actRunSR, &QAction::triggered, this, &ManualSeedSelector::runSuperResolution);
 
-    QPushButton *btnPostprocessMask = new QPushButton("Postprocess Mask");
-    btnPostprocessMask->setToolTip("Post-process the selected mask to remove isolated artifacts");
-    connect(btnPostprocessMask, &QPushButton::clicked, this, &ManualSeedSelector::runMaskPostProcessing);
-    srLayout->addWidget(btnPostprocessMask);
+    QAction *actPostproc = mainToolBar->addAction("Postprocess Mask");
+    actPostproc->setToolTip("Post-process the selected mask to remove isolated artifacts");
+    connect(actPostproc, &QAction::triggered, this, &ManualSeedSelector::runMaskPostProcessing);
 
-    filesLayout->addWidget(srGroup);
-
-    QGroupBox *toolsGroup = new QGroupBox("Tools");
-    QHBoxLayout *toolsLayout = new QHBoxLayout(toolsGroup);
-    toolsLayout->setSpacing(8);
+    mainToolBar->addSeparator();
 
     m_btnRuler = new QPushButton("Ruler");
     m_btnRuler->setCheckable(true);
@@ -774,21 +821,64 @@ void ManualSeedSelector::setupUi()
     m_btnRuler->setToolTip("Enable the ruler tool in axial, sagittal and coronal views using physical spacing. Drag with left mouse button. Esc clears.");
     connect(m_btnRuler, &QPushButton::toggled, this, [this](bool enabled)
             { setRulerEnabled(enabled); });
-    toolsLayout->addWidget(m_btnRuler);
+    mainToolBar->addWidget(m_btnRuler);
 
-    filesLayout->addWidget(toolsGroup);
+    mainToolBar->addSeparator();
 
-    filesLayout->addStretch();
+    QAction *actResetWL = mainToolBar->addAction("Reset WL");
+    actResetWL->setToolTip("Reset window to full range");
+    connect(actResetWL, &QAction::triggered, this, &ManualSeedSelector::resetWindowToFullRange);
 
-    m_ribbonTabs->addTab(filesTab, "Files");
+    QAction *actResetZoom = mainToolBar->addAction("Reset Zoom");
+    actResetZoom->setToolTip("Reset all views to default zoom (Ctrl+R)");
+    actResetZoom->setShortcut(QKeySequence("Ctrl+R"));
+    connect(actResetZoom, &QAction::triggered, this, [this]()
+            {
+        m_axialView->resetView();
+        m_sagittalView->resetView();
+        m_coronalView->resetView(); });
 
-    // --- TAB 1: VIEW (Window/Level & View controls) ---
-    QWidget *sliderTab = new QWidget();
-    QHBoxLayout *sliderLayout = new QHBoxLayout(sliderTab);
-    sliderLayout->setSpacing(10);
-    sliderLayout->setContentsMargins(8, 6, 8, 6);
+    // =====================================================
+    // LEFT TOOL SIDEBAR: scrollable column of collapsible sections.
+    // Replaces the fixed-height ribbon so variable-height content (label
+    // lists, mask controls) gets unlimited vertical room.
+    // =====================================================
+    QWidget *toolSidebarContent = new QWidget();
+    QVBoxLayout *toolSidebarLayout = new QVBoxLayout(toolSidebarContent);
+    toolSidebarLayout->setContentsMargins(4, 4, 4, 4);
+    toolSidebarLayout->setSpacing(6);
 
-    // Window/Level group
+    // Interaction-tool selector (replaces tab-based seed/mask gating). Exactly
+    // one of Navigate/Seeds/Mask is active and drives the view mouse handlers.
+    QWidget *toolSelector = new QWidget();
+    toolSelector->setObjectName("toolSelector");
+    QHBoxLayout *toolSelectorLayout = new QHBoxLayout(toolSelector);
+    toolSelectorLayout->setContentsMargins(0, 0, 0, 0);
+    toolSelectorLayout->setSpacing(4);
+    QPushButton *btnToolNavigate = new QPushButton("Navigate");
+    QPushButton *btnToolSeeds = new QPushButton("Seeds");
+    QPushButton *btnToolMask = new QPushButton("Mask");
+    QButtonGroup *toolButtons = new QButtonGroup(this);
+    toolButtons->addButton(btnToolNavigate, 0);
+    toolButtons->addButton(btnToolSeeds, 1);
+    toolButtons->addButton(btnToolMask, 2);
+    for (QPushButton *b : {btnToolNavigate, btnToolSeeds, btnToolMask})
+    {
+        b->setCheckable(true);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        toolSelectorLayout->addWidget(b);
+    }
+    btnToolNavigate->setChecked(true);
+    btnToolNavigate->setToolTip("Navigate: left-drag scrolls slices; no painting");
+    btnToolSeeds->setToolTip("Seeds: left-click places/erases seeds in the slice views");
+    btnToolMask->setToolTip("Mask: left-click paints/erases the mask in the slice views");
+    connect(toolButtons, QOverload<int>::of(&QButtonGroup::idClicked), this, [this](int id)
+            { setActiveTool(id == 1 ? InteractionTool::Seeds
+                            : id == 2 ? InteractionTool::Mask
+                                      : InteractionTool::Navigate); });
+    toolSidebarLayout->addWidget(toolSelector);
+
+    // ---- Section: Window/Level ----
     QGroupBox *windowGroup = new QGroupBox("Window/Level");
     QGridLayout *windowGrid = new QGridLayout(windowGroup);
     windowGrid->setSpacing(4);
@@ -812,38 +902,18 @@ void ManualSeedSelector::setupUi()
     m_windowWidthSpin->setToolTip("Window Width");
     windowGrid->addWidget(m_windowWidthSpin, 1, 3);
 
-    sliderLayout->addWidget(windowGroup, 1);
+    {
+        CollapsibleSection *sec = new CollapsibleSection("Window / Level", "windowLevel");
+        QVBoxLayout *secLayout = new QVBoxLayout();
+        secLayout->setContentsMargins(0, 0, 0, 0);
+        secLayout->setSpacing(6);
+        secLayout->addWidget(windowGroup);
+        sec->setContentLayout(secLayout);
+        toolSidebarLayout->addWidget(sec);
+        m_toolSections.push_back(sec);
+    }
 
-    // View controls group
-    QGroupBox *viewGroup = new QGroupBox("View");
-    QHBoxLayout *viewLayout = new QHBoxLayout(viewGroup);
-
-    QPushButton *btnResetWindow = new QPushButton("Reset WL");
-    btnResetWindow->setToolTip("Reset window to full range");
-    connect(btnResetWindow, &QPushButton::clicked, this, &ManualSeedSelector::resetWindowToFullRange);
-    viewLayout->addWidget(btnResetWindow);
-
-    QPushButton *btnResetZoom = new QPushButton("Reset Zoom");
-    btnResetZoom->setToolTip("Reset all views to default zoom (Ctrl+R)");
-    btnResetZoom->setShortcut(QKeySequence("Ctrl+R"));
-    connect(btnResetZoom, &QPushButton::clicked, [this]()
-            {
-        m_axialView->resetView();
-        m_sagittalView->resetView();
-        m_coronalView->resetView(); });
-    viewLayout->addWidget(btnResetZoom);
-
-    sliderLayout->addWidget(viewGroup);
-
-    m_ribbonTabs->addTab(sliderTab, "View");
-
-    // --- TAB 2: SEEDS ---
-    QWidget *seedsTab = new QWidget();
-    QHBoxLayout *seedsLayout = new QHBoxLayout(seedsTab);
-    seedsLayout->setSpacing(10);
-    seedsLayout->setContentsMargins(8, 6, 8, 6);
-
-    // Mode group
+    // ---- Section: Seeds ----
     QGroupBox *seedModeGroup = new QGroupBox("Drawing Mode");
     QHBoxLayout *seedModeLayout = new QHBoxLayout(seedModeGroup);
 
@@ -868,7 +938,10 @@ void ManualSeedSelector::setupUi()
             m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2); });
     m_seedMode = 1; // default: draw
 
-    seedsLayout->addWidget(seedModeGroup);
+    QVBoxLayout *seedsSecLayout = new QVBoxLayout();
+    seedsSecLayout->setContentsMargins(0, 0, 0, 0);
+    seedsSecLayout->setSpacing(6);
+    seedsSecLayout->addWidget(seedModeGroup);
 
     // Brush group
     QGroupBox *seedBrushGroup = new QGroupBox("Brush");
@@ -896,7 +969,7 @@ void ManualSeedSelector::setupUi()
         updateViews(); });
     seedBrushLayout->addWidget(m_seedDisplaySpacingSpin, 1, 1);
 
-    seedsLayout->addWidget(seedBrushGroup);
+    seedsSecLayout->addWidget(seedBrushGroup);
 
     // File operations group
     QGroupBox *seedFileGroup = new QGroupBox("File");
@@ -920,7 +993,7 @@ void ManualSeedSelector::setupUi()
         updateViews(); });
     seedFileLayout->addWidget(btnSeedClear);
 
-    seedsLayout->addWidget(seedFileGroup);
+    seedsSecLayout->addWidget(seedFileGroup);
 
     QGroupBox *seedGenerationGroup = new QGroupBox("Generate Seeds");
     QHBoxLayout *seedGenerationLayout = new QHBoxLayout(seedGenerationGroup);
@@ -934,18 +1007,16 @@ void ManualSeedSelector::setupUi()
     btnRunRibsSeeds->setToolTip("Run src/segment_ribs.py with --only-seeds");
     connect(btnRunRibsSeeds, &QPushButton::clicked, this, &ManualSeedSelector::runRibsSeedGeneration);
     seedGenerationLayout->addWidget(btnRunRibsSeeds);
-    seedsLayout->addWidget(seedGenerationGroup);
+    seedsSecLayout->addWidget(seedGenerationGroup);
 
-    seedsLayout->addStretch();
-    m_seedTabIndex = m_ribbonTabs->addTab(seedsTab, "Seeds");
+    {
+        CollapsibleSection *sec = new CollapsibleSection("Seeds", "seeds");
+        sec->setContentLayout(seedsSecLayout);
+        toolSidebarLayout->addWidget(sec);
+        m_toolSections.push_back(sec);
+    }
 
-    // --- TAB 3: MASK ---
-    QWidget *maskTab = new QWidget();
-    QHBoxLayout *maskLayout = new QHBoxLayout(maskTab);
-    maskLayout->setSpacing(10);
-    maskLayout->setContentsMargins(8, 6, 8, 6);
-
-    // Mode group
+    // ---- Section: Mask ----
     QGroupBox *maskModeGroup = new QGroupBox("Drawing Mode");
     QHBoxLayout *maskModeLayout = new QHBoxLayout(maskModeGroup);
 
@@ -972,7 +1043,10 @@ void ManualSeedSelector::setupUi()
     connect(maskModeButtons, QOverload<int>::of(&QButtonGroup::idClicked), [this](int id)
             { setMaskMode(id); });
 
-    maskLayout->addWidget(maskModeGroup);
+    QVBoxLayout *maskSecLayout = new QVBoxLayout();
+    maskSecLayout->setContentsMargins(0, 0, 0, 0);
+    maskSecLayout->setSpacing(6);
+    maskSecLayout->addWidget(maskModeGroup);
 
     // Brush group
     QGroupBox *maskBrushGroup = new QGroupBox("Brush");
@@ -1024,7 +1098,36 @@ void ManualSeedSelector::setupUi()
     maskBrushLayout->addWidget(m_maskOpacitySlider, 1, 1);
     maskBrushLayout->addWidget(opacityValue, 1, 2);
 
-    maskLayout->addWidget(maskBrushGroup);
+    maskSecLayout->addWidget(maskBrushGroup);
+
+    // 3D view display group: opacity of the rendered 3D mask surface.
+    QGroupBox *mask3DGroup = new QGroupBox("3D View");
+    QGridLayout *mask3DLayout = new QGridLayout(mask3DGroup);
+    mask3DLayout->setSpacing(4);
+    mask3DLayout->setContentsMargins(8, 6, 8, 6);
+
+    mask3DLayout->addWidget(new QLabel("Opacity:"), 0, 0);
+    QSlider *mask3DOpacitySlider = new QSlider(Qt::Horizontal);
+    mask3DOpacitySlider->setRange(0, 100);
+    mask3DOpacitySlider->setValue(40); // matches Mask3DView's default opacity (0.4)
+    mask3DOpacitySlider->setSingleStep(1);
+    mask3DOpacitySlider->setPageStep(10);
+    mask3DOpacitySlider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    mask3DOpacitySlider->setToolTip("Opacity of the 3D mask surface");
+
+    QLabel *mask3DOpacityValue = new QLabel("40%");
+    mask3DOpacityValue->setMinimumWidth(36);
+    mask3DOpacityValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+
+    connect(mask3DOpacitySlider, &QSlider::valueChanged, this, [this, mask3DOpacityValue](int v)
+            {
+        mask3DOpacityValue->setText(QString("%1%").arg(v));
+        if (m_mask3DView)
+            m_mask3DView->setMaskOpacity(float(v) / 100.0f); });
+    mask3DLayout->addWidget(mask3DOpacitySlider, 0, 1);
+    mask3DLayout->addWidget(mask3DOpacityValue, 0, 2);
+
+    maskSecLayout->addWidget(mask3DGroup);
 
     // File operations group
     QGroupBox *maskFileGroup = new QGroupBox("File");
@@ -1063,25 +1166,62 @@ void ManualSeedSelector::setupUi()
     connect(btnMaskThreshold, &QPushButton::clicked, this, &ManualSeedSelector::filterActiveMaskByThreshold);
     maskFileLayout->addWidget(btnMaskThreshold);
 
-    maskLayout->addWidget(maskFileGroup);
+    maskSecLayout->addWidget(maskFileGroup);
 
-    // (Heatmap feature removed)
-    maskLayout->addStretch();
+    {
+        CollapsibleSection *sec = new CollapsibleSection("Mask", "mask");
+        sec->setContentLayout(maskSecLayout);
+        toolSidebarLayout->addWidget(sec);
+        m_toolSections.push_back(sec);
+    }
 
-    m_maskTabIndex = m_ribbonTabs->addTab(maskTab, "Mask");
+    // ---- Section: Labels (mask-label visibility filter) ----
+    // The whole section is hidden until a mask with more than one label is
+    // present (see rebuildMaskLabelFilter). The per-label list lives directly
+    // in the section and grows freely; the tool sidebar scroll handles overflow.
+    {
+        m_maskLabelSection = new CollapsibleSection("Labels", "labels");
+        QVBoxLayout *labelsLayout = new QVBoxLayout();
+        labelsLayout->setContentsMargins(0, 0, 0, 0);
+        labelsLayout->setSpacing(6);
 
-    // --- TAB 4: SEGMENTATION ---
-    QWidget *segTab = new QWidget();
-    QHBoxLayout *segLayout = new QHBoxLayout(segTab);
-    segLayout->setSpacing(10);
-    segLayout->setContentsMargins(8, 6, 8, 6);
+        QHBoxLayout *maskLabelButtons = new QHBoxLayout();
+        QPushButton *btnLabelsAll = new QPushButton("All");
+        btnLabelsAll->setToolTip("Show all mask labels");
+        connect(btnLabelsAll, &QPushButton::clicked, this, [this]()
+                { setAllMaskLabelsVisible(true); });
+        QPushButton *btnLabelsNone = new QPushButton("None");
+        btnLabelsNone->setToolTip("Hide all mask labels");
+        connect(btnLabelsNone, &QPushButton::clicked, this, [this]()
+                { setAllMaskLabelsVisible(false); });
+        maskLabelButtons->addWidget(btnLabelsAll);
+        maskLabelButtons->addWidget(btnLabelsNone);
+        labelsLayout->addLayout(maskLabelButtons);
 
-    // Parameters group — split into two columns (left: core params, right: method)
-    // to fit within the 120px ribbon tab height.
+        QWidget *maskLabelContent = new QWidget();
+        m_maskLabelFilterLayout = new QVBoxLayout(maskLabelContent);
+        m_maskLabelFilterLayout->setSpacing(2);
+        m_maskLabelFilterLayout->setContentsMargins(2, 2, 2, 2);
+        m_maskLabelFilterLayout->addStretch();
+        labelsLayout->addWidget(maskLabelContent);
+
+        m_maskLabelSection->setContentLayout(labelsLayout);
+        toolSidebarLayout->addWidget(m_maskLabelSection);
+        m_toolSections.push_back(m_maskLabelSection);
+        m_maskLabelSection->setVisible(false);
+    }
+
+    // ---- Section: Segmentation ----
+    QVBoxLayout *segSecLayout = new QVBoxLayout();
+    segSecLayout->setContentsMargins(0, 0, 0, 0);
+    segSecLayout->setSpacing(6);
+
+    // Parameters group — stacked vertically (core params above method) now that
+    // the sidebar gives full height; no longer constrained to a 120px ribbon.
     QGroupBox *paramsGroup = new QGroupBox("Parameters");
-    QHBoxLayout *paramsColumns = new QHBoxLayout(paramsGroup);
-    paramsColumns->setSpacing(12);
-    paramsColumns->setContentsMargins(6, 2, 6, 2);
+    QVBoxLayout *paramsColumns = new QVBoxLayout(paramsGroup);
+    paramsColumns->setSpacing(8);
+    paramsColumns->setContentsMargins(6, 4, 6, 4);
 
     // Left column: Mode, Polarity, Relax iters, Percentile
     QGridLayout *leftGrid = new QGridLayout();
@@ -1176,17 +1316,36 @@ void ManualSeedSelector::setupUi()
     m_sigmaSpin->setToolTip("Gaussian RBF bandwidth. 0 = auto-estimate from image std dev.");
     rightGrid->addWidget(m_sigmaSpin, 2, 1);
 
-    rightGrid->setRowStretch(3, 1); // push content up
+    // Smoothing: Gaussian pre-smoothing passes (Standard OIFT only). Fewer passes
+    // preserve thin tubular structures (e.g. distal airways/vessels) that the
+    // default double blur erases before the boundary competition runs.
+    m_blurLabel = new QLabel("Smoothing:");
+    rightGrid->addWidget(m_blurLabel, 3, 0);
+    m_blurCombo = new QComboBox();
+    m_blurCombo->addItem("Default (2×)", QVariant(2)); // index 0 -> 2 passes (historical)
+    m_blurCombo->addItem("Light (1×)", QVariant(1));   // index 1 -> 1 pass
+    m_blurCombo->addItem("None (sharp)", QVariant(0));      // index 2 -> 0 passes
+    m_blurCombo->setToolTip(
+        "Gaussian pre-smoothing passes before OIFT.\n"
+        "Default (2×): historical behavior, robust on blobby organs.\n"
+        "Light / None: preserve thin tubular structures (airways, vessels)\n"
+        "that the double blur washes out. Standard OIFT (CPU) only.");
+    rightGrid->addWidget(m_blurCombo, 3, 1);
+
+    rightGrid->setRowStretch(4, 1); // push content up
 
     // Show/hide alpha/sigma and disable GPU based on method selection
     auto updateMethodParams = [this]() {
         int method = m_methodCombo->currentIndex();
         bool showAlpha = (method == 1); // Gradient Weight
         bool showSigma = (method == 2); // Gaussian RBF
+        bool showBlur = (method == 0);  // Standard OIFT (only path that parses --blur)
         m_alphaLabel->setVisible(showAlpha);
         m_alphaSpin->setVisible(showAlpha);
         m_sigmaLabel->setVisible(showSigma);
         m_sigmaSpin->setVisible(showSigma);
+        m_blurLabel->setVisible(showBlur);
+        m_blurCombo->setVisible(showBlur);
     };
     connect(m_methodCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             [this, updateMethodParams](int idx) {
@@ -1204,7 +1363,7 @@ void ManualSeedSelector::setupUi()
 
     paramsColumns->addLayout(rightGrid, 1);
 
-    segLayout->addWidget(paramsGroup);
+    segSecLayout->addWidget(paramsGroup);
 
     // Options group
     QGroupBox *optionsGroup = new QGroupBox("Batch Options");
@@ -1232,48 +1391,54 @@ void ManualSeedSelector::setupUi()
         if (m_segmentationModeCombo)
             m_segmentationModeCombo->setEnabled(!on); });
 
-    segLayout->addWidget(optionsGroup);
+    segSecLayout->addWidget(optionsGroup);
 
     // Run button
     QGroupBox *runGroup = new QGroupBox("Execute");
     QVBoxLayout *runLayout = new QVBoxLayout(runGroup);
 
     m_btnRunSegment = new QPushButton("Run");
+    m_btnRunSegment->setObjectName("runButton");
     m_btnRunSegment->setToolTip("Start ROIFT segmentation (Ctrl+Shift+S)");
     m_btnRunSegment->setShortcut(QKeySequence("Ctrl+Shift+S"));
-    m_btnRunSegment->setStyleSheet(R"(
-        QPushButton {
-            background-color: #0e639c;
-            color: white;
-            font-weight: bold;
-            padding: 8px 16px;
-        }
-        QPushButton:hover {
-            background-color: #1177bb;
-        }
-        QPushButton:pressed {
-            background-color: #0d5a8a;
-        }
-    )");
     connect(m_btnRunSegment, &QPushButton::clicked, [this]()
             {
         SegmentationRunner::runSegmentation(this); });
     runLayout->addWidget(m_btnRunSegment);
 
-    segLayout->addWidget(runGroup);
-    segLayout->addStretch();
+    segSecLayout->addWidget(runGroup);
 
-    m_ribbonTabs->addTab(segTab, "Segmentation");
+    {
+        CollapsibleSection *sec = new CollapsibleSection("Segmentation", "segmentation");
+        sec->setContentLayout(segSecLayout);
+        toolSidebarLayout->addWidget(sec);
+        m_toolSections.push_back(sec);
+    }
 
-    mainLayout->addWidget(m_ribbonTabs);
+    toolSidebarLayout->addStretch();
+
+    // Wrap the section column in a scroll area so the whole tool panel scrolls
+    // when content exceeds the window height.
+    QScrollArea *toolSidebar = new QScrollArea();
+    toolSidebar->setObjectName("toolSidebar");
+    toolSidebar->setWidgetResizable(true);
+    toolSidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    toolSidebar->setFrameShape(QFrame::NoFrame);
+    toolSidebar->setWidget(toolSidebarContent);
+    toolSidebar->setMinimumWidth(210);
 
     // =====================================================
-    // MAIN CONTENT: View Grid + Right Sidebar (resizable)
+    // MAIN CONTENT: Tool sidebar + View Grid + Data sidebar (resizable)
     // =====================================================
-    QSplitter *contentSplitter = new QSplitter(Qt::Horizontal);
+    m_contentSplitter = new QSplitter(Qt::Horizontal);
+    QSplitter *contentSplitter = m_contentSplitter;
+    contentSplitter->setObjectName("contentSplitter");
     contentSplitter->setChildrenCollapsible(true);
     contentSplitter->setHandleWidth(8);
-    contentSplitter->setToolTip("Drag this divider to resize the right panel.");
+    contentSplitter->setToolTip("Drag these dividers to resize the side panels.");
+
+    // Left: collapsible tool sidebar (built above).
+    contentSplitter->addWidget(toolSidebar);
 
     // =====================================================
     // CENTER: 2x2 View Grid
@@ -1432,7 +1597,9 @@ void ManualSeedSelector::setupUi()
     QVBoxLayout *sidebarLayout = new QVBoxLayout(sidebar);
     sidebarLayout->setSpacing(4);
     sidebarLayout->setContentsMargins(4, 4, 4, 4);
-    QSplitter *sidebarSplitter = new QSplitter(Qt::Vertical, sidebar);
+    m_sidebarSplitter = new QSplitter(Qt::Vertical, sidebar);
+    QSplitter *sidebarSplitter = m_sidebarSplitter;
+    sidebarSplitter->setObjectName("sidebarSplitter");
     sidebarSplitter->setChildrenCollapsible(false);
     sidebarSplitter->setHandleWidth(6);
     sidebarSplitter->setToolTip("Drag handles to resize each right-side block.");
@@ -2214,88 +2381,69 @@ void ManualSeedSelector::setupUi()
     sidebarLayout->addWidget(sidebarSplitter, 1);
 
     contentSplitter->addWidget(sidebar);
-    contentSplitter->setStretchFactor(0, 1);
-    contentSplitter->setStretchFactor(1, 0);
-    contentSplitter->setSizes({1040, 280});
-
-    mainLayout->addWidget(contentSplitter, 1);
+    contentSplitter->setStretchFactor(0, 0); // tool sidebar: fixed-ish
+    contentSplitter->setStretchFactor(1, 1); // view grid: expands
+    contentSplitter->setStretchFactor(2, 0); // data sidebar: fixed-ish
+    contentSplitter->setSizes({260, 820, 280});
 
     // =====================================================
-    // BOTTOM: Logs + status bar
+    // BOTTOM: Logs + status bar (resizable via the main vertical splitter)
     // =====================================================
-    QVBoxLayout *bottomSectionLayout = new QVBoxLayout();
+    QWidget *bottomPanel = new QWidget();
+    bottomPanel->setObjectName("bottomPanel");
+    QVBoxLayout *bottomSectionLayout = new QVBoxLayout(bottomPanel);
     bottomSectionLayout->setContentsMargins(0, 0, 0, 0);
     bottomSectionLayout->setSpacing(6);
 
     QLabel *logHeader = new QLabel("Logs");
-    logHeader->setStyleSheet("QLabel { color: #007acc; font-weight: 600; padding-left: 2px; }");
+    logHeader->setObjectName("logHeader");
     bottomSectionLayout->addWidget(logHeader, 0);
 
     m_logConsole = new QPlainTextEdit();
+    m_logConsole->setObjectName("logConsole");
     m_logConsole->setReadOnly(true);
-    m_logConsole->setMinimumHeight(84);
-    m_logConsole->setMaximumHeight(120);
+    m_logConsole->setMinimumHeight(60);
     m_logConsole->setFrameShape(QFrame::NoFrame);
     m_logConsole->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_logConsole->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_logConsole->setPlaceholderText("Background segmentation logs will appear here.");
     m_logConsole->document()->setMaximumBlockCount(500);
-    m_logConsole->setStyleSheet(R"(
-        QPlainTextEdit {
-            background-color: #1e1e1e;
-            border: 1px solid #3c3c3c;
-            border-radius: 4px;
-            padding: 6px 8px;
-            font-family: 'Consolas', 'Courier New', monospace;
-            color: #d8d8d8;
-        }
-    )");
-    bottomSectionLayout->addWidget(m_logConsole, 0);
+    bottomSectionLayout->addWidget(m_logConsole, 1);
 
     QHBoxLayout *bottomStatusLayout = new QHBoxLayout();
     bottomStatusLayout->setContentsMargins(0, 0, 0, 0);
     bottomStatusLayout->setSpacing(8);
 
     m_statusLabel = new QLabel("Ready - Load an image to begin");
+    m_statusLabel->setObjectName("statusLabel");
     m_statusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     m_statusLabel->setMinimumWidth(0);
     m_statusLabel->setWordWrap(false);
-    m_statusLabel->setStyleSheet(R"(
-        QLabel {
-            background-color: #252526;
-            border: 1px solid #3c3c3c;
-            border-radius: 4px;
-            padding: 6px 12px;
-            font-family: 'Consolas', 'Courier New', monospace;
-        }
-    )");
     bottomStatusLayout->addWidget(m_statusLabel, 1);
 
     m_segmentationProgressBar = new QProgressBar();
+    m_segmentationProgressBar->setObjectName("progressBar");
     m_segmentationProgressBar->setRange(0, 0);
     m_segmentationProgressBar->setValue(0);
     m_segmentationProgressBar->setFormat("Segmentation running...");
     m_segmentationProgressBar->setTextVisible(true);
     m_segmentationProgressBar->setVisible(false);
     m_segmentationProgressBar->setMinimumWidth(240);
-    m_segmentationProgressBar->setStyleSheet(R"(
-        QProgressBar {
-            background-color: #252526;
-            border: 1px solid #3c3c3c;
-            border-radius: 4px;
-            color: #d8d8d8;
-            padding: 2px;
-            text-align: center;
-        }
-        QProgressBar::chunk {
-            background-color: #2d7d46;
-            border-radius: 3px;
-        }
-    )");
     bottomStatusLayout->addWidget(m_segmentationProgressBar, 0);
 
     bottomSectionLayout->addLayout(bottomStatusLayout);
-    mainLayout->addLayout(bottomSectionLayout);
+
+    // Main vertical splitter: work area (tools + views + data) above, logs below.
+    m_mainSplitter = new QSplitter(Qt::Vertical);
+    m_mainSplitter->setObjectName("mainSplitter");
+    m_mainSplitter->setChildrenCollapsible(false);
+    m_mainSplitter->setHandleWidth(6);
+    m_mainSplitter->addWidget(contentSplitter);
+    m_mainSplitter->addWidget(bottomPanel);
+    m_mainSplitter->setStretchFactor(0, 1);
+    m_mainSplitter->setStretchFactor(1, 0);
+    m_mainSplitter->setSizes({760, 150});
+    mainLayout->addWidget(m_mainSplitter, 1);
 
     m_viewUpdateTimer = new QTimer(this);
     m_viewUpdateTimer->setSingleShot(true);
@@ -2525,10 +2673,8 @@ void ManualSeedSelector::setupUi()
         endSliceDrag(m_coronalSliceDrag);
         requestViewUpdate(true); });
 
-    connect(m_ribbonTabs, &QTabWidget::currentChanged, this, [this](int)
-            {
-        if (m_mask3DView)
-            m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2); });
+    // (Active-tool changes route through setActiveTool, which keeps the 3D
+    // rectangle-erase state in sync; no tab-change handler is needed.)
 
     connect(m_mask3DView, &Mask3DView::eraseSeedsInRectangle, this, [this](const QVector<int> &seedIndices)
             {
@@ -2560,6 +2706,9 @@ void ManualSeedSelector::setupUi()
 
     if (m_mask3DView)
         m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
+
+    // Restore persisted window geometry, splitter sizes and section expansion.
+    restoreUiState();
 }
 
 // =============================================================================
@@ -3241,6 +3390,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
     }
 
     m_mask3DDirty = true;
+    rebuildMaskLabelFilter();
     if (summary)
         *summary = QString("Auto-loaded anatomy masks: %1").arg(loadedNames.join(", "));
     return true;
@@ -3439,14 +3589,82 @@ bool ManualSeedSelector::hasImage() const
     return m_image.getSizeX() > 0 && m_image.getSizeY() > 0 && m_image.getSizeZ() > 0;
 }
 
+// The view mouse handlers gate seed/mask painting on these. With the sidebar
+// layout there is no "active tab", so they now reflect the explicit interaction
+// tool chosen in the Navigate/Seeds/Mask selector. Names kept to avoid churning
+// the ~20 call sites in the mouse handlers.
 bool ManualSeedSelector::isSeedsTabActive() const
 {
-    return m_ribbonTabs && m_seedTabIndex >= 0 && m_ribbonTabs->currentIndex() == m_seedTabIndex;
+    return m_activeTool == InteractionTool::Seeds;
 }
 
 bool ManualSeedSelector::isMaskTabActive() const
 {
-    return m_ribbonTabs && m_maskTabIndex >= 0 && m_ribbonTabs->currentIndex() == m_maskTabIndex;
+    return m_activeTool == InteractionTool::Mask;
+}
+
+void ManualSeedSelector::setActiveTool(InteractionTool tool)
+{
+    m_activeTool = tool;
+    if (m_mask3DView)
+        m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
+}
+
+void ManualSeedSelector::closeEvent(QCloseEvent *event)
+{
+    saveUiState();
+    QMainWindow::closeEvent(event);
+}
+
+void ManualSeedSelector::saveUiState()
+{
+    QSettings settings;
+    settings.setValue("window/geometry", saveGeometry());
+    settings.setValue("window/state", saveState());
+    if (m_mainSplitter)
+        settings.setValue("splitter/main", m_mainSplitter->saveState());
+    if (m_contentSplitter)
+        settings.setValue("splitter/content", m_contentSplitter->saveState());
+    if (m_sidebarSplitter)
+        settings.setValue("splitter/sidebar", m_sidebarSplitter->saveState());
+    for (CollapsibleSection *sec : m_toolSections)
+    {
+        if (sec)
+            settings.setValue(QString("section/%1/expanded").arg(sec->sectionName()), sec->isExpanded());
+    }
+}
+
+void ManualSeedSelector::restoreUiState()
+{
+    QSettings settings;
+
+    const QByteArray geometry = settings.value("window/geometry").toByteArray();
+    if (!geometry.isEmpty() && restoreGeometry(geometry))
+        m_geometryRestored = true;
+    const QByteArray windowState = settings.value("window/state").toByteArray();
+    if (!windowState.isEmpty())
+        restoreState(windowState);
+
+    const auto restoreSplitter = [&settings](QSplitter *splitter, const QString &key)
+    {
+        if (!splitter)
+            return;
+        const QByteArray state = settings.value(key).toByteArray();
+        if (!state.isEmpty())
+            splitter->restoreState(state);
+    };
+    restoreSplitter(m_mainSplitter, "splitter/main");
+    restoreSplitter(m_contentSplitter, "splitter/content");
+    restoreSplitter(m_sidebarSplitter, "splitter/sidebar");
+
+    for (CollapsibleSection *sec : m_toolSections)
+    {
+        if (!sec)
+            continue;
+        const QString key = QString("section/%1/expanded").arg(sec->sectionName());
+        if (settings.contains(key))
+            sec->setExpanded(settings.value(key).toBool());
+    }
 }
 
 void ManualSeedSelector::setRulerEnabled(bool enabled)
@@ -4008,19 +4226,20 @@ void ManualSeedSelector::requestViewUpdate(bool immediate)
 }
 
 void ManualSeedSelector::drawRulerOverlay(QPainter &p,
-                                          float scale,
+                                          float scaleX,
+                                          float scaleY,
                                           const RulerMeasurement &ruler,
                                           int activeSliceIndex,
                                           double spacingU,
                                           double spacingV) const
 {
-    if (!m_rulerEnabled || !ruler.visible || ruler.sliceIndex != activeSliceIndex || scale <= 0.0f)
+    if (!m_rulerEnabled || !ruler.visible || ruler.sliceIndex != activeSliceIndex || scaleX <= 0.0f || scaleY <= 0.0f)
         return;
 
-    const QPointF startPoint(static_cast<qreal>(ruler.start.x()) * scale,
-                             static_cast<qreal>(ruler.start.y()) * scale);
-    const QPointF endPoint(static_cast<qreal>(ruler.end.x()) * scale,
-                           static_cast<qreal>(ruler.end.y()) * scale);
+    const QPointF startPoint(static_cast<qreal>(ruler.start.x()) * scaleX,
+                             static_cast<qreal>(ruler.start.y()) * scaleY);
+    const QPointF endPoint(static_cast<qreal>(ruler.end.x()) * scaleX,
+                           static_cast<qreal>(ruler.end.y()) * scaleY);
 
     const double du = std::abs(static_cast<double>(ruler.end.x() - ruler.start.x())) * spacingU;
     const double dv = std::abs(static_cast<double>(ruler.end.y() - ruler.start.y())) * spacingV;
@@ -4140,6 +4359,21 @@ void ManualSeedSelector::updateViews()
         maskOverlayReady = false;
     }
 
+    // Display each slice with physically-correct proportions so anisotropic
+    // volumes (e.g. thick-slice CT) fill the panel instead of collapsing to a
+    // thin strip. Aspect = (physical height per row) / (physical width per col),
+    // matching each view's image axes: axial=X,Y; sagittal=Y,Z; coronal=X,Z.
+    const double spX = m_image.getSpacingX();
+    const double spY = m_image.getSpacingY();
+    const double spZ = m_image.getSpacingZ();
+    const auto pixelAspect = [](double heightSpacing, double widthSpacing) -> double
+    {
+        return (widthSpacing > 0.0 && heightSpacing > 0.0) ? heightSpacing / widthSpacing : 1.0;
+    };
+    m_axialView->setPixelAspect(pixelAspect(spY, spX));
+    m_sagittalView->setPixelAspect(pixelAspect(spZ, spY));
+    m_coronalView->setPixelAspect(pixelAspect(spZ, spX));
+
     // Axial view
     auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
     if (m_enableAxialMask && maskOverlayReady)
@@ -4151,7 +4385,7 @@ void ManualSeedSelector::updateViews()
             {
                 const size_t idx3 = size_t(xx) + size_t(yy) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
                 int lbl = m_maskData[idx3];
-                if (lbl != 0)
+                if (lbl != 0 && maskLabelVisible(lbl))
                 {
                     int dl = std::max(0, std::min(255, lbl));
                     QColor col = colorForLabel(dl);
@@ -4181,7 +4415,7 @@ void ManualSeedSelector::updateViews()
             {
                 const size_t idx3 = size_t(sagX) + size_t(yy) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
                 int lbl = m_maskData[idx3];
-                if (lbl != 0)
+                if (lbl != 0 && maskLabelVisible(lbl))
                 {
                     int dl = std::max(0, std::min(255, lbl));
                     QColor col = colorForLabel(dl);
@@ -4211,7 +4445,7 @@ void ManualSeedSelector::updateViews()
             {
                 const size_t idx3 = size_t(xx) + size_t(corY) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
                 int lbl = m_maskData[idx3];
-                if (lbl != 0)
+                if (lbl != 0 && maskLabelVisible(lbl))
                 {
                     int dl = std::max(0, std::min(255, lbl));
                     QColor col = colorForLabel(dl);
@@ -4239,7 +4473,7 @@ void ManualSeedSelector::updateViews()
                static_cast<std::uint32_t>(cellY);
     };
 
-    m_axialView->setOverlayDraw([this, z, minPixelSpacing, makeCellKey](QPainter &p, float scale)
+    m_axialView->setOverlayDraw([this, z, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                 {
         if (m_enableAxialSeeds)
         {
@@ -4251,8 +4485,8 @@ void ManualSeedSelector::updateViews()
             {
                 if (s.z != z)
                     continue;
-                const int px = static_cast<int>(std::lround(s.x * scale));
-                const int py = static_cast<int>(std::lround(s.y * scale));
+                const int px = static_cast<int>(std::lround(s.x * scaleX));
+                const int py = static_cast<int>(std::lround(s.y * scaleY));
                 if (minPixelSpacing > 1)
                 {
                     if (!occupiedCells.insert(makeCellKey(px, py)).second)
@@ -4266,9 +4500,9 @@ void ManualSeedSelector::updateViews()
                 p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
         }
-        drawRulerOverlay(p, scale, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY()); });
+        drawRulerOverlay(p, scaleX, scaleY, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY()); });
 
-    m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scale)
+    m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                    {
         if (m_enableSagittalSeeds)
         {
@@ -4280,8 +4514,8 @@ void ManualSeedSelector::updateViews()
             {
                 if (s.x != sagX)
                     continue;
-                const int px = static_cast<int>(std::lround(s.y * scale));
-                const int py = static_cast<int>(std::lround(s.z * scale));
+                const int px = static_cast<int>(std::lround(s.y * scaleX));
+                const int py = static_cast<int>(std::lround(s.z * scaleY));
                 if (minPixelSpacing > 1)
                 {
                     if (!occupiedCells.insert(makeCellKey(px, py)).second)
@@ -4295,9 +4529,9 @@ void ManualSeedSelector::updateViews()
                 p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
         }
-        drawRulerOverlay(p, scale, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ()); });
+        drawRulerOverlay(p, scaleX, scaleY, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ()); });
 
-    m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scale)
+    m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                   {
         if (m_enableCoronalSeeds)
         {
@@ -4309,8 +4543,8 @@ void ManualSeedSelector::updateViews()
             {
                 if (s.y != corY)
                     continue;
-                const int px = static_cast<int>(std::lround(s.x * scale));
-                const int py = static_cast<int>(std::lround(s.z * scale));
+                const int px = static_cast<int>(std::lround(s.x * scaleX));
+                const int py = static_cast<int>(std::lround(s.z * scaleY));
                 if (minPixelSpacing > 1)
                 {
                     if (!occupiedCells.insert(makeCellKey(px, py)).second)
@@ -4324,7 +4558,7 @@ void ManualSeedSelector::updateViews()
                 p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
         }
-        drawRulerOverlay(p, scale, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ()); });
+        drawRulerOverlay(p, scaleX, scaleY, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ()); });
 }
 
 void ManualSeedSelector::update3DMaskView()
@@ -4341,6 +4575,14 @@ void ManualSeedSelector::update3DMaskView()
     const bool maskBufferValid = (!m_maskData.empty() && maskDimsValid && m_maskData.size() == expectedMaskTotal);
     const bool hasImageVolume = (sx > 0 && sy > 0 && sz > 0);
 
+    // Honor the label-visibility filter in 3D as well. Only pay for a copy when
+    // some label is actually hidden; otherwise render the buffer directly.
+    std::vector<int> filteredMask;
+    const bool useFiltered = maskBufferValid && maskHasHiddenLabels();
+    if (useFiltered)
+        filteredMask = applyMaskLabelFilter(m_maskData);
+    const std::vector<int> &maskSrc = useFiltered ? filteredMask : m_maskData;
+
     if (!maskBufferValid)
     {
         m_mask3DView->clearMask();
@@ -4348,7 +4590,7 @@ void ManualSeedSelector::update3DMaskView()
     else if (!hasImageVolume)
     {
         // No reference CT loaded: render the mask volume directly in 3D.
-        m_mask3DView->setMaskData(m_maskData, m_maskDimX, m_maskDimY, m_maskDimZ,
+        m_mask3DView->setMaskData(maskSrc, m_maskDimX, m_maskDimY, m_maskDimZ,
                                   m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
     }
     else
@@ -4360,7 +4602,7 @@ void ManualSeedSelector::update3DMaskView()
         }
         else if (m_maskDimZ == sz)
         {
-            m_mask3DView->setMaskData(m_maskData, sx, sy, sz, m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ());
+            m_mask3DView->setMaskData(maskSrc, sx, sy, sz, m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ());
         }
         else
         {
@@ -4372,7 +4614,7 @@ void ManualSeedSelector::update3DMaskView()
                 const unsigned int mappedZ = mapDepthIndex(z, sz, m_maskDimZ);
                 const size_t srcOffset = size_t(mappedZ) * sourcePlaneStride;
                 const size_t dstOffset = size_t(z) * planeStride;
-                std::copy_n(m_maskData.begin() + static_cast<std::ptrdiff_t>(srcOffset),
+                std::copy_n(maskSrc.begin() + static_cast<std::ptrdiff_t>(srcOffset),
                             static_cast<std::ptrdiff_t>(planeStride),
                             remappedMask.begin() + static_cast<std::ptrdiff_t>(dstOffset));
             }
@@ -4415,6 +4657,111 @@ void ManualSeedSelector::cleanMask()
     m_maskSpacingY = m_image.getSpacingY();
     m_maskSpacingZ = m_image.getSpacingZ();
     m_mask3DDirty = true;
+    rebuildMaskLabelFilter();
+}
+
+bool ManualSeedSelector::maskLabelVisible(int label) const
+{
+    if (label == 0)
+        return false; // background is never part of the overlay
+    auto it = m_maskLabelVisibility.find(label);
+    return (it == m_maskLabelVisibility.end()) ? true : it->second;
+}
+
+bool ManualSeedSelector::maskHasHiddenLabels() const
+{
+    for (const auto &entry : m_maskLabelVisibility)
+    {
+        if (!entry.second)
+            return true;
+    }
+    return false;
+}
+
+std::vector<int> ManualSeedSelector::applyMaskLabelFilter(const std::vector<int> &data) const
+{
+    std::vector<int> filtered = data;
+    for (int &v : filtered)
+    {
+        if (v != 0 && !maskLabelVisible(v))
+            v = 0;
+    }
+    return filtered;
+}
+
+void ManualSeedSelector::setAllMaskLabelsVisible(bool visible)
+{
+    for (auto &entry : m_maskLabelVisibility)
+        entry.second = visible;
+    rebuildMaskLabelFilter(); // refresh checkbox states to match
+    m_mask3DDirty = true;
+    updateViews();
+}
+
+void ManualSeedSelector::rebuildMaskLabelFilter()
+{
+    if (!m_maskLabelSection || !m_maskLabelFilterLayout)
+        return;
+
+    // Collect the distinct non-zero labels currently present in the mask.
+    std::set<int> presentLabels;
+    for (int v : m_maskData)
+    {
+        if (v != 0)
+            presentLabels.insert(v);
+    }
+
+    // Keep prior visibility for labels that persist; new labels default visible;
+    // drop labels that no longer exist so the map never grows unbounded.
+    std::map<int, bool> updated;
+    for (int label : presentLabels)
+    {
+        auto it = m_maskLabelVisibility.find(label);
+        updated[label] = (it == m_maskLabelVisibility.end()) ? true : it->second;
+    }
+    m_maskLabelVisibility.swap(updated);
+
+    // Clear existing rows (leave the trailing stretch in place).
+    while (QLayoutItem *item = m_maskLabelFilterLayout->takeAt(0))
+    {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    for (int label : presentLabels)
+    {
+        const int clamped = std::max(0, std::min(255, label));
+        const QColor color = colorForLabel(clamped);
+
+        // One row: [color swatch] [checkbox "Label N"]. A row widget keeps
+        // teardown simple (takeAt(0)->widget()).
+        QWidget *row = new QWidget();
+        QHBoxLayout *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(6);
+
+        QLabel *swatch = new QLabel();
+        swatch->setFixedSize(14, 14);
+        swatch->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: 2px;")
+                                  .arg(color.name()));
+        rowLayout->addWidget(swatch, 0);
+
+        QCheckBox *check = new QCheckBox(QString("Label %1").arg(label));
+        check->setChecked(m_maskLabelVisibility[label]);
+        connect(check, &QCheckBox::toggled, this, [this, label](bool on)
+                {
+            m_maskLabelVisibility[label] = on;
+            m_mask3DDirty = true;
+            updateViews(); });
+        rowLayout->addWidget(check, 1);
+
+        m_maskLabelFilterLayout->addWidget(row);
+    }
+    m_maskLabelFilterLayout->addStretch();
+
+    // Only useful for multi-label masks.
+    m_maskLabelSection->setVisible(presentLabels.size() > 1);
 }
 
 void ManualSeedSelector::filterActiveMaskByThreshold()
@@ -4495,6 +4842,7 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     QApplication::restoreOverrideCursor();
 
     m_mask3DDirty = true;
+    rebuildMaskLabelFilter(); // a label may have been fully removed
     updateViews();
 
     const QString maskName = !activeMaskPath.isEmpty()
@@ -4702,6 +5050,7 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
 
         m_mask3DDirty = true;
         m_loadedMaskPath = absoluteMaskPath.toStdString();
+        rebuildMaskLabelFilter();
         return true;
     }
     catch (const std::exception &e)

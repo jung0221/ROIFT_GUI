@@ -354,12 +354,15 @@ void NiftiImage::finalizeLoad(const std::string &path)
         }
     }
 
+    // Only treat genuinely binary-ish volumes (e.g. {0,1}) as display masks.
+    // Multi-label volumes opened as the primary image (e.g. {0,1,2,3}) must stay
+    // windowable: classifying them as masks would collapse the window range to
+    // [0,1] and force binary rendering, breaking the Window/Level controls.
     m_isMask = false;
     if (isInteger)
     {
-        const bool smallRange = (m_max - m_min) <= 1.5f;
-        const bool fewValues = uniques.size() > 0 && uniques.size() <= 8;
-        if (smallRange || fewValues)
+        const bool binaryRange = (m_max - m_min) <= 1.5f;
+        if (binaryRange)
             m_isMask = true;
     }
 

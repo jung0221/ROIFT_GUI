@@ -19,6 +19,10 @@ int main(int argc, char **argv)
     // QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
     QApplication app(argc, argv);
+    // Identify the app so QSettings has a stable backing store for persisted
+    // window geometry, splitter sizes and collapsible-section state.
+    QCoreApplication::setOrganizationName("ROIFT");
+    QCoreApplication::setApplicationName("roift_gui");
     std::vector<std::string> inputPaths;
     std::string seedsPath;
     bool startFullscreen = false;
@@ -140,6 +144,11 @@ int main(int argc, char **argv)
     if (startFullscreen)
     {
         w.showFullScreen();
+    }
+    else if (w.geometryWasRestored())
+    {
+        // A previous session's geometry was restored; respect it.
+        w.show();
     }
     else
     {
