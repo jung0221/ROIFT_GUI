@@ -12,6 +12,7 @@
 #include <deque>
 #include <cstdint>
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -24,12 +25,17 @@ class QCheckBox;
 #include <QComboBox>
 class QListWidget;
 class QTabWidget;
+class QGroupBox;
+class QVBoxLayout;
 class QProgressBar;
 class QPlainTextEdit;
 class QTimer;
 class QResizeEvent;
 class QMoveEvent;
+class QCloseEvent;
 class QPainter;
+class QSplitter;
+class CollapsibleSection;
 
 struct Seed
 {
@@ -48,6 +54,10 @@ public:
     void keyPressEvent(QKeyEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void moveEvent(QMoveEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
+    // True if a saved window geometry was restored on startup, so the launcher
+    // can skip its default sizing/centering.
+    bool geometryWasRestored() const { return m_geometryRestored; }
     // catch key events on child views
     bool eventFilter(QObject *obj, QEvent *event) override;
     // load seeds from a supplied path (used by CLI). Returns true on success.
@@ -90,6 +100,8 @@ public:
     int getSegmentationMethod() const { return m_methodCombo ? m_methodCombo->currentIndex() : 0; }
     double getAlpha() const { return m_alphaSpin ? m_alphaSpin->value() : 0.5; }
     double getSigma() const { return m_sigmaSpin ? m_sigmaSpin->value() : 0.0; }
+    // Gaussian pre-smoothing passes for Standard OIFT (CPU). Default 2 = historical double blur.
+    int getBlurPasses() const { return m_blurCombo ? m_blurCombo->currentData().toInt() : 2; }
     int getGPUCostMode() const { return 1; }  // always additive (shortest path)
     double getWindowLevel() const { return m_windowLevelSpin ? m_windowLevelSpin->value() : 0.0; }
     double getWindowWidth() const { return m_windowWidthSpin ? m_windowWidthSpin->value() : 1.0; }
@@ -144,8 +156,15 @@ private:
     bool appendNiftiImagePath(const QString &path, bool *isDuplicate = nullptr);
     bool autoLoadAnatomyMasksForCurrentImage(QString *summary = nullptr);
     bool handleSliceKey(QKeyEvent *event);
+    // Which tool consumes left-clicks in the slice views (sidebar replaces the
+    // old "active tab" gating). isSeedsTabActive/isMaskTabActive map onto this.
+    enum class InteractionTool { Navigate, Seeds, Mask };
+    void setActiveTool(InteractionTool tool);
     bool isSeedsTabActive() const;
     bool isMaskTabActive() const;
+    // Persist/restore window geometry, splitter sizes and section expansion.
+    void saveUiState();
+    void restoreUiState();
     void showViewContextMenu(SlicePlane plane, int planeX, int planeY, const QPoint &globalPos);
     void stopSegmentationWorker(bool waitForJoin);
     void refreshSegmentationProgressDisplay();
@@ -188,11 +207,18 @@ private:
     RulerMeasurement &rulerForPlane(SlicePlane plane);
     const RulerMeasurement &rulerForPlane(SlicePlane plane) const;
     void drawRulerOverlay(QPainter &p,
-                          float scale,
+                          float scaleX,
+                          float scaleY,
                           const RulerMeasurement &ruler,
                           int activeSliceIndex,
                           double spacingU,
                           double spacingV) const;
+    // Mask-label filter helpers (see m_maskLabelVisibility).
+    void rebuildMaskLabelFilter();                 // resync checkboxes with present labels
+    void setAllMaskLabelsVisible(bool visible);    // "All"/"None" buttons
+    bool maskLabelVisible(int label) const;        // background (0) is always hidden
+    bool maskHasHiddenLabels() const;
+    std::vector<int> applyMaskLabelFilter(const std::vector<int> &data) const;
     QString formatRulerDistance(double millimeters) const;
     const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
     void updateHoverStatus(SlicePlane plane, int x, int y, int z);
@@ -238,6 +264,10 @@ private:
     int m_maskMode = 0;
     int m_maskBrushRadius = 6;
     float m_maskOpacity = 0.5f;
+    // Mask-label visibility filter (Mask tab). Maps a label value to whether it
+    // is shown in the 2D/3D viewers. Labels absent from the map default to
+    // visible, so newly drawn labels appear automatically.
+    std::map<int, bool> m_maskLabelVisibility;
     // seed interaction mode: 0=idle,1=draw,2=erase
     int m_seedMode = 1;
     int m_seedBrushRadius = 5;
@@ -252,6 +282,11 @@ private:
     QSpinBox *m_seedDisplaySpacingSpin = nullptr;
     QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
+    // Mask-label filter UI: the section is shown only when the mask has >1 label;
+    // the layout holds one swatch+checkbox row per present label, rebuilt on
+    // mask change.
+    CollapsibleSection *m_maskLabelSection = nullptr;
+    QVBoxLayout *m_maskLabelFilterLayout = nullptr;
     QProgressBar *m_segmentationProgressBar = nullptr;
     QTimer *m_viewUpdateTimer = nullptr;
     bool m_viewUpdatePending = false;
@@ -294,8 +329,10 @@ private:
     QComboBox *m_methodCombo = nullptr;
     QDoubleSpinBox *m_alphaSpin = nullptr;
     QDoubleSpinBox *m_sigmaSpin = nullptr;
+    QComboBox *m_blurCombo = nullptr;
     QLabel *m_alphaLabel = nullptr;
     QLabel *m_sigmaLabel = nullptr;
+    QLabel *m_blurLabel = nullptr;
     QCheckBox *m_segmentAllBox = nullptr;
     QCheckBox *m_polSweepBox = nullptr;
     QCheckBox *m_useGPUBox = nullptr;
@@ -323,9 +360,13 @@ private:
     QListWidget *m_niftiList = nullptr;
     QListWidget *m_maskList = nullptr;
     QListWidget *m_seedList = nullptr;
-    QTabWidget *m_ribbonTabs = nullptr;
-    int m_seedTabIndex = -1;
-    int m_maskTabIndex = -1;
+    // Collapsible-sidebar shell (replaces the old ribbon QTabWidget).
+    InteractionTool m_activeTool = InteractionTool::Navigate;
+    bool m_geometryRestored = false;
+    std::vector<CollapsibleSection *> m_toolSections;
+    QSplitter *m_mainSplitter = nullptr;
+    QSplitter *m_contentSplitter = nullptr;
+    QSplitter *m_sidebarSplitter = nullptr;
     QPushButton *m_btnRuler = nullptr;
     std::vector<ImageData> m_images;
     std::vector<std::string> m_unassignedMaskPaths;

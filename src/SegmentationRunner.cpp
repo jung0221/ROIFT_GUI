@@ -942,6 +942,7 @@ namespace
         int segmentationMethod = 0;   // 0=standard, 1..5=experiments
         double alpha = 0.5;           // for method 1
         double sigma = 0.0;           // for method 2 (0=auto)
+        int blurPasses = 2;           // Gaussian pre-smoothing passes (standard CPU OIFT); 2=default
     };
 
     struct SegmentationExecutionResult
@@ -1133,6 +1134,13 @@ namespace
                 args << "--sigma" << QString::number(request.sigma, 'f', 2);
         }
         // Methods 3, 4, 5 need no extra args
+
+        // Standard OIFT (CPU) honors --blur (Gaussian pre-smoothing passes). The
+        // experiment binaries and the GPU binary don't parse it, so only emit it for
+        // the standard CPU path. Robust positional parsing in oiftrelax lets the flag
+        // follow the 6 required positional args directly.
+        if (request.segmentationMethod == 0 && !request.useGpuExecution)
+            args << "--blur" << QString::number(request.blurPasses);
     }
 
     bool prepareSegmentationRequest(ManualSeedSelector *parent, SegmentationRequest *request)
@@ -1169,6 +1177,7 @@ namespace
         request->segmentationMethod = parent->getSegmentationMethod();
         request->alpha = parent->getAlpha();
         request->sigma = parent->getSigma();
+        request->blurPasses = parent->getBlurPasses();
 
         const double imageMin = parent->getImageMin();
         const double imageMax = parent->getImageMax();

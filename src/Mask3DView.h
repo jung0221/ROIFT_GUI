@@ -63,6 +63,9 @@ public:
     void setSeedData(const std::vector<SeedRenderData> &seeds);
     void setMaskVisible(bool visible);
     void setSeedsVisible(bool visible);
+    // Set the 3D mask surface opacity, in [0, 1] (clamped). Renders immediately.
+    void setMaskOpacity(float opacity);
+    float maskOpacity() const { return m_opacity; }
     void clearMask();
     void setSeedRectangleEraseEnabled(bool enabled);
     CameraState captureCameraState() const;

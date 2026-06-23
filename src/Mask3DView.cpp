@@ -636,7 +636,12 @@ void Mask3DView::onVisibilityToggled(bool checked)
 
 void Mask3DView::onOpacityChanged(int value)
 {
-    m_opacity = float(value) / 100.0f;
+    setMaskOpacity(float(value) / 100.0f);
+}
+
+void Mask3DView::setMaskOpacity(float opacity)
+{
+    m_opacity = std::min(1.0f, std::max(0.0f, opacity));
     if (m_actor)
         m_actor->GetProperty()->SetOpacity(m_opacity);
     if (m_renderWindow)
