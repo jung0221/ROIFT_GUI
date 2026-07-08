@@ -195,14 +195,37 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
 
     setVoxelSpacing(spacingX, spacingY, spacingZ);
 
+    // Pad the volume with a one-voxel background (label 0) collar on every
+    // face before contouring. Flying-edges only emits a face where a voxel
+    // transitions label->background *inside* the array, so a label that runs
+    // off the array edge (body truncated by the scan FOV at the top/bottom
+    // slice, or a lateral face on a wide patient) is left open -> the hollow
+    // "bucket" surface. The collar gives every boundary voxel a background
+    // neighbour so the truncated cross-sections get capped watertight.
+    const int padX = int(sizeX) + 2;
+    const int padY = int(sizeY) + 2;
+    const int padZ = int(sizeZ) + 2;
+
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
-    image->SetDimensions(int(sizeX), int(sizeY), int(sizeZ));
+    image->SetDimensions(padX, padY, padZ);
     image->SetSpacing(m_spacingX, m_spacingY, m_spacingZ);
+    // Shift the origin back one voxel so the original voxels keep their world
+    // coordinates and the surface stays registered with the CT and the seeds
+    // (both placed at index * spacing with origin 0).
+    image->SetOrigin(-m_spacingX, -m_spacingY, -m_spacingZ);
     image->AllocateScalars(VTK_INT, 1);
 
     int *dst = static_cast<int *>(image->GetScalarPointer());
-    for (size_t i = 0; i < expected; ++i)
-        dst[i] = mask[i];
+    std::fill(dst, dst + size_t(padX) * size_t(padY) * size_t(padZ), 0);
+    for (unsigned int z = 0; z < sizeZ; ++z)
+        for (unsigned int y = 0; y < sizeY; ++y)
+        {
+            const size_t srcRow = (size_t(z) * sizeY + y) * sizeX;
+            const size_t dstRow =
+                size_t(padX) * (size_t(padY) * size_t(z + 1) + size_t(y + 1)) + 1;
+            for (unsigned int x = 0; x < sizeX; ++x)
+                dst[dstRow + x] = mask[srcRow + x];
+        }
 
     std::set<int> labels;
     for (int value : mask)
