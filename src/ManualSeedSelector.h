@@ -145,6 +145,31 @@ private:
         Sagittal,
         Coronal
     };
+    // Seed subset drawn across all views; orthogonal to the per-view Show Seeds toggles.
+    enum class SeedTypeFilter
+    {
+        All,
+        Internal,
+        External
+    };
+    // True if seed s passes the active seed-type filter (internal!=0 means internal/object).
+    bool seedPassesTypeFilter(const Seed &s) const
+    {
+        switch (m_seedTypeFilter)
+        {
+        case SeedTypeFilter::Internal:
+            return s.internal != 0;
+        case SeedTypeFilter::External:
+            return s.internal == 0;
+        case SeedTypeFilter::All:
+        default:
+            return true;
+        }
+    }
+    // Build a seed-type filter dropdown wired to the shared filter and registered for sync.
+    QComboBox *makeSeedTypeFilterCombo();
+    // Set the active seed-type filter, sync every dropdown, and refresh all views.
+    void setSeedTypeFilter(SeedTypeFilter filter);
 
     void setupUi();
     int addImagesToList(const QStringList &paths, int *duplicateCount = nullptr, int *missingCount = nullptr);
@@ -272,6 +297,7 @@ private:
     int m_seedMode = 1;
     int m_seedBrushRadius = 5;
     int m_seedDisplayMinPixelSpacing = 4;
+    SeedTypeFilter m_seedTypeFilter = SeedTypeFilter::All;
 
     // Tabbed UI: inline controls instead of dialogs
     QPushButton *m_btnSeedDraw = nullptr;
@@ -293,6 +319,7 @@ private:
     QCheckBox *m_show3DCheck = nullptr;
     QCheckBox *m_showMaskCheck = nullptr;
     QCheckBox *m_showSeedsCheck = nullptr;
+    std::vector<QComboBox *> m_seedTypeFilterCombos;
     QCheckBox *m_autoDetectAssociationsCheck = nullptr;
 
     Mask3DView *m_mask3DView = nullptr;
