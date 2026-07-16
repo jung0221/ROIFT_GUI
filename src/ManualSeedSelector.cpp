@@ -1531,6 +1531,7 @@ void ManualSeedSelector::setupUi()
 
         toggleRowLayout->addWidget(showMask);
         toggleRowLayout->addWidget(showSeeds);
+        toggleRowLayout->addWidget(makeSeedTypeFilterCombo());
 
         panelLayout->addWidget(toggleRow);
         if (maskOut)
@@ -1569,6 +1570,9 @@ void ManualSeedSelector::setupUi()
 
     m_showSeedsCheck = createToggleCheck("Show Seeds", "Show seed points in 3D and slice views", true);
     renderToggleLayout->addWidget(m_showSeedsCheck);
+
+    // Seed-type filter: restrict visible seeds to internal (object) or external (background) only.
+    renderToggleLayout->addWidget(makeSeedTypeFilterCombo());
 
     renderPanelLayout->addWidget(renderTogglePanel, 0, 0, Qt::AlignRight | Qt::AlignBottom);
 
@@ -4136,6 +4140,40 @@ void ManualSeedSelector::eraseNear(int x, int y, int z, int r)
     requestViewUpdate(false);
 }
 
+QComboBox *ManualSeedSelector::makeSeedTypeFilterCombo()
+{
+    QComboBox *combo = new QComboBox();
+    combo->addItem("All seeds", static_cast<int>(SeedTypeFilter::All));
+    combo->addItem("Internal only", static_cast<int>(SeedTypeFilter::Internal));
+    combo->addItem("External only", static_cast<int>(SeedTypeFilter::External));
+    combo->setToolTip("Filter which seeds are shown: all, internal (object) only, or external (background) only");
+    const int idx = combo->findData(static_cast<int>(m_seedTypeFilter));
+    if (idx >= 0)
+        combo->setCurrentIndex(idx);
+    connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, combo](int index)
+            { setSeedTypeFilter(static_cast<SeedTypeFilter>(combo->itemData(index).toInt())); });
+    m_seedTypeFilterCombos.push_back(combo);
+    return combo;
+}
+
+void ManualSeedSelector::setSeedTypeFilter(SeedTypeFilter filter)
+{
+    m_seedTypeFilter = filter;
+    const int data = static_cast<int>(filter);
+    for (QComboBox *combo : m_seedTypeFilterCombos)
+    {
+        if (!combo)
+            continue;
+        const int idx = combo->findData(data);
+        if (idx < 0 || idx == combo->currentIndex())
+            continue;
+        const bool wasBlocked = combo->blockSignals(true);
+        combo->setCurrentIndex(idx);
+        combo->blockSignals(wasBlocked);
+    }
+    updateViews();
+}
+
 void ManualSeedSelector::updateLabelColor(int label)
 {
     int l = std::max(0, std::min(255, label));
@@ -4310,6 +4348,8 @@ void ManualSeedSelector::updateViews()
         for (size_t i = 0; i < m_seeds.size(); ++i)
         {
             const Seed &s = m_seeds[i];
+            if (!seedPassesTypeFilter(s))
+                continue;
             SeedRenderData d;
             d.x = s.x;
             d.y = s.y;
@@ -4485,6 +4525,8 @@ void ManualSeedSelector::updateViews()
             {
                 if (s.z != z)
                     continue;
+                if (!seedPassesTypeFilter(s))
+                    continue;
                 const int px = static_cast<int>(std::lround(s.x * scaleX));
                 const int py = static_cast<int>(std::lround(s.y * scaleY));
                 if (minPixelSpacing > 1)
@@ -4514,6 +4556,8 @@ void ManualSeedSelector::updateViews()
             {
                 if (s.x != sagX)
                     continue;
+                if (!seedPassesTypeFilter(s))
+                    continue;
                 const int px = static_cast<int>(std::lround(s.y * scaleX));
                 const int py = static_cast<int>(std::lround(s.z * scaleY));
                 if (minPixelSpacing > 1)
@@ -4542,6 +4586,8 @@ void ManualSeedSelector::updateViews()
             for (const auto &s : m_seeds)
             {
                 if (s.y != corY)
+                    continue;
+                if (!seedPassesTypeFilter(s))
                     continue;
                 const int px = static_cast<int>(std::lround(s.x * scaleX));
                 const int py = static_cast<int>(std::lround(s.z * scaleY));
@@ -4627,6 +4673,8 @@ void ManualSeedSelector::update3DMaskView()
     for (size_t i = 0; i < m_seeds.size(); ++i)
     {
         const Seed &s = m_seeds[i];
+        if (!seedPassesTypeFilter(s))
+            continue;
         SeedRenderData d;
         d.x = s.x;
         d.y = s.y;
