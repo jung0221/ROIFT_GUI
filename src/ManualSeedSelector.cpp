@@ -32,6 +32,9 @@
 #include <QPainter>
 #include <QFontMetrics>
 #include <QInputDialog>
+#include <QLineEdit>
+#include <QShortcut>
+#include <QKeySequence>
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QScrollArea>
@@ -2283,18 +2286,26 @@ void ManualSeedSelector::setupUi()
                 m_statusLabel->setText(QString("Loaded seeds: %1").arg(QFileInfo(seedPath).fileName()));
         } });
 
-    auto handlePathContextAction = [this](const QString &resolvedPath, const QPoint &globalPos)
+    auto handlePathContextAction = [this](QListWidget *list, QListWidgetItem *item, const QString &resolvedPath, const QPoint &globalPos)
     {
         const QString cleanPath = QDir::cleanPath(QFileInfo(resolvedPath.trimmed()).absoluteFilePath());
         if (cleanPath.isEmpty())
             return;
 
         QMenu menu(this);
+        QAction *renameAction = menu.addAction("Rename\tF12");
+        menu.addSeparator();
         QAction *copyPathAction = menu.addAction("Copy Path");
         QAction *revealPathAction = menu.addAction("Reveal File in Explorer");
         QAction *selectedAction = menu.exec(globalPos);
         if (!selectedAction)
             return;
+
+        if (selectedAction == renameAction)
+        {
+            promptRenameListItem(list, item);
+            return;
+        }
 
         if (selectedAction == copyPathAction)
         {
@@ -2342,7 +2353,7 @@ void ManualSeedSelector::setupUi()
             if (resolvedPath.isEmpty())
                 return;
 
-            handlePathContextAction(resolvedPath, listWidget->viewport()->mapToGlobal(pos));
+            handlePathContextAction(listWidget, item, resolvedPath, listWidget->viewport()->mapToGlobal(pos));
         });
     };
 
@@ -2375,6 +2386,25 @@ void ManualSeedSelector::setupUi()
         if (row < 0 || row >= static_cast<int>(m_images[m_currentImageIndex].seedPaths.size()))
             return {};
         return QFileInfo(QString::fromStdString(m_images[m_currentImageIndex].seedPaths[static_cast<size_t>(row)])).absoluteFilePath(); });
+
+    installPathContextMenu(m_niftiList, [](QListWidgetItem *item) -> QString
+                           {
+        if (!item)
+            return {};
+        return QFileInfo(item->data(kPathRole).toString().trimmed()).absoluteFilePath(); });
+
+    // F12 renames the selected item in whichever file list currently has focus.
+    QShortcut *renameShortcut = new QShortcut(QKeySequence(Qt::Key_F12), this);
+    connect(renameShortcut, &QShortcut::activated, this, [this]()
+            {
+        for (QListWidget *list : {m_niftiList, m_maskList, m_seedList})
+        {
+            if (list && (list->hasFocus() || (list->viewport() && list->viewport()->hasFocus())))
+            {
+                promptRenameListItem(list, list->currentItem());
+                return;
+            }
+        } });
 
     sidebarSplitter->addWidget(seedListGroup);
     sidebarSplitter->setStretchFactor(0, 0);
@@ -2951,8 +2981,49 @@ void ManualSeedSelector::renumberNiftiListItems()
         const QString path = QFileInfo(item->data(Qt::UserRole).toString()).absoluteFilePath();
         const QString fileName = QFileInfo(path).fileName();
         const QString baseText = fileName.isEmpty() ? path : fileName;
-        item->setText(QString("%1. %2").arg(i + 1).arg(baseText));
+        item->setText(QString("%1. %2").arg(i + 1).arg(displayNameForPath(path, baseText)));
     }
+}
+
+QString ManualSeedSelector::displayNameForPath(const QString &absolutePath, const QString &fallback) const
+{
+    const QString key = QDir::cleanPath(QFileInfo(absolutePath).absoluteFilePath());
+    const auto it = m_displayNameOverrides.find(key);
+    if (it != m_displayNameOverrides.end() && !it->second.isEmpty())
+        return it->second;
+    return fallback;
+}
+
+void ManualSeedSelector::promptRenameListItem(QListWidget *list, QListWidgetItem *item)
+{
+    if (!list || !item)
+        return;
+
+    const QString absPath = QDir::cleanPath(QFileInfo(item->data(kPathRole).toString().trimmed()).absoluteFilePath());
+    if (absPath.isEmpty())
+        return;
+
+    const QString fileName = QFileInfo(absPath).fileName();
+    const QString currentName = displayNameForPath(absPath, fileName);
+
+    bool ok = false;
+    const QString newName = QInputDialog::getText(this, "Rename", "Display name:",
+                                                  QLineEdit::Normal, currentName, &ok)
+                                .trimmed();
+    if (!ok || newName.isEmpty() || newName == currentName)
+        return;
+
+    // Display-only rename; the file on disk is never touched. Reverting to the
+    // original file name clears the override so the default is shown again.
+    if (newName == fileName)
+        m_displayNameOverrides.erase(absPath);
+    else
+        m_displayNameOverrides[absPath] = newName;
+
+    renumberNiftiListItems();
+    updateMaskSeedLists();
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Renamed to %1").arg(newName));
 }
 
 int ManualSeedSelector::resolveMaskTargetImageIndex() const
@@ -5448,8 +5519,9 @@ void ManualSeedSelector::updateMaskSeedLists()
     {
         const QString absolutePath = QFileInfo(QString::fromStdString(maskPath)).absoluteFilePath();
         const QString fileName = QFileInfo(absolutePath).fileName();
+        const QString displayName = displayNameForPath(absolutePath, fileName);
         const int rowNumber = m_maskList->count() + 1;
-        const QString baseLabel = markAsGlobal ? QString("%1 [global]").arg(fileName) : fileName;
+        const QString baseLabel = markAsGlobal ? QString("%1 [global]").arg(displayName) : displayName;
         const QString label = QString("%1. %2").arg(rowNumber).arg(baseLabel);
         QListWidgetItem *item = new QListWidgetItem(label);
         item->setForeground(QBrush(color));
@@ -5474,7 +5546,8 @@ void ManualSeedSelector::updateMaskSeedLists()
             const int rowNumber = m_seedList->count() + 1;
             const QString absoluteSeedPath = QFileInfo(QString::fromStdString(seedPath)).absoluteFilePath();
             const QString filename = QFileInfo(absoluteSeedPath).fileName();
-            QListWidgetItem *item = new QListWidgetItem(QString("%1. %2").arg(rowNumber).arg(filename.isEmpty() ? absoluteSeedPath : filename));
+            const QString seedDisplay = displayNameForPath(absoluteSeedPath, filename.isEmpty() ? absoluteSeedPath : filename);
+            QListWidgetItem *item = new QListWidgetItem(QString("%1. %2").arg(rowNumber).arg(seedDisplay));
             item->setForeground(QBrush(color));
             item->setData(Qt::UserRole, absoluteSeedPath);
             m_seedList->addItem(item);
