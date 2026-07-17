@@ -24,6 +24,7 @@ class QDoubleSpinBox;
 class QCheckBox;
 #include <QComboBox>
 class QListWidget;
+class QListWidgetItem;
 class QTabWidget;
 class QGroupBox;
 class QVBoxLayout;
@@ -398,6 +399,8 @@ private:
     std::vector<ImageData> m_images;
     std::vector<std::string> m_unassignedMaskPaths;
     std::string m_loadedMaskPath;
+    // User-assigned display names, keyed by cleaned absolute path (in-memory, per session).
+    std::map<QString, QString> m_displayNameOverrides;
     int m_currentImageIndex = -1;
     bool m_clampingWindowGeometry = false;
     bool m_rulerEnabled = false;
@@ -406,5 +409,9 @@ private:
     RulerMeasurement m_coronalRuler;
 
     void updateMaskSeedLists();
+    // Session-only display rename for a list item; the file on disk is left untouched.
+    void promptRenameListItem(QListWidget *list, QListWidgetItem *item);
+    // Custom display name for a path, or fallback when the user has not renamed it.
+    QString displayNameForPath(const QString &absolutePath, const QString &fallback) const;
     QColor getColorForImageIndex(int index);
 };
