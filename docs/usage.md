@@ -12,6 +12,16 @@
 - Hold left-drag to draw mask strokes when in mask mode
 - Right-click to erase (or use mask dialog's erase mode)
 
+## Locate a 3D surface point on the slices
+- Shift+click the mask surface in the 3D panel: the axial, sagittal and coronal views
+  all jump to the voxel under the cursor, and the status bar reports its `x/y/z`.
+- A cyan `X` marks the point in-plane in all three views. Navigating any single
+  plane (slider, W/S/A/D/Q/E, slice drag) clears the `X` from all three at once,
+  since the point is only meaningful while every slice still cuts through it.
+  `Esc` also dismisses it.
+- Needs `Show 3D` enabled — the pick ray only tests the mask surface, not the seed glyphs.
+- Shift is reserved for this gesture, so it never pans the 3D camera.
+
 ## Mask I/O
 - `Mask Options` dialog exposes load/save. When built with ITK the app saves masks as NIfTI using int16 as the pixel type.
 - Segmentation outputs from `SegmentationRunner` are merged using ITK when available and then loaded into the GUI as the current mask.
