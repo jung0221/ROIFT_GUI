@@ -42,6 +42,7 @@
 #include <QToolBar>
 #include <QAction>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QGroupBox>
 #include <QCheckBox>
 #include "CollapsibleSection.h"
@@ -1418,6 +1419,85 @@ void ManualSeedSelector::setupUi()
         m_toolSections.push_back(sec);
     }
 
+    // ---- Section: Vessel Graph ----
+    QVBoxLayout *vgraphSecLayout = new QVBoxLayout();
+    vgraphSecLayout->setContentsMargins(0, 0, 0, 0);
+    vgraphSecLayout->setSpacing(6);
+
+    QLabel *vgraphHint = new QLabel("Morse centreline rooted at the last seed.");
+    vgraphHint->setWordWrap(true);
+    vgraphHint->setStyleSheet("color: #999; font-size: 10px;");
+    vgraphSecLayout->addWidget(vgraphHint);
+
+    QGroupBox *vgraphParamsGroup = new QGroupBox("Parameters");
+    QGridLayout *vgraphParamsLayout = new QGridLayout(vgraphParamsGroup);
+    vgraphParamsLayout->setSpacing(4);
+    vgraphParamsLayout->setContentsMargins(8, 6, 8, 6);
+
+    vgraphParamsLayout->addWidget(new QLabel("Domain:"), 0, 0);
+    m_vgraphDomainCombo = new QComboBox();
+    m_vgraphDomainCombo->addItem("Current mask", "mask");
+    m_vgraphDomainCombo->addItem("Segment from CT", "ct");
+    m_vgraphDomainCombo->setToolTip(
+        "Current mask: graph the mask already loaded.\n"
+        "Segment from CT: generate 3D vessel seeds and run oiftrelax first (minutes).");
+    connect(m_vgraphDomainCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            [this, vgraphHint](int)
+            {
+        const bool fromCt = m_vgraphDomainCombo->currentData().toString() == "ct";
+        vgraphHint->setText(fromCt
+            ? "Segments the vessels out of the CT (3D seeds + oiftrelax, minutes), then graphs "
+              "the component under the last seed."
+            : "Morse centreline rooted at the last seed."); });
+    vgraphParamsLayout->addWidget(m_vgraphDomainCombo, 0, 1);
+
+    vgraphParamsLayout->addWidget(new QLabel("Min branch:"), 1, 0);
+    m_vgraphDeltaSpin = new QDoubleSpinBox();
+    m_vgraphDeltaSpin->setRange(0.0, 500.0);
+    m_vgraphDeltaSpin->setDecimals(1);
+    m_vgraphDeltaSpin->setSingleStep(1.0);
+    m_vgraphDeltaSpin->setValue(10.0);
+    m_vgraphDeltaSpin->setSuffix(" mm");
+    m_vgraphDeltaSpin->setToolTip("Persistence threshold: branches shorter than this are pruned.");
+    vgraphParamsLayout->addWidget(m_vgraphDeltaSpin, 1, 1);
+
+    vgraphParamsLayout->addWidget(new QLabel("Centring p:"), 2, 0);
+    m_vgraphCenteringSpin = new QDoubleSpinBox();
+    m_vgraphCenteringSpin->setRange(0.0, 8.0);
+    m_vgraphCenteringSpin->setDecimals(1);
+    m_vgraphCenteringSpin->setSingleStep(0.5);
+    m_vgraphCenteringSpin->setValue(3.0);
+    m_vgraphCenteringSpin->setToolTip("Cost = step / radius^p. 0 = euclidean geodesic; high p hugs the centreline.");
+    vgraphParamsLayout->addWidget(m_vgraphCenteringSpin, 2, 1);
+
+    vgraphParamsLayout->addWidget(new QLabel("Labels:"), 3, 0);
+    m_vgraphLabelModeCombo = new QComboBox();
+    m_vgraphLabelModeCombo->addItem("Per branch", "branch");
+    m_vgraphLabelModeCombo->addItem("Per generation", "generation");
+    m_vgraphLabelModeCombo->addItem("Binary", "binary");
+    m_vgraphLabelModeCombo->setToolTip("How the reached voxels are coloured.");
+    vgraphParamsLayout->addWidget(m_vgraphLabelModeCombo, 3, 1);
+
+    m_vgraphCenterlineBox = new QCheckBox("Also save centreline");
+    m_vgraphCenterlineBox->setToolTip("Write the 1-voxel-wide pruned tree as a second mask.");
+    vgraphParamsLayout->addWidget(m_vgraphCenterlineBox, 4, 0, 1, 2);
+
+    vgraphSecLayout->addWidget(vgraphParamsGroup);
+
+    m_btnRunVesselGraph = new QPushButton("Run Vessel Graph");
+    m_btnRunVesselGraph->setObjectName("runButton");
+    m_btnRunVesselGraph->setToolTip("Run src/vessels/cli/vessel_graph.py on the current mask (Ctrl+Shift+G)");
+    m_btnRunVesselGraph->setShortcut(QKeySequence("Ctrl+Shift+G"));
+    connect(m_btnRunVesselGraph, &QPushButton::clicked, this, &ManualSeedSelector::runVesselGraph);
+    vgraphSecLayout->addWidget(m_btnRunVesselGraph);
+
+    {
+        CollapsibleSection *sec = new CollapsibleSection("Vessel Graph", "vesselGraph");
+        sec->setContentLayout(vgraphSecLayout);
+        toolSidebarLayout->addWidget(sec);
+        m_toolSections.push_back(sec);
+    }
+
     toolSidebarLayout->addStretch();
 
     // Wrap the section column in a scroll area so the whole tool panel scrolls
@@ -2737,6 +2817,10 @@ void ManualSeedSelector::setupUi()
         }
         m_seeds.swap(kept);
         updateViews(); });
+
+    // Shift+click on the 3D surface drives all three slice views to that voxel.
+    connect(m_mask3DView, &Mask3DView::surfacePointPicked, this, [this](int x, int y, int z)
+            { jumpToVoxel(x, y, z); });
 
     if (m_mask3DView)
         m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
@@ -4676,6 +4760,38 @@ void ManualSeedSelector::updateViews()
             }
         }
         drawRulerOverlay(p, scaleX, scaleY, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ()); });
+}
+
+void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
+{
+    if (!m_axialSlider || !m_sagittalSlider || !m_coronalSlider)
+        return;
+
+    // The 3D mask is rendered in image-index space, so the picked voxel maps
+    // straight onto the sliders: sagittal=x, coronal=y, axial=z.
+    if (x < 0 || x > m_sagittalSlider->maximum() ||
+        y < 0 || y > m_coronalSlider->maximum() ||
+        z < 0 || z > m_axialSlider->maximum())
+    {
+        return;
+    }
+
+    // Move all three sliders before refreshing, so the views repaint once.
+    {
+        const QSignalBlocker blockAxial(m_axialSlider);
+        const QSignalBlocker blockSagittal(m_sagittalSlider);
+        const QSignalBlocker blockCoronal(m_coronalSlider);
+        m_axialSlider->setValue(z);
+        m_sagittalSlider->setValue(x);
+        m_coronalSlider->setValue(y);
+    }
+    m_axialLabel->setText(QString("Axial: %1/%2").arg(z).arg(m_axialSlider->maximum()));
+    m_sagittalLabel->setText(QString("Sagittal: %1/%2").arg(x).arg(m_sagittalSlider->maximum()));
+    m_coronalLabel->setText(QString("Coronal: %1/%2").arg(y).arg(m_coronalSlider->maximum()));
+    updateViews();
+
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Located 3D point at x:%1 y:%2 z:%3").arg(x).arg(y).arg(z));
 }
 
 void ManualSeedSelector::update3DMaskView()
