@@ -16,6 +16,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QListWidget>
 #include <QFileInfo>
@@ -737,4 +738,265 @@ void ManualSeedSelector::runMaskPostProcessing()
         this,
         "Postprocess Mask",
         QString("Mask post-processing finished successfully.\nSaved to:\n%1").arg(outAbs));
+}
+
+// ============================================================================
+// Vessel graph (Morse centreline of the current mask, rooted at a seed)
+// ============================================================================
+
+namespace
+{
+    // Last placed object seed, else the last seed of any kind.
+    const Seed *pickRootSeed(const std::vector<Seed> &seeds)
+    {
+        for (int i = static_cast<int>(seeds.size()) - 1; i >= 0; --i)
+        {
+            if (seeds[static_cast<size_t>(i)].internal != 0)
+                return &seeds[static_cast<size_t>(i)];
+        }
+        return seeds.empty() ? nullptr : &seeds.back();
+    }
+}
+
+void ManualSeedSelector::runVesselGraph()
+{
+    if (!hasImage() || m_path.empty())
+    {
+        QMessageBox::warning(this, "Vessel Graph", "Please load an image first.");
+        return;
+    }
+
+    const unsigned int sx = m_image.getSizeX();
+    const unsigned int sy = m_image.getSizeY();
+    const unsigned int sz = m_image.getSizeZ();
+    const bool segmentFromCt = (m_vgraphDomainCombo &&
+                                m_vgraphDomainCombo->currentData().toString() == "ct");
+
+    const bool maskEmpty = (m_maskData.empty() ||
+                            std::none_of(m_maskData.begin(), m_maskData.end(), [](int v)
+                                         { return v > 0; }));
+    if (!segmentFromCt)
+    {
+        if (maskEmpty)
+        {
+            QMessageBox::warning(this, "Vessel Graph",
+                                 "The vessel graph runs on the current mask.\n"
+                                 "Load or draw a mask, or switch Domain to \"Segment from CT\".");
+            return;
+        }
+        if (m_maskDimX != sx || m_maskDimY != sy || m_maskDimZ != sz)
+        {
+            QMessageBox::warning(this, "Vessel Graph",
+                                 QString("The mask grid (%1 x %2 x %3) does not match the image "
+                                         "(%4 x %5 x %6). Resample the mask before extracting the graph.")
+                                     .arg(m_maskDimX)
+                                     .arg(m_maskDimY)
+                                     .arg(m_maskDimZ)
+                                     .arg(sx)
+                                     .arg(sy)
+                                     .arg(sz));
+            return;
+        }
+    }
+
+    const Seed *root = pickRootSeed(m_seeds);
+    if (!root)
+    {
+        QMessageBox::warning(this, "Vessel Graph",
+                             "Place a seed at the root of the tree (trunk / hilum) first.");
+        return;
+    }
+    if (root->x < 0 || root->y < 0 || root->z < 0 ||
+        static_cast<unsigned int>(root->x) >= sx ||
+        static_cast<unsigned int>(root->y) >= sy ||
+        static_cast<unsigned int>(root->z) >= sz)
+    {
+        QMessageBox::warning(this, "Vessel Graph", "The root seed lies outside the image.");
+        return;
+    }
+
+    // Segment the label the user clicked on; 0 means "any non-zero mask voxel".
+    const size_t rootIndex = static_cast<size_t>(root->x) +
+                             static_cast<size_t>(root->y) * sx +
+                             static_cast<size_t>(root->z) * static_cast<size_t>(sx) * sy;
+    const int domainLabel = (!segmentFromCt && rootIndex < m_maskData.size() &&
+                             m_maskData[rootIndex] > 0)
+                                ? m_maskData[rootIndex]
+                                : 0;
+
+    const QString scriptPath = resolveProjectScriptPath(QStringLiteral("src/vessels/cli/vessel_graph.py"));
+    if (scriptPath.isEmpty())
+    {
+        QMessageBox::critical(this, "Vessel Graph", "Could not locate src/vessels/cli/vessel_graph.py.");
+        return;
+    }
+
+    QString pythonProgram;
+    QStringList pythonPrefixArgs;
+    if (!resolvePythonCommand(&pythonProgram, &pythonPrefixArgs))
+    {
+        QMessageBox::critical(this, "Vessel Graph",
+                              "Could not find a Python interpreter.\n"
+                              "Install python/python3 or set ROIFT_PYTHON.");
+        return;
+    }
+
+    QTemporaryDir tmpDir;
+    if (!tmpDir.isValid())
+    {
+        QMessageBox::critical(this, "Vessel Graph", "Could not create a temporary directory.");
+        return;
+    }
+    QString tmpMask;
+    if (!segmentFromCt)
+    {
+        tmpMask = QDir(tmpDir.path()).filePath("vessel_graph_domain.nii.gz");
+        if (!saveMaskToFile(tmpMask.toStdString()))
+            return;
+    }
+
+    const QFileInfo imageInfo(QString::fromStdString(m_path));
+    const QString baseName = stripNiftiSuffix(imageInfo.fileName());
+    const QDir outDir = imageInfo.absoluteDir();
+    const QString outPath = outDir.filePath(baseName + "_vessel_graph.nii.gz");
+    const QString centerlinePath = outDir.filePath(baseName + "_vessel_centerline.nii.gz");
+    const bool wantCenterline = m_vgraphCenterlineBox && m_vgraphCenterlineBox->isChecked();
+
+    const QFileInfo scriptInfo(scriptPath);
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    proc.setWorkingDirectory(scriptInfo.absolutePath());
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString scriptDir = scriptInfo.absolutePath();
+    const QString pythonPath = env.value("PYTHONPATH");
+    if (pythonPath.isEmpty())
+        env.insert("PYTHONPATH", scriptDir);
+    else
+        env.insert("PYTHONPATH", scriptDir + QDir::listSeparator() + pythonPath);
+    proc.setProcessEnvironment(env);
+
+    const QString segmentationPath = outDir.filePath(baseName + "_vessel_roift.nii.gz");
+    QStringList args = pythonPrefixArgs;
+    args << scriptPath;
+    if (segmentFromCt)
+        args << "--ct" << imageInfo.absoluteFilePath()
+             << "--save-segmentation" << segmentationPath;
+    else
+        args << "--mask" << tmpMask
+             << "--image" << imageInfo.absoluteFilePath()
+             << "--label" << QString::number(domainLabel);
+    args << "--root" << QString::number(root->x) << QString::number(root->y) << QString::number(root->z)
+         << "--out" << outPath
+         << "--delta" << QString::number(m_vgraphDeltaSpin ? m_vgraphDeltaSpin->value() : 10.0, 'f', 2)
+         << "--p" << QString::number(m_vgraphCenteringSpin ? m_vgraphCenteringSpin->value() : 3.0, 'f', 2)
+         << "--label-mode" << (m_vgraphLabelModeCombo
+                                   ? m_vgraphLabelModeCombo->currentData().toString()
+                                   : QStringLiteral("branch"));
+    if (wantCenterline)
+        args << "--centerline" << centerlinePath;
+
+    appendSegmentationLog(QString("Vessel graph: root (%1, %2, %3), domain %4")
+                              .arg(root->x)
+                              .arg(root->y)
+                              .arg(root->z)
+                              .arg(segmentFromCt
+                                       ? QStringLiteral("segmented from the CT")
+                                       : QString("current mask, label %1")
+                                             .arg(domainLabel == 0 ? QStringLiteral("any")
+                                                                   : QString::number(domainLabel))));
+
+    QProgressDialog progress(segmentFromCt
+                                 ? "Segmenting the vessels from the CT, then extracting the graph "
+                                   "(this takes minutes)..."
+                                 : "Extracting the vessel graph...",
+                             "Cancel", 0, 0, this);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.setMinimumDuration(0);
+    progress.setAutoClose(false);
+    progress.setAutoReset(false);
+    progress.show();
+
+    proc.start(pythonProgram, args);
+    if (!proc.waitForStarted(10000))
+    {
+        progress.close();
+        QMessageBox::critical(this, "Vessel Graph",
+                              QString("Failed to start Python process.\n%1").arg(proc.errorString()));
+        return;
+    }
+
+    while (!proc.waitForFinished(200))
+    {
+        QCoreApplication::processEvents();
+        if (progress.wasCanceled())
+        {
+            proc.kill();
+            proc.waitForFinished(3000);
+            progress.close();
+            QMessageBox::warning(this, "Vessel Graph", "Vessel graph extraction was canceled.");
+            return;
+        }
+    }
+    progress.close();
+
+    const QString procStdout = proc.readAllStandardOutput();
+    const QString procStderr = proc.readAllStandardError();
+    for (const QString &line : procStdout.split('\n', Qt::SkipEmptyParts))
+        appendSegmentationLog(line);
+
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
+    {
+        QMessageBox::critical(this, "Vessel Graph",
+                              QString("Vessel graph extraction failed (exit code %1).\n\n%2")
+                                  .arg(proc.exitCode())
+                                  .arg(procStderr.trimmed()));
+        if (!procStderr.isEmpty())
+            std::cerr << "Vessel graph STDERR:\n"
+                      << procStderr.toStdString() << "\n";
+        return;
+    }
+
+    const QString outAbs = QFileInfo(outPath).absoluteFilePath();
+    if (!QFileInfo::exists(outAbs))
+    {
+        QMessageBox::critical(this, "Vessel Graph",
+                              QString("Extraction finished but no mask was written:\n%1").arg(outAbs));
+        return;
+    }
+
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        auto &maskPaths = m_images[static_cast<size_t>(m_currentImageIndex)].maskPaths;
+        auto registerMask = [&maskPaths](const QString &path)
+        {
+            const std::string p = QFileInfo(path).absoluteFilePath().toStdString();
+            if (std::find(maskPaths.begin(), maskPaths.end(), p) == maskPaths.end())
+                maskPaths.push_back(p);
+        };
+        registerMask(outAbs);
+        if (wantCenterline && QFileInfo::exists(centerlinePath))
+            registerMask(centerlinePath);
+        if (segmentFromCt && QFileInfo::exists(segmentationPath))
+            registerMask(segmentationPath);
+        updateMaskSeedLists();
+
+        const std::string outStd = QFileInfo(outAbs).absoluteFilePath().toStdString();
+        const int outIndex = static_cast<int>(
+            std::find(maskPaths.begin(), maskPaths.end(), outStd) - maskPaths.begin());
+        if (m_maskList && outIndex >= 0 && outIndex < m_maskList->count())
+            m_maskList->setCurrentRow(outIndex);
+    }
+
+    loadMaskFromFile(outAbs.toStdString());
+    updateViews();
+
+    QString summary = outAbs;
+    for (const QString &line : procStdout.split('\n', Qt::SkipEmptyParts))
+    {
+        if (line.startsWith("OK "))
+            summary = line.mid(3).trimmed();
+    }
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Vessel graph: %1").arg(summary));
 }
