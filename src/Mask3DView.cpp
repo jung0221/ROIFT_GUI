@@ -16,6 +16,7 @@
 
 #include <vtkActor.h>
 #include <vtkCamera.h>
+#include <vtkCellPicker.h>
 #include <vtkDiscreteFlyingEdges3D.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
@@ -51,6 +52,7 @@ Mask3DView::Mask3DView(QWidget *parent)
 
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setMinimumHeight(280);
+    m_vtkWidget->setToolTip("Shift+click the surface to move all three 2D views to that point");
     layout->addWidget(m_vtkWidget, 1);
     m_vtkWidget->installEventFilter(this);
     m_selectionBand = new QRubberBand(QRubberBand::Rectangle, m_vtkWidget);
@@ -167,6 +169,12 @@ void Mask3DView::buildPipeline()
 
     m_smoother->SetInputConnection(m_flyingEdges->GetOutputPort());
     m_mapper->SetInputConnection(m_smoother->GetOutputPort());
+
+    // Ray-cast picker for shift+click locate; mask actor only, ignores opacity.
+    m_surfacePicker = vtkSmartPointer<vtkCellPicker>::New();
+    m_surfacePicker->SetTolerance(0.0005);
+    m_surfacePicker->PickFromListOn();
+    m_surfacePicker->AddPickList(m_actor);
 }
 
 void Mask3DView::setMaskData(const std::vector<int> &mask,
@@ -194,6 +202,9 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
     }
 
     setVoxelSpacing(spacingX, spacingY, spacingZ);
+    m_dimX = sizeX;
+    m_dimY = sizeY;
+    m_dimZ = sizeZ;
 
     // Pad the volume with a one-voxel background (label 0) collar on every
     // face before contouring. Flying-edges only emits a face where a voxel
@@ -341,6 +352,7 @@ void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacin
 void Mask3DView::clearMask()
 {
     m_activeLabels.clear();
+    m_dimX = m_dimY = m_dimZ = 0;
     m_actor->VisibilityOff();
     updateLabelControls();
     setStatusText("Nenhuma máscara 3D disponível");
@@ -479,7 +491,39 @@ void Mask3DView::setSeedRectangleEraseEnabled(bool enabled)
 
 bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched != m_vtkWidget || !m_seedRectEraseEnabled || !m_vtkWidget)
+    if (watched != m_vtkWidget || !m_vtkWidget)
+        return QWidget::eventFilter(watched, event);
+
+    // Shift+left-click locates the surface point; the whole press/move/release
+    // triple is swallowed so VTK does not read it as a camera pan.
+    if (event->type() == QEvent::MouseButtonPress)
+    {
+        QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+        m_shiftPickActive = false; // any new press starts a fresh gesture
+        if (mouseEvent->button() == Qt::LeftButton && (mouseEvent->modifiers() & Qt::ShiftModifier))
+        {
+            m_shiftPickActive = true;
+            int vx = 0, vy = 0, vz = 0;
+            if (pickSurfaceVoxel(mouseEvent->pos(), vx, vy, vz))
+                emit surfacePointPicked(vx, vy, vz);
+            return true;
+        }
+    }
+    else if (m_shiftPickActive &&
+             (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonRelease))
+    {
+        QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+        // End on release, or on a move with the button already up (lost release).
+        if (event->type() == QEvent::MouseButtonRelease || !(mouseEvent->buttons() & Qt::LeftButton))
+        {
+            m_shiftPickActive = false;
+            if (event->type() == QEvent::MouseMove)
+                return QWidget::eventFilter(watched, event);
+        }
+        return true;
+    }
+
+    if (!m_seedRectEraseEnabled)
         return QWidget::eventFilter(watched, event);
 
     if (event->type() == QEvent::MouseButtonPress)
@@ -572,6 +616,44 @@ QVector<int> Mask3DView::collectSeedIndicesInRect(const QRect &rect) const
     }
 
     return indices;
+}
+
+bool Mask3DView::pickSurfaceVoxel(const QPoint &widgetPos, int &vx, int &vy, int &vz)
+{
+    if (!m_renderer || !m_renderWindow || !m_vtkWidget || !m_surfacePicker)
+        return false;
+    if (!m_actor || !m_actor->GetVisibility() || m_dimX == 0 || m_dimY == 0 || m_dimZ == 0)
+        return false;
+
+    const int widgetWidth = m_vtkWidget->width();
+    const int widgetHeight = m_vtkWidget->height();
+    const int *renderSize = m_renderWindow->GetSize();
+    const int renderWidth = renderSize ? renderSize[0] : 0;
+    const int renderHeight = renderSize ? renderSize[1] : 0;
+    if (widgetWidth <= 0 || widgetHeight <= 0 || renderWidth <= 0 || renderHeight <= 0)
+        return false;
+
+    // Qt widget space (top-left origin) -> VTK framebuffer (bottom-left, HiDPI).
+    const double scaleX = static_cast<double>(renderWidth) / static_cast<double>(widgetWidth);
+    const double scaleY = static_cast<double>(renderHeight) / static_cast<double>(widgetHeight);
+    const double displayX = widgetPos.x() * scaleX;
+    const double displayY = static_cast<double>(renderHeight - 1) - widgetPos.y() * scaleY;
+
+    if (m_surfacePicker->Pick(displayX, displayY, 0.0, m_renderer) == 0)
+        return false;
+
+    double world[3] = {0.0, 0.0, 0.0};
+    m_surfacePicker->GetPickPosition(world);
+
+    // Surface sits at index * spacing (origin 0), so the inverse is a division.
+    auto toIndex = [](double coord, double spacing, unsigned int dim) {
+        const int idx = static_cast<int>(std::lround(coord / spacing));
+        return std::max(0, std::min(static_cast<int>(dim) - 1, idx));
+    };
+    vx = toIndex(world[0], m_spacingX, m_dimX);
+    vy = toIndex(world[1], m_spacingY, m_dimY);
+    vz = toIndex(world[2], m_spacingZ, m_dimZ);
+    return true;
 }
 
 void Mask3DView::rebuildLookupTable()

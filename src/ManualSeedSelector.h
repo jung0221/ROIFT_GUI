@@ -240,6 +240,16 @@ private:
                           int activeSliceIndex,
                           double spacingU,
                           double spacingV) const;
+    // Voxel located from the 3D view; marked with an X until any slider moves.
+    struct LocatedPoint
+    {
+        bool valid = false;
+        int x = 0;
+        int y = 0;
+        int z = 0;
+    };
+    LocatedPoint m_locatedPoint;
+    void drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const;
     // Mask-label filter helpers (see m_maskLabelVisibility).
     void rebuildMaskLabelFilter();                 // resync checkboxes with present labels
     void setAllMaskLabelsVisible(bool visible);    // "All"/"None" buttons
@@ -251,8 +261,7 @@ private:
     void updateHoverStatus(SlicePlane plane, int x, int y, int z);
     void addSeed(int x, int y, int z);
     void eraseNear(int x, int y, int z, int r);
-    // Move the three slice views onto a single voxel (used by the 3D view's
-    // shift+click locate gesture). Out-of-range coordinates are ignored.
+    // Move the three slice views onto one voxel; out-of-range is ignored.
     void jumpToVoxel(int x, int y, int z);
     void update3DMaskView();
 

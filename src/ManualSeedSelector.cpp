@@ -1821,6 +1821,7 @@ void ManualSeedSelector::setupUi()
                 m_maskSpacingY = 1.0;
                 m_maskSpacingZ = 1.0;
                 clearRulerMeasurements();
+                m_locatedPoint = LocatedPoint{};
                 updateMaskSeedLists();
                 updateViews();
             } else if (m_currentImageIndex > currentRow) {
@@ -1862,6 +1863,7 @@ void ManualSeedSelector::setupUi()
         m_maskSpacingZ = 1.0;
         m_mask3DDirty = true;
         clearRulerMeasurements();
+        m_locatedPoint = LocatedPoint{};
 
         m_axialSlider->setRange(0, 0);
         m_sagittalSlider->setRange(0, 0);
@@ -1932,7 +1934,8 @@ void ManualSeedSelector::setupUi()
                 m_maskSpacingZ = m_image.getSpacingZ();
                 m_mask3DDirty = true;
                 clearRulerMeasurements();
-                
+                m_locatedPoint = LocatedPoint{};
+
                 // Update slider ranges and restore last saved position for this image.
                 const int axialMax = std::max(0, static_cast<int>(m_image.getSizeZ()) - 1);
                 const int sagittalMax = std::max(0, static_cast<int>(m_image.getSizeX()) - 1);
@@ -2573,18 +2576,21 @@ void ManualSeedSelector::setupUi()
     // SIGNAL CONNECTIONS
     // =====================================================
 
-    // Slice sliders update labels and views
+    // Slice sliders update labels and views; any move drops the 3D locate marker.
     connect(m_axialSlider, &QSlider::valueChanged, [this](int v)
             {
         m_axialLabel->setText(QString("Axial: %1/%2").arg(v).arg(m_axialSlider->maximum()));
+        m_locatedPoint = LocatedPoint{};
         updateViews(); });
     connect(m_sagittalSlider, &QSlider::valueChanged, [this](int v)
             {
         m_sagittalLabel->setText(QString("Sagittal: %1/%2").arg(v).arg(m_sagittalSlider->maximum()));
+        m_locatedPoint = LocatedPoint{};
         updateViews(); });
     connect(m_coronalSlider, &QSlider::valueChanged, [this](int v)
             {
         m_coronalLabel->setText(QString("Coronal: %1/%2").arg(v).arg(m_coronalSlider->maximum()));
+        m_locatedPoint = LocatedPoint{};
         updateViews(); });
 
     // Window/Level controls
@@ -4477,6 +4483,50 @@ void ManualSeedSelector::drawRulerOverlay(QPainter &p,
     p.restore();
 }
 
+void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const
+{
+    if (!m_locatedPoint.valid || scaleX <= 0.0f || scaleY <= 0.0f)
+        return;
+
+    // Still valid means all three slices cut through it; just project in-plane.
+    int u = 0;
+    int v = 0;
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        u = m_locatedPoint.x;
+        v = m_locatedPoint.y;
+        break;
+    case SlicePlane::Sagittal:
+        u = m_locatedPoint.y;
+        v = m_locatedPoint.z;
+        break;
+    case SlicePlane::Coronal:
+        u = m_locatedPoint.x;
+        v = m_locatedPoint.z;
+        break;
+    }
+
+    const QPointF center(static_cast<qreal>(u) * scaleX, static_cast<qreal>(v) * scaleY);
+    const qreal gap = 3.0;
+    const qreal arm = 9.0;
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setBrush(Qt::NoBrush);
+    // Dark halo under a cyan X; the centre gap keeps the voxel itself visible.
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        p.setPen(QPen(pass == 0 ? QColor(0, 0, 0, 180) : QColor(0, 229, 255),
+                      pass == 0 ? 3.0 : 1.5, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(center + QPointF(-arm, -arm), center + QPointF(-gap, -gap));
+        p.drawLine(center + QPointF(gap, gap), center + QPointF(arm, arm));
+        p.drawLine(center + QPointF(-arm, arm), center + QPointF(-gap, gap));
+        p.drawLine(center + QPointF(gap, -gap), center + QPointF(arm, -arm));
+    }
+    p.restore();
+}
+
 void ManualSeedSelector::updateViews()
 {
     unsigned int sizeX = m_image.getSizeX();
@@ -4697,7 +4747,8 @@ void ManualSeedSelector::updateViews()
                 p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
         }
-        drawRulerOverlay(p, scaleX, scaleY, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY()); });
+        drawRulerOverlay(p, scaleX, scaleY, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY());
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Axial); });
 
     m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                    {
@@ -4728,7 +4779,8 @@ void ManualSeedSelector::updateViews()
                 p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
         }
-        drawRulerOverlay(p, scaleX, scaleY, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ()); });
+        drawRulerOverlay(p, scaleX, scaleY, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ());
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Sagittal); });
 
     m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                   {
@@ -4759,7 +4811,8 @@ void ManualSeedSelector::updateViews()
                 p.drawEllipse(QPoint(px, py), markerRadius, markerRadius);
             }
         }
-        drawRulerOverlay(p, scaleX, scaleY, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ()); });
+        drawRulerOverlay(p, scaleX, scaleY, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ());
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Coronal); });
 }
 
 void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
@@ -4767,8 +4820,7 @@ void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
     if (!m_axialSlider || !m_sagittalSlider || !m_coronalSlider)
         return;
 
-    // The 3D mask is rendered in image-index space, so the picked voxel maps
-    // straight onto the sliders: sagittal=x, coronal=y, axial=z.
+    // Mask is rendered in image-index space: sagittal=x, coronal=y, axial=z.
     if (x < 0 || x > m_sagittalSlider->maximum() ||
         y < 0 || y > m_coronalSlider->maximum() ||
         z < 0 || z > m_axialSlider->maximum())
@@ -4776,7 +4828,9 @@ void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
         return;
     }
 
-    // Move all three sliders before refreshing, so the views repaint once.
+    m_locatedPoint = {true, x, y, z};
+
+    // Signals blocked so the views repaint once and the marker survives.
     {
         const QSignalBlocker blockAxial(m_axialSlider);
         const QSignalBlocker blockSagittal(m_sagittalSlider);
@@ -5442,6 +5496,14 @@ void ManualSeedSelector::keyPressEvent(QKeyEvent *event)
         return;
     }
 
+    // Escape also dismisses the 3D locate marker.
+    if (event->key() == Qt::Key_Escape && m_locatedPoint.valid)
+    {
+        m_locatedPoint = LocatedPoint{};
+        requestViewUpdate(true);
+        return;
+    }
+
     int axial = m_axialSlider->value();
     int sag = m_sagittalSlider->value();
     int cor = m_coronalSlider->value();
@@ -5488,6 +5550,14 @@ bool ManualSeedSelector::handleSliceKey(QKeyEvent *event)
         requestViewUpdate(true);
         if (m_statusLabel)
             m_statusLabel->setText("Ruler measurements cleared.");
+        return true;
+    }
+
+    // Escape also dismisses the 3D locate marker.
+    if (event->key() == Qt::Key_Escape && m_locatedPoint.valid)
+    {
+        m_locatedPoint = LocatedPoint{};
+        requestViewUpdate(true);
         return true;
     }
 

@@ -16,6 +16,7 @@ QT_FORWARD_DECLARE_CLASS(QSlider)
 
 class QVTKOpenGLNativeWidget;
 class vtkActor;
+class vtkCellPicker;
 class vtkDiscreteFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
 class vtkGlyph3DMapper;
@@ -73,6 +74,8 @@ public:
 
 signals:
     void eraseSeedsInRectangle(const QVector<int> &seedIndices);
+    // Shift+click hit the mask surface at this voxel.
+    void surfacePointPicked(int x, int y, int z);
 
 private slots:
     void onVisibilityToggled(bool checked);
@@ -83,6 +86,8 @@ private slots:
 private:
     bool eventFilter(QObject *watched, QEvent *event) override;
     QVector<int> collectSeedIndicesInRect(const QRect &rect) const;
+    // Ray-cast the surface under a widget-space cursor; false when nothing hit.
+    bool pickSurfaceVoxel(const QPoint &widgetPos, int &vx, int &vy, int &vz);
     void buildPipeline();
     void rebuildLookupTable();
     void updateLabelControls();
@@ -106,6 +111,7 @@ private:
     vtkSmartPointer<vtkWindowedSincPolyDataFilter> m_smoother;
     vtkSmartPointer<vtkLookupTable> m_lookupTable;
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
+    vtkSmartPointer<vtkCellPicker> m_surfacePicker;
 
     float m_opacity = 0.4f;
     std::vector<SeedRenderData> m_seedRenderData;
@@ -118,6 +124,11 @@ private:
     double m_spacingX = 1.0;
     double m_spacingY = 1.0;
     double m_spacingZ = 1.0;
+    // Rendered mask dimensions, used to clamp picked voxels.
+    unsigned int m_dimX = 0;
+    unsigned int m_dimY = 0;
+    unsigned int m_dimZ = 0;
+    bool m_shiftPickActive = false;
     bool m_selectingRect = false;
     QPoint m_rectStart;
     QRubberBand *m_selectionBand = nullptr;
