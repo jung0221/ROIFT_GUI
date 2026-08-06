@@ -18,6 +18,8 @@
 #include <vector>
 
 class QDoubleSpinBox;
+class QSlider;
+class QWidget;
 class RangeSlider;
 
 namespace UiUtils
@@ -67,6 +69,21 @@ extern const char *kRemoveAllIconSvg;
 extern const char *kLoadIconSvg;
 extern const char *kRefreshIconSvg;
 extern const char *kRulerIconSvg;
+
+// ---------------------------------------------------------------------------
+// Slider controls
+// ---------------------------------------------------------------------------
+
+/// Edge length in px of the "-"/"+" step buttons flanking a stepper slider.
+constexpr int kSliderStepButtonSize = 18;
+/// Hold-to-repeat timings (ms) for the step buttons.
+constexpr int kSliderStepRepeatDelay = 300;
+constexpr int kSliderStepRepeatInterval = 60;
+
+/// Wrap @p slider in a row with "-" / "+" single-step buttons on either side.
+/// The buttons auto-repeat while held and grey out at the range ends.
+/// Ownership of @p slider moves to the returned row widget.
+QWidget *makeSliderStepperRow(QSlider *slider, QWidget *parent = nullptr);
 
 // ---------------------------------------------------------------------------
 // CSV helpers

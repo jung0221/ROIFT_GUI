@@ -1587,11 +1587,12 @@ void ManualSeedSelector::setupUi()
 
         slider->setRange(0, 0);
         slider->setValue(0);
+        slider->setSingleStep(1); // one slice per "-"/"+" click
         slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
         panelLayout->addWidget(view, 1);
         panelLayout->addWidget(label);
-        panelLayout->addWidget(slider);
+        panelLayout->addWidget(makeSliderStepperRow(slider, panel));
         return panel;
     };
 

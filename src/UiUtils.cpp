@@ -12,13 +12,17 @@
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QIcon>
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#include <QSlider>
 #include <QStandardPaths>
 #include <QString>
+#include <QToolButton>
 #include <QUrl>
+#include <QWidget>
 
 #if defined(ROIFT_HAS_QT_SVG)
 #include <QSvgRenderer>
@@ -238,6 +242,89 @@ const char *kRulerIconSvg = R"svg(
   <path d="M6.3 17L8.2 15.2M6.3 17L8.2 18.8M17.7 17L15.8 15.2M17.7 17L15.8 18.8" stroke="#d8d8d8" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 )svg";
+
+// ============================================================================
+// Slider controls
+// ============================================================================
+
+namespace
+{
+
+/// Dark-theme styling for the compact "-"/"+" slider step buttons.
+const char *kSliderStepButtonStyle = R"(
+    QToolButton {
+        background-color: #3c3c3c;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: bold;
+        padding: 0px;
+    }
+    QToolButton:hover {
+        background-color: #4a4a4a;
+        border-color: #0078d4;
+    }
+    QToolButton:pressed {
+        background-color: #0078d4;
+    }
+    QToolButton:disabled {
+        background-color: #2d2d2d;
+        border-color: #444444;
+        color: #666666;
+    }
+)";
+
+/// Build one step button; @p step is the signed single-step multiplier.
+QToolButton *makeSliderStepButton(QSlider *slider, const QString &text, const QString &tooltip, int step)
+{
+    QToolButton *button = new QToolButton();
+    button->setText(text);
+    button->setToolTip(tooltip);
+    button->setFocusPolicy(Qt::NoFocus); // keep arrow keys/W-S on the slider
+    button->setFixedSize(kSliderStepButtonSize, kSliderStepButtonSize);
+    button->setCursor(Qt::PointingHandCursor);
+    button->setAutoRepeat(true);
+    button->setAutoRepeatDelay(kSliderStepRepeatDelay);
+    button->setAutoRepeatInterval(kSliderStepRepeatInterval);
+    button->setStyleSheet(kSliderStepButtonStyle);
+    QObject::connect(button, &QToolButton::clicked, slider, [slider, step]()
+                     { slider->triggerAction(step < 0 ? QAbstractSlider::SliderSingleStepSub
+                                                      : QAbstractSlider::SliderSingleStepAdd); });
+    return button;
+}
+
+} // namespace
+
+QWidget *makeSliderStepperRow(QSlider *slider, QWidget *parent)
+{
+    if (!slider)
+        return nullptr;
+
+    QWidget *row = new QWidget(parent);
+    QHBoxLayout *rowLayout = new QHBoxLayout(row);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(4);
+
+    QToolButton *minusButton = makeSliderStepButton(slider, QStringLiteral("-"), QStringLiteral("Previous slice"), -1);
+    QToolButton *plusButton = makeSliderStepButton(slider, QStringLiteral("+"), QStringLiteral("Next slice"), +1);
+
+    rowLayout->addWidget(minusButton);
+    rowLayout->addWidget(slider, 1);
+    rowLayout->addWidget(plusButton);
+
+    // Grey out whichever end the slider is already sitting at.
+    auto syncEnabled = [slider, minusButton, plusButton]()
+    {
+        minusButton->setEnabled(slider->value() > slider->minimum());
+        plusButton->setEnabled(slider->value() < slider->maximum());
+    };
+    QObject::connect(slider, &QSlider::valueChanged, minusButton, syncEnabled);
+    QObject::connect(slider, &QSlider::rangeChanged, minusButton, syncEnabled);
+    syncEnabled();
+
+    return row;
+}
 
 // ============================================================================
 // CSV helpers
