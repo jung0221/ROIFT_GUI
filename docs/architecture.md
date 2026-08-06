@@ -13,6 +13,11 @@
    - Supports a "segment all" batch mode: it writes per-label seed files, launches one ROIFT process per label (up to a concurrency cap), collects outputs, and merges them into a multilabel NIfTI (ITK-backed when available).
    - Uses `QProcess` for external processes and a simple scheduler to control concurrency. To change the parallel cap search for `QThread::idealThreadCount()` or the hard-coded cap in the file.
 
+- `ExternalProcessRunner` (src/ExternalProcessRunner.cpp)
+  - `ManualSeedSelector` members that shell out to project Python scripts: LUNAS and rib seed
+    generation, super-resolution, mask post-processing, and `runVesselGraph()` (Morse
+    centreline of the current mask, rooted at the last seed — see `docs/usage.md`).
+
 - `NiftiImage` (src/NiftiImage.*)
   - A small wrapper for reading NIfTI images (ITK-backed when available). Provides helper functions to get axial/sagittal/coronal slices as RGB buffers used by `OrthogonalView`.
 

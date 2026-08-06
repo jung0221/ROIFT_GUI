@@ -41,6 +41,21 @@
 - Right-click on any pixel in axial/sagittal/coronal viewer to open a context menu.
 - Select `Show masks lists on this point` to open a dialog listing all masks that contain that voxel.
 
+## Vessel Graph (Morse centreline)
+- Sidebar section `Vessel Graph`, or Ctrl+Shift+G.
+- Always needs one seed placed on the structure — the last object seed is the root.
+- `Domain = Current mask` graphs the mask already loaded or drawn; the mask label under the
+  seed becomes the domain, so a multilabel mask graphs only the structure you clicked on.
+- `Domain = Segment from CT` needs no mask: it generates 3D vessel seeds and runs `oiftrelax`
+  first, then graphs the component the seed landed in. Expect **minutes** (~150 s for a
+  512×512×173 volume), and it also writes `<image>_vessel_roift.nii.gz`, the segmentation
+  before the component is picked.
+- `Min branch` is a persistence threshold in millimetres: branches shorter than it are pruned.
+  `Centring p` weights the geodesic toward the centre of the tube (0 = plain euclidean).
+- Writes `<image>_vessel_graph.nii.gz` next to the image, adds it to the mask list and loads it
+  as the overlay; voxels not connected to the root stay 0 and the count is logged.
+- Runs `src/vessels/cli/vessel_graph.py`, so it needs the project Python (`ROIFT_PYTHON`).
+
 ## Example workflows
 - Place seeds for two labels, open the Segmentation dialog, choose "Segment all", and select an output directory; the per-label outputs will be merged into a multilabel NIfTI and loaded automatically.
 - Save seeds to a `.txt` file from the Segmentation dialog to reproduce or share seed sets.
