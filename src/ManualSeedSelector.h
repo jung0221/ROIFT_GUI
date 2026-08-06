@@ -117,6 +117,7 @@ private slots:
     void runRibsSeedGeneration();
     void runSuperResolution();
     void runMaskPostProcessing();
+    void runVesselGraph();
     void filterActiveMaskByThreshold();
     void saveSeeds();
     void loadSeeds();
@@ -378,6 +379,15 @@ private:
     QCheckBox *m_useGPUBox = nullptr;
     // GPU cost mode removed — always additive
     QPushButton *m_btnRunSegment = nullptr;
+
+    // Vessel graph (Morse centreline of the current mask, rooted at a seed)
+    QComboBox *m_vgraphDomainCombo = nullptr;
+    QDoubleSpinBox *m_vgraphDeltaSpin = nullptr;
+    QDoubleSpinBox *m_vgraphCenteringSpin = nullptr;
+    QComboBox *m_vgraphLabelModeCombo = nullptr;
+    QCheckBox *m_vgraphCenterlineBox = nullptr;
+    QPushButton *m_btnRunVesselGraph = nullptr;
+
     std::deque<PendingSegmentationTask> m_pendingSegmentationTasks;
     std::thread m_segmentationWorker;
     std::atomic<bool> m_segmentationWorkerActive{false};
