@@ -135,7 +135,11 @@ private slots:
     void requestViewUpdate(bool immediate = false);
 
     // Mask features
-    void setMaskMode(int mode); // 0=idle,1=draw,2=erase
+    // The two drawing modes share one convention: 0=off, 1=draw, 2=erase.
+    // Between them they decide what the left button does in the slice views;
+    // setting either to a non-off mode switches the other off.
+    void setMaskMode(int mode);
+    void setSeedMode(int mode);
     void cleanMask();
     bool saveMaskToFile(const std::string &path);
     bool loadMaskFromFile(const std::string &path);
@@ -193,6 +197,12 @@ private:
     // old "active tab" gating). isSeedsTabActive/isMaskTabActive map onto this.
     enum class InteractionTool { Navigate, Seeds, Mask };
     void setActiveTool(InteractionTool tool);
+    // Recompute the active tool from the seed and mask drawing modes. There is
+    // no control that sets the tool directly; it is always derived from those.
+    void syncActiveTool();
+    // Open a readable starting set of sections. Used only on a first run with
+    // no persisted state — after that a session's own choices win.
+    void expandDefaultSections();
     bool isSeedsTabActive() const;
     bool isMaskTabActive() const;
     // Persist/restore window geometry, splitter sizes and section expansion.
@@ -322,8 +332,12 @@ private:
     // Tabbed UI: inline controls instead of dialogs
     QPushButton *m_btnSeedDraw = nullptr;
     QPushButton *m_btnSeedErase = nullptr;
+    // The two "Off" buttons are members because switching one drawing mode on
+    // has to visibly switch the other row back to Off.
+    QPushButton *m_btnSeedOff = nullptr;
     QPushButton *m_btnMaskDraw = nullptr;
     QPushButton *m_btnMaskErase = nullptr;
+    QPushButton *m_btnMaskOff = nullptr;
     QSpinBox *m_seedBrushSpin = nullptr;
     QSpinBox *m_seedDisplaySpacingSpin = nullptr;
     QSlider *m_maskBrushSpin = nullptr;

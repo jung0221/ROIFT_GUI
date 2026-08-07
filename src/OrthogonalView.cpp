@@ -158,6 +158,8 @@ void OrthogonalView::wheelEvent(QWheelEvent *event) {
     // zoom in/out with wheel
     const int delta = event->angleDelta().y();
     if (delta==0) return;
+    // Accept it: the zoom consumed this wheel, so it must not also bubble up.
+    event->accept();
     float factor = (delta>0)?1.1f:0.9f;
     m_userZoom *= factor;
     if (m_userZoom < 0.1f) m_userZoom = 0.1f;

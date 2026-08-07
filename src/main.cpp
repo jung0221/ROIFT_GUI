@@ -3,6 +3,7 @@
 #include <QScreen>
 #include <QStringList>
 #include "ManualSeedSelector.h"
+#include "Theme.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -22,6 +23,10 @@ int main(int argc, char **argv)
     // QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
     QApplication app(argc, argv);
+    // Install the design language on the application, not the main window, so
+    // dialogs, menus and message boxes are the same product as the window that
+    // opened them.
+    app.setStyleSheet(Theme::styleSheet());
     // Identify the app so QSettings has a stable backing store for persisted
     // window geometry, splitter sizes and collapsible-section state.
     QCoreApplication::setOrganizationName("ROIFT");
