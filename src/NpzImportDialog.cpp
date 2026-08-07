@@ -1,4 +1,6 @@
 #include "NpzImportDialog.h"
+#include "SectionGroup.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -135,7 +137,7 @@ NpzImportDialog::NpzImportDialog(const QString &path, const std::vector<npz::Arr
     grid->addWidget(m_channel, 1, 1);
     controls->addLayout(grid);
 
-    QGroupBox *flipBox = new QGroupBox("Mirror");
+    SectionGroup *flipBox = new SectionGroup("Mirror");
     QHBoxLayout *flipLayout = new QHBoxLayout(flipBox);
     const char *const flipLabels[3] = {"X (left-right)", "Y (front-back)", "Z (head-foot)"};
     for (int i = 0; i < 3; ++i)
@@ -146,14 +148,15 @@ NpzImportDialog::NpzImportDialog(const QString &path, const std::vector<npz::Arr
     flipBox->setToolTip("A numpy file records no handedness. Mirror an axis if the preview is flipped.");
     controls->addWidget(flipBox);
 
-    QGroupBox *geometryBox = new QGroupBox("Geometry");
+    SectionGroup *geometryBox = new SectionGroup("Geometry");
     QVBoxLayout *geometryLayout = new QVBoxLayout(geometryBox);
     m_summary = new QLabel();
     m_summary->setWordWrap(true);
     geometryLayout->addWidget(m_summary);
     m_warning = new QLabel();
     m_warning->setWordWrap(true);
-    m_warning->setStyleSheet("color: #b8860b; font-weight: bold;");
+    // Flag ink: this is a rejection of the file's own geometry, not a decoration.
+    m_warning->setStyleSheet(QString("color: %1; font-weight: 600;").arg(Theme::kFlag));
     m_warning->setVisible(false);
     geometryLayout->addWidget(m_warning);
 
@@ -181,7 +184,10 @@ NpzImportDialog::NpzImportDialog(const QString &path, const std::vector<npz::Arr
     m_preview = new QLabel();
     m_preview->setFixedSize(kPreviewSize, kPreviewSize);
     m_preview->setAlignment(Qt::AlignCenter);
-    m_preview->setStyleSheet("background: #101010; border: 1px solid #444;");
+    // The preview is a recessed slot the slice drops into, so it takes the well.
+    m_preview->setStyleSheet(QString("background: %1; border: none; border-radius: %2px;")
+                                 .arg(Theme::kWell)
+                                 .arg(Theme::kRadiusRow));
     previewColumn->addWidget(m_preview);
     m_previewCaption = new QLabel();
     m_previewCaption->setAlignment(Qt::AlignCenter);
@@ -211,6 +217,8 @@ NpzImportDialog::NpzImportDialog(const QString &path, const std::vector<npz::Arr
         for (QDoubleSpinBox *box : m_spacing)
             box->setEnabled(on);
         refreshPreview(); });
+
+    Theme::guardWheel(this);
 
     if (m_table->rowCount() > 0)
         m_table->selectRow(selectRow >= 0 ? selectRow : 0); // triggers the first load

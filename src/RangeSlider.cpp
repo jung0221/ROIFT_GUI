@@ -1,5 +1,7 @@
 #include "RangeSlider.h"
 
+#include "Theme.h"
+
 #include <QPainter>
 #include <QMouseEvent>
 #include <QtMath>
@@ -68,31 +70,37 @@ void RangeSlider::paintEvent(QPaintEvent *event) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    int midY = height() / 2;
-    int left = m_handleRadius + 4;
-    int right = width() - m_handleRadius - 4;
-    QRect groove(left, midY - 5, right - left, 10);
+    const int midY = height() / 2;
+    const int left = m_handleRadius + 4;
+    const int right = width() - m_handleRadius - 4;
 
+    // The groove keeps its black-to-white ramp: this control sets a CT window,
+    // so the gradient is data — it shows which intensities the handles bracket.
+    // Everything around it takes theme tokens.
+    const QRect groove(left, midY - 4, right - left, 8);
     QLinearGradient grad(groove.topLeft(), groove.topRight());
     grad.setColorAt(0.0, QColor(0, 0, 0));
     grad.setColorAt(1.0, QColor(255, 255, 255));
     p.setPen(Qt::NoPen);
     p.setBrush(grad);
-    p.drawRoundedRect(groove, 3, 3);
+    p.drawRoundedRect(groove, 4, 4);
 
-    // selected range overlay
-    int lowPos = valueToPos(m_lower);
-    int highPos = valueToPos(m_upper);
-    QRect selected(lowPos, midY - 5, highPos - lowPos, 10);
-    p.setBrush(QColor(90, 90, 90, 170));
-    p.drawRoundedRect(selected, 3, 3);
+    // Everything outside the window is scrimmed back toward the well, so the
+    // kept range reads as the lit part rather than as an overlay on top.
+    const int lowPos = valueToPos(m_lower);
+    const int highPos = valueToPos(m_upper);
+    QColor scrim(Theme::kWell);
+    scrim.setAlpha(200);
+    p.setBrush(scrim);
+    p.drawRoundedRect(QRect(groove.left(), groove.top(), lowPos - groove.left(), groove.height()), 4, 4);
+    p.drawRoundedRect(QRect(highPos, groove.top(), groove.right() - highPos + 1, groove.height()), 4, 4);
 
+    // Handles are round because they are physical grips, the one place the ban
+    // on pills does not apply.
     auto drawHandle = [&p, midY](int x, bool active) {
-        QPolygon tri;
-        tri << QPoint(x, midY - 9) << QPoint(x - 8, midY + 9) << QPoint(x + 8, midY + 9);
-        p.setPen(QPen(QColor(50, 50, 50), 1));
-        p.setBrush(active ? QColor(210, 210, 210) : QColor(180, 180, 180));
-        p.drawPolygon(tri);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(active ? Theme::kAccent : Theme::kInk));
+        p.drawEllipse(QPoint(x, midY), 6, 6);
     };
 
     drawHandle(lowPos, m_dragLower);

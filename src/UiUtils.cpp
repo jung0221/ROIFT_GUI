@@ -6,6 +6,7 @@
 
 #include "UiUtils.h"
 #include "RangeSlider.h"
+#include "Theme.h"
 
 #include <QColor>
 #include <QCoreApplication>
@@ -250,30 +251,42 @@ const char *kRulerIconSvg = R"svg(
 namespace
 {
 
-/// Dark-theme styling for the compact "-"/"+" slider step buttons.
-const char *kSliderStepButtonStyle = R"(
+/// The compact "-"/"+" step buttons. These sit on top of a slice view, not on a
+/// panel, so they get the well face and a cap radius from the theme tokens.
+QString sliderStepButtonStyle()
+{
+    return QString(R"(
     QToolButton {
-        background-color: #3c3c3c;
-        border: 1px solid #555555;
-        border-radius: 3px;
-        color: #ffffff;
-        font-size: 11px;
-        font-weight: bold;
+        background-color: %1;
+        border: none;
+        border-radius: %2px;
+        color: %3;
+        font-size: 12px;
+        font-weight: 600;
         padding: 0px;
     }
     QToolButton:hover {
-        background-color: #4a4a4a;
-        border-color: #0078d4;
+        background-color: %4;
+        color: %5;
     }
     QToolButton:pressed {
-        background-color: #0078d4;
+        background-color: %6;
+        color: %7;
     }
     QToolButton:disabled {
-        background-color: #2d2d2d;
-        border-color: #444444;
-        color: #666666;
+        background-color: %1;
+        color: %8;
     }
-)";
+)")
+        .arg(Theme::kWell)
+        .arg(Theme::kRadiusCap)
+        .arg(Theme::kInk2)
+        .arg(Theme::kPanelRaised)
+        .arg(Theme::kInk)
+        .arg(Theme::kAccentFill)
+        .arg(Theme::kOnAccent)
+        .arg(Theme::kInkDisabled);
+}
 
 /// Build one step button; @p step is the signed single-step multiplier.
 QToolButton *makeSliderStepButton(QSlider *slider, const QString &text, const QString &tooltip, int step)
@@ -287,7 +300,7 @@ QToolButton *makeSliderStepButton(QSlider *slider, const QString &text, const QS
     button->setAutoRepeat(true);
     button->setAutoRepeatDelay(kSliderStepRepeatDelay);
     button->setAutoRepeatInterval(kSliderStepRepeatInterval);
-    button->setStyleSheet(kSliderStepButtonStyle);
+    button->setStyleSheet(sliderStepButtonStyle());
     QObject::connect(button, &QToolButton::clicked, slider, [slider, step]()
                      { slider->triggerAction(step < 0 ? QAbstractSlider::SliderSingleStepSub
                                                       : QAbstractSlider::SliderSingleStepAdd); });

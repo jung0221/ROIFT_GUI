@@ -8,6 +8,7 @@
  */
 
 #include "ManualSeedSelector.h"
+#include "SectionGroup.h"
 #include "SegmentationRunner.h"
 #include "ColorUtils.h"
 #include "Mask3DView.h"
@@ -105,6 +106,7 @@
 #include <zlib.h>
 
 #include "NpzImportDialog.h"
+#include "Theme.h"
 #include "UiUtils.h"
 
 using namespace UiUtils;
@@ -533,245 +535,8 @@ int ManualSeedSelector::addImagesFromPaths(const QStringList &paths)
 
 void ManualSeedSelector::setupUi()
 {
-    // =====================================================
-    // MODERN DARK THEME STYLESHEET
-    // =====================================================
-    setStyleSheet(R"(
-        QMainWindow, QWidget {
-            background-color: #1e1e1e;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', Arial, sans-serif;
-            font-size: 9px;
-        }
-        QPushButton {
-            background-color: #3c3c3c;
-            border: 1px solid #555555;
-            border-radius: 3px;
-            padding: 6px 14px;
-            font-size: 10px;
-            color: #ffffff;
-        }
-        QPushButton:hover {
-            background-color: #4a4a4a;
-            border-color: #0078d4;
-        }
-        QPushButton:pressed {
-            background-color: #0078d4;
-        }
-        QPushButton:checked {
-            background-color: #0078d4;
-            border-color: #0078d4;
-        }
-        QPushButton:disabled {
-            background-color: #2d2d2d;
-            color: #666666;
-        }
-        QGroupBox {
-            border: 1px solid #444444;
-            border-radius: 4px;
-            margin-top: 6px;
-            padding: 4px 6px 4px 6px;
-            font-weight: bold;
-            font-size: 10px;
-            color: #ffffff;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 5px;
-            color: #0078d4;
-            font-size: 10px;
-        }
-        QTabWidget::pane {
-            border: 1px solid #444444;
-            border-top: none;
-            background: #252526;
-        }
-        QTabBar::tab {
-            background: #2d2d2d;
-            border: 1px solid #444444;
-            border-bottom: none;
-            padding: 6px 14px;
-            margin-right: 2px;
-            min-width: 60px;
-            font-size: 11px;
-            color: #ffffff;
-        }
-        QTabBar::tab:selected {
-            background: #252526;
-            border-bottom: 1px solid #252526;
-            color: white;
-        }
-        QTabBar::tab:hover:!selected {
-            background: #3c3c3c;
-        }
-        QListWidget {
-            background-color: #252526;
-            border: 1px solid #444444;
-            border-radius: 3px;
-        }
-        QListWidget::item {
-            padding: 4px;
-        }
-        QListWidget::item:selected {
-            background-color: #0078d4;
-        }
-        QListWidget::item:hover:!selected {
-            background-color: #3c3c3c;
-        }
-        QTreeWidget {
-            background-color: #252526;
-            border: 1px solid #444444;
-            border-radius: 3px;
-        }
-        QTreeWidget::item {
-            padding: 3px;
-        }
-        QTreeWidget::item:selected {
-            background-color: #0078d4;
-        }
-        QTreeWidget::item:hover:!selected {
-            background-color: #3c3c3c;
-        }
-        QMenu {
-            background-color: #2d2d2d;
-            border: 1px solid #444444;
-            padding: 4px 0px;
-        }
-        QMenu::item {
-            padding: 6px 24px;
-        }
-        QMenu::item:selected {
-            background-color: #0078d4;
-        }
-        QSlider::groove:horizontal {
-            border: 1px solid #555555;
-            height: 6px;
-            background: #2d2d2d;
-            border-radius: 3px;
-        }
-        QSlider::handle:horizontal {
-            background: #0078d4;
-            border: 1px solid #0078d4;
-            width: 14px;
-            margin: -4px 0;
-            border-radius: 7px;
-        }
-        QSlider::handle:horizontal:hover {
-            background: #1084d8;
-        }
-        QSpinBox, QDoubleSpinBox {
-            background-color: #2d2d2d;
-            border: 1px solid #555555;
-            border-radius: 3px;
-            padding: 4px;
-            font-size: 10px;
-            color: #ffffff;
-        }
-        QSpinBox:focus, QDoubleSpinBox:focus {
-            border-color: #0078d4;
-        }
-        QCheckBox {
-            spacing: 8px;
-            min-height: 24px;
-        }
-        QCheckBox::indicator {
-            width: 18px;
-            height: 18px;
-            border-radius: 3px;
-            border: 2px solid #666666;
-            background-color: #2d2d2d;
-        }
-        QCheckBox::indicator:hover {
-            border-color: #888888;
-        }
-        QCheckBox::indicator:checked {
-            background-color: #0078d4;
-            border-color: #0078d4;
-            image: none;
-        }
-        QCheckBox::indicator:disabled {
-            border-color: #444444;
-            background-color: #252525;
-        }
-        QLabel {
-            color: #c0c0c0;
-            font-size: 10px;
-        }
-        QToolTip {
-            background-color: #2d2d2d;
-            color: #e0e0e0;
-            border: 1px solid #555555;
-            font-size: 8px;
-            padding: 1px 2px;
-            border-radius: 2px;
-        }
-        QSplitter::handle {
-            background-color: #3a3a3a;
-        }
-        QSplitter::handle:hover {
-            background-color: #0078d4;
-        }
-        QToolBar {
-            background-color: #2d2d2d;
-            border-bottom: 1px solid #444444;
-            spacing: 4px;
-            padding: 3px;
-        }
-        QToolBar QToolButton {
-            background: transparent;
-            border: 1px solid transparent;
-            border-radius: 3px;
-            padding: 4px 10px;
-            color: #ffffff;
-        }
-        QToolBar QToolButton:hover {
-            background-color: #3c3c3c;
-            border-color: #0078d4;
-        }
-        /* Run segmentation button (object-named, was an inline stylesheet). */
-        QPushButton#runButton {
-            background-color: #0e639c;
-            color: white;
-            font-weight: bold;
-            padding: 8px 16px;
-        }
-        QPushButton#runButton:hover { background-color: #1177bb; }
-        QPushButton#runButton:pressed { background-color: #0d5a8a; }
-        /* Bottom logs/status (object-named, were inline stylesheets). */
-        QLabel#logHeader {
-            color: #007acc;
-            font-weight: 600;
-            padding-left: 2px;
-        }
-        QPlainTextEdit#logConsole {
-            background-color: #1e1e1e;
-            border: 1px solid #3c3c3c;
-            border-radius: 4px;
-            padding: 6px 8px;
-            font-family: 'Consolas', 'Courier New', monospace;
-            color: #d8d8d8;
-        }
-        QLabel#statusLabel {
-            background-color: #252526;
-            border: 1px solid #3c3c3c;
-            border-radius: 4px;
-            padding: 6px 12px;
-            font-family: 'Consolas', 'Courier New', monospace;
-        }
-        QProgressBar#progressBar {
-            background-color: #252526;
-            border: 1px solid #3c3c3c;
-            border-radius: 4px;
-            color: #d8d8d8;
-            padding: 2px;
-            text-align: center;
-        }
-        QProgressBar#progressBar::chunk {
-            background-color: #2d7d46;
-            border-radius: 3px;
-        }
-    )");
+    // The look lives in Theme:: and is installed on the QApplication in main(),
+    // so this window, its dialogs and its menus all read from the same sheet.
 
     setWindowTitle("ROIFT GUI");
     resize(1400, 950);
@@ -850,41 +615,18 @@ void ManualSeedSelector::setupUi()
     // =====================================================
     QWidget *toolSidebarContent = new QWidget();
     QVBoxLayout *toolSidebarLayout = new QVBoxLayout(toolSidebarContent);
-    toolSidebarLayout->setContentsMargins(4, 4, 4, 4);
-    toolSidebarLayout->setSpacing(6);
+    toolSidebarLayout->setContentsMargins(0, 0, Theme::kRowGap, 0);
+    toolSidebarLayout->setSpacing(Theme::kRowGap);
 
-    // Interaction-tool selector (replaces tab-based seed/mask gating). Exactly
-    // one of Navigate/Seeds/Mask is active and drives the view mouse handlers.
-    QWidget *toolSelector = new QWidget();
-    toolSelector->setObjectName("toolSelector");
-    QHBoxLayout *toolSelectorLayout = new QHBoxLayout(toolSelector);
-    toolSelectorLayout->setContentsMargins(0, 0, 0, 0);
-    toolSelectorLayout->setSpacing(4);
-    QPushButton *btnToolNavigate = new QPushButton("Navigate");
-    QPushButton *btnToolSeeds = new QPushButton("Seeds");
-    QPushButton *btnToolMask = new QPushButton("Mask");
-    QButtonGroup *toolButtons = new QButtonGroup(this);
-    toolButtons->addButton(btnToolNavigate, 0);
-    toolButtons->addButton(btnToolSeeds, 1);
-    toolButtons->addButton(btnToolMask, 2);
-    for (QPushButton *b : {btnToolNavigate, btnToolSeeds, btnToolMask})
-    {
-        b->setCheckable(true);
-        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        toolSelectorLayout->addWidget(b);
-    }
-    btnToolNavigate->setChecked(true);
-    btnToolNavigate->setToolTip("Navigate: left-drag scrolls slices; no painting");
-    btnToolSeeds->setToolTip("Seeds: left-click places/erases seeds in the slice views");
-    btnToolMask->setToolTip("Mask: left-click paints/erases the mask in the slice views");
-    connect(toolButtons, QOverload<int>::of(&QButtonGroup::idClicked), this, [this](int id)
-            { setActiveTool(id == 1 ? InteractionTool::Seeds
-                            : id == 2 ? InteractionTool::Mask
-                                      : InteractionTool::Navigate); });
-    toolSidebarLayout->addWidget(toolSelector);
+    // There is no separate tool selector. What the left button does is decided
+    // by the two Drawing Mode rows below: whichever of Seeds or Mask is not Off
+    // owns the click, and with both Off the views are read-only. Picking a mode
+    // in one row switches the other off, so exactly one is ever live — the same
+    // guarantee the old Navigate/Seeds/Mask row gave, without a second control
+    // saying the same thing.
 
     // ---- Section: Window/Level ----
-    QGroupBox *windowGroup = new QGroupBox("Window/Level");
+    SectionGroup *windowGroup = new SectionGroup("Window/Level");
     QGridLayout *windowGrid = new QGridLayout(windowGroup);
     windowGrid->setSpacing(4);
 
@@ -919,12 +661,11 @@ void ManualSeedSelector::setupUi()
     }
 
     // ---- Section: Seeds ----
-    QGroupBox *seedModeGroup = new QGroupBox("Drawing Mode");
+    SectionGroup *seedModeGroup = new SectionGroup("Drawing Mode");
     QHBoxLayout *seedModeLayout = new QHBoxLayout(seedModeGroup);
 
     m_btnSeedDraw = new QPushButton("Draw");
     m_btnSeedDraw->setCheckable(true);
-    m_btnSeedDraw->setChecked(true);
     m_btnSeedDraw->setToolTip("Draw seed points (left click)");
     seedModeLayout->addWidget(m_btnSeedDraw);
 
@@ -933,15 +674,19 @@ void ManualSeedSelector::setupUi()
     m_btnSeedErase->setToolTip("Erase seed points (left click or right click)");
     seedModeLayout->addWidget(m_btnSeedErase);
 
+    m_btnSeedOff = new QPushButton("Off");
+    m_btnSeedOff->setCheckable(true);
+    m_btnSeedOff->setChecked(true);
+    m_btnSeedOff->setToolTip("Leave seeds alone: left-drag scrolls slices instead");
+    seedModeLayout->addWidget(m_btnSeedOff);
+
     QButtonGroup *seedModeButtons = new QButtonGroup(this);
+    seedModeButtons->addButton(m_btnSeedOff, 0);   // mode 0 = off
     seedModeButtons->addButton(m_btnSeedDraw, 1);  // mode 1 = draw
     seedModeButtons->addButton(m_btnSeedErase, 2); // mode 2 = erase
-    connect(seedModeButtons, QOverload<int>::of(&QButtonGroup::idClicked), [this](int id)
-            {
-        m_seedMode = id;
-        if (m_mask3DView)
-            m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2); });
-    m_seedMode = 1; // default: draw
+    connect(seedModeButtons, QOverload<int>::of(&QButtonGroup::idClicked), this, [this](int id)
+            { setSeedMode(id); });
+    m_seedMode = 0; // default: the views are read-only until a mode is picked
 
     QVBoxLayout *seedsSecLayout = new QVBoxLayout();
     seedsSecLayout->setContentsMargins(0, 0, 0, 0);
@@ -949,7 +694,7 @@ void ManualSeedSelector::setupUi()
     seedsSecLayout->addWidget(seedModeGroup);
 
     // Brush group
-    QGroupBox *seedBrushGroup = new QGroupBox("Brush");
+    SectionGroup *seedBrushGroup = new SectionGroup("Brush");
     QGridLayout *seedBrushLayout = new QGridLayout(seedBrushGroup);
     seedBrushLayout->setSpacing(4);
 
@@ -977,7 +722,7 @@ void ManualSeedSelector::setupUi()
     seedsSecLayout->addWidget(seedBrushGroup);
 
     // File operations group
-    QGroupBox *seedFileGroup = new QGroupBox("File");
+    SectionGroup *seedFileGroup = new SectionGroup("File");
     QHBoxLayout *seedFileLayout = new QHBoxLayout(seedFileGroup);
 
     QPushButton *btnSeedSave = new QPushButton("Save");
@@ -1000,7 +745,7 @@ void ManualSeedSelector::setupUi()
 
     seedsSecLayout->addWidget(seedFileGroup);
 
-    QGroupBox *seedGenerationGroup = new QGroupBox("Generate Seeds");
+    SectionGroup *seedGenerationGroup = new SectionGroup("Generate Seeds");
     QHBoxLayout *seedGenerationLayout = new QHBoxLayout(seedGenerationGroup);
     seedGenerationLayout->setSpacing(8);
     QPushButton *btnRunLunasSeeds = new QPushButton("LUNAS");
@@ -1022,7 +767,7 @@ void ManualSeedSelector::setupUi()
     }
 
     // ---- Section: Mask ----
-    QGroupBox *maskModeGroup = new QGroupBox("Drawing Mode");
+    SectionGroup *maskModeGroup = new SectionGroup("Drawing Mode");
     QHBoxLayout *maskModeLayout = new QHBoxLayout(maskModeGroup);
 
     m_btnMaskDraw = new QPushButton("Draw");
@@ -1035,14 +780,14 @@ void ManualSeedSelector::setupUi()
     m_btnMaskErase->setToolTip("Erase mask regions");
     maskModeLayout->addWidget(m_btnMaskErase);
 
-    QPushButton *btnMaskOff = new QPushButton("Off");
-    btnMaskOff->setCheckable(true);
-    btnMaskOff->setChecked(true);
-    btnMaskOff->setToolTip("Disable mask editing");
-    maskModeLayout->addWidget(btnMaskOff);
+    m_btnMaskOff = new QPushButton("Off");
+    m_btnMaskOff->setCheckable(true);
+    m_btnMaskOff->setChecked(true);
+    m_btnMaskOff->setToolTip("Disable mask editing");
+    maskModeLayout->addWidget(m_btnMaskOff);
 
     QButtonGroup *maskModeButtons = new QButtonGroup(this);
-    maskModeButtons->addButton(btnMaskOff, 0);     // mode 0 = off
+    maskModeButtons->addButton(m_btnMaskOff, 0);   // mode 0 = off
     maskModeButtons->addButton(m_btnMaskDraw, 1);  // mode 1 = draw
     maskModeButtons->addButton(m_btnMaskErase, 2); // mode 2 = erase
     connect(maskModeButtons, QOverload<int>::of(&QButtonGroup::idClicked), [this](int id)
@@ -1054,7 +799,7 @@ void ManualSeedSelector::setupUi()
     maskSecLayout->addWidget(maskModeGroup);
 
     // Brush group
-    QGroupBox *maskBrushGroup = new QGroupBox("Brush");
+    SectionGroup *maskBrushGroup = new SectionGroup("Brush");
     QGridLayout *maskBrushLayout = new QGridLayout(maskBrushGroup);
     maskBrushLayout->setSpacing(4);
     maskBrushLayout->setContentsMargins(8, 6, 8, 6);
@@ -1106,7 +851,7 @@ void ManualSeedSelector::setupUi()
     maskSecLayout->addWidget(maskBrushGroup);
 
     // 3D view display group: opacity of the rendered 3D mask surface.
-    QGroupBox *mask3DGroup = new QGroupBox("3D View");
+    SectionGroup *mask3DGroup = new SectionGroup("3D View");
     QGridLayout *mask3DLayout = new QGridLayout(mask3DGroup);
     mask3DLayout->setSpacing(4);
     mask3DLayout->setContentsMargins(8, 6, 8, 6);
@@ -1135,7 +880,7 @@ void ManualSeedSelector::setupUi()
     maskSecLayout->addWidget(mask3DGroup);
 
     // File operations group
-    QGroupBox *maskFileGroup = new QGroupBox("File");
+    SectionGroup *maskFileGroup = new SectionGroup("File");
     QHBoxLayout *maskFileLayout = new QHBoxLayout(maskFileGroup);
 
     QPushButton *btnMaskSave = new QPushButton("Save");
@@ -1224,7 +969,7 @@ void ManualSeedSelector::setupUi()
 
     // Parameters group — stacked vertically (core params above method) now that
     // the sidebar gives full height; no longer constrained to a 120px ribbon.
-    QGroupBox *paramsGroup = new QGroupBox("Parameters");
+    SectionGroup *paramsGroup = new SectionGroup("Parameters");
     QVBoxLayout *paramsColumns = new QVBoxLayout(paramsGroup);
     paramsColumns->setSpacing(8);
     paramsColumns->setContentsMargins(6, 4, 6, 4);
@@ -1372,7 +1117,7 @@ void ManualSeedSelector::setupUi()
     segSecLayout->addWidget(paramsGroup);
 
     // Options group
-    QGroupBox *optionsGroup = new QGroupBox("Batch Options");
+    SectionGroup *optionsGroup = new SectionGroup("Batch Options");
     QVBoxLayout *optionsLayout = new QVBoxLayout(optionsGroup);
     optionsLayout->setSpacing(4);
 
@@ -1400,7 +1145,7 @@ void ManualSeedSelector::setupUi()
     segSecLayout->addWidget(optionsGroup);
 
     // Run button
-    QGroupBox *runGroup = new QGroupBox("Execute");
+    SectionGroup *runGroup = new SectionGroup("Execute");
     QVBoxLayout *runLayout = new QVBoxLayout(runGroup);
 
     m_btnRunSegment = new QPushButton("Run");
@@ -1428,10 +1173,10 @@ void ManualSeedSelector::setupUi()
 
     QLabel *vgraphHint = new QLabel("Morse centreline rooted at the last seed.");
     vgraphHint->setWordWrap(true);
-    vgraphHint->setStyleSheet("color: #999; font-size: 10px;");
+    Theme::applyHintStyle(vgraphHint);
     vgraphSecLayout->addWidget(vgraphHint);
 
-    QGroupBox *vgraphParamsGroup = new QGroupBox("Parameters");
+    SectionGroup *vgraphParamsGroup = new SectionGroup("Parameters");
     QGridLayout *vgraphParamsLayout = new QGridLayout(vgraphParamsGroup);
     vgraphParamsLayout->setSpacing(4);
     vgraphParamsLayout->setContentsMargins(8, 6, 8, 6);
@@ -1510,7 +1255,9 @@ void ManualSeedSelector::setupUi()
     toolSidebar->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     toolSidebar->setFrameShape(QFrame::NoFrame);
     toolSidebar->setWidget(toolSidebarContent);
-    toolSidebar->setMinimumWidth(210);
+    // Wide enough that a two-field row (WL/WW, radius + value) fits without the
+    // section card clipping it; the splitter can still be dragged narrower.
+    toolSidebar->setMinimumWidth(250);
 
     // =====================================================
     // MAIN CONTENT: Tool sidebar + View Grid + Data sidebar (resizable)
@@ -1559,7 +1306,13 @@ void ManualSeedSelector::setupUi()
     m_coronalView->setMinimumSize(120, 120);
     m_mask3DView->setMinimumSize(120, 120);
 
-    const QString toggleCheckStyle = "QCheckBox { background-color: rgba(0, 0, 0, 150); padding: 2px 6px; border-radius: 4px; }";
+    // Overlay toggles float on the image itself, so they carry their own scrim
+    // instead of a panel: the CT underneath is the material here.
+    const QString toggleCheckStyle =
+        QString("QCheckBox { background-color: rgba(20, 19, 18, 0.72); color: %1; "
+                "padding: 3px 8px; border-radius: %2px; }")
+            .arg(Theme::kInk)
+            .arg(Theme::kRadiusCap);
     auto createToggleCheck = [&toggleCheckStyle](const QString &text, const QString &tooltip, bool checked) -> QCheckBox *
     {
         QCheckBox *check = new QCheckBox(text);
@@ -1638,15 +1391,19 @@ void ManualSeedSelector::setupUi()
 
     m_showMaskCheck = axialMaskCheck;
 
+    // The 3D toggles used to float over the canvas, which put them on top of
+    // the view's own status line. They now sit in flow under the canvas, in the
+    // same place as the toggle rows of the three slice panels beside it.
     QWidget *renderPanel = new QWidget();
-    QGridLayout *renderPanelLayout = new QGridLayout(renderPanel);
+    QVBoxLayout *renderPanelLayout = new QVBoxLayout(renderPanel);
     renderPanelLayout->setContentsMargins(0, 0, 0, 0);
-    renderPanelLayout->setSpacing(0);
-    renderPanelLayout->addWidget(m_mask3DView, 0, 0);
+    renderPanelLayout->setSpacing(4);
+    renderPanelLayout->addWidget(m_mask3DView, 1);
     QWidget *renderTogglePanel = new QWidget(renderPanel);
     QHBoxLayout *renderToggleLayout = new QHBoxLayout(renderTogglePanel);
     renderToggleLayout->setContentsMargins(0, 0, 0, 0);
     renderToggleLayout->setSpacing(6);
+    renderToggleLayout->addStretch();
 
     m_show3DCheck = new QCheckBox("Show 3D");
     m_show3DCheck->setToolTip("Enable 3D mask visualization");
@@ -1660,7 +1417,7 @@ void ManualSeedSelector::setupUi()
     // Seed-type filter: restrict visible seeds to internal (object) or external (background) only.
     renderToggleLayout->addWidget(makeSeedTypeFilterCombo());
 
-    renderPanelLayout->addWidget(renderTogglePanel, 0, 0, Qt::AlignRight | Qt::AlignBottom);
+    renderPanelLayout->addWidget(renderTogglePanel);
 
     viewGrid->addWidget(axialPanel, 0, 0);
     viewGrid->addWidget(sagittalPanel, 0, 1);
@@ -1695,7 +1452,7 @@ void ManualSeedSelector::setupUi()
     sidebarSplitter->setToolTip("Drag handles to resize each right-side block.");
 
     // Label selector at top
-    QGroupBox *labelGroup = new QGroupBox("Label");
+    SectionGroup *labelGroup = new SectionGroup("Label");
     labelGroup->setMinimumHeight(90);
     QHBoxLayout *labelLayout = new QHBoxLayout(labelGroup);
     labelLayout->setSpacing(6);
@@ -1717,7 +1474,7 @@ void ManualSeedSelector::setupUi()
     sidebarSplitter->addWidget(labelGroup);
 
     // Loaded images section
-    QGroupBox *niftiListGroup = new QGroupBox("Images");
+    SectionGroup *niftiListGroup = new SectionGroup("Images");
     niftiListGroup->setMinimumHeight(150);
     QVBoxLayout *niftiListLayout = new QVBoxLayout(niftiListGroup);
     niftiListLayout->setSpacing(4);
@@ -1987,7 +1744,7 @@ void ManualSeedSelector::setupUi()
     sidebarSplitter->addWidget(niftiListGroup);
 
     // Masks section
-    QGroupBox *maskListGroup = new QGroupBox("Masks");
+    SectionGroup *maskListGroup = new SectionGroup("Masks");
     maskListGroup->setMinimumHeight(140);
     QVBoxLayout *maskListLayout = new QVBoxLayout(maskListGroup);
     maskListLayout->setSpacing(4);
@@ -2247,7 +2004,7 @@ void ManualSeedSelector::setupUi()
     sidebarSplitter->addWidget(maskListGroup);
 
     // Seed Groups section
-    QGroupBox *seedListGroup = new QGroupBox("Seed Groups");
+    SectionGroup *seedListGroup = new SectionGroup("Seed Groups");
     seedListGroup->setMinimumHeight(140);
     QVBoxLayout *seedListLayout = new QVBoxLayout(seedListGroup);
     seedListLayout->setSpacing(4);
@@ -2505,7 +2262,7 @@ void ManualSeedSelector::setupUi()
     contentSplitter->setStretchFactor(0, 0); // tool sidebar: fixed-ish
     contentSplitter->setStretchFactor(1, 1); // view grid: expands
     contentSplitter->setStretchFactor(2, 0); // data sidebar: fixed-ish
-    contentSplitter->setSizes({260, 820, 280});
+    contentSplitter->setSizes({300, 780, 300});
 
     // =====================================================
     // BOTTOM: Logs + status bar (resizable via the main vertical splitter)
@@ -2517,7 +2274,7 @@ void ManualSeedSelector::setupUi()
     bottomSectionLayout->setSpacing(6);
 
     QLabel *logHeader = new QLabel("Logs");
-    logHeader->setObjectName("logHeader");
+    Theme::applyLabelStyle(logHeader);
     bottomSectionLayout->addWidget(logHeader, 0);
 
     m_logConsole = new QPlainTextEdit();
@@ -2834,6 +2591,9 @@ void ManualSeedSelector::setupUi()
 
     if (m_mask3DView)
         m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
+
+    // The wheel scrolls; it does not edit. Installed once every control exists.
+    Theme::guardWheel(this);
 
     // Restore persisted window geometry, splitter sizes and section expansion.
     restoreUiState();
@@ -3855,6 +3615,19 @@ void ManualSeedSelector::setActiveTool(InteractionTool tool)
         m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
 }
 
+void ManualSeedSelector::expandDefaultSections()
+{
+    // Windowing and seeds are what a session starts with; the rest is one click
+    // away. Opening all five at once is what made the sidebar unreadable.
+    static const QStringList kDefaultOpen{"windowLevel", "seeds"};
+
+    for (CollapsibleSection *sec : m_toolSections)
+    {
+        if (sec)
+            sec->setExpanded(kDefaultOpen.contains(sec->sectionName()));
+    }
+}
+
 void ManualSeedSelector::closeEvent(QCloseEvent *event)
 {
     saveUiState();
@@ -3902,14 +3675,23 @@ void ManualSeedSelector::restoreUiState()
     restoreSplitter(m_contentSplitter, "splitter/content");
     restoreSplitter(m_sidebarSplitter, "splitter/sidebar");
 
+    bool anySectionRestored = false;
     for (CollapsibleSection *sec : m_toolSections)
     {
         if (!sec)
             continue;
         const QString key = QString("section/%1/expanded").arg(sec->sectionName());
         if (settings.contains(key))
+        {
             sec->setExpanded(settings.value(key).toBool());
+            anySectionRestored = true;
+        }
     }
+
+    // Nothing persisted means a first run. Once a session has saved its own
+    // expansion choices, those win.
+    if (!anySectionRestored)
+        expandDefaultSections();
 }
 
 void ManualSeedSelector::setRulerEnabled(bool enabled)
@@ -4422,7 +4204,10 @@ void ManualSeedSelector::updateLabelColor(int label)
     QPixmap pm(m_labelColorIndicator->width(), m_labelColorIndicator->height());
     pm.fill(c);
     m_labelColorIndicator->setPixmap(pm);
-    m_labelColorIndicator->setStyleSheet("border:1px solid black;");
+    // A colour chip is a cell, so it takes the cell radius; a hairline separates
+    // it from the field beside it without pretending to be a frame.
+    m_labelColorIndicator->setStyleSheet(
+        QString("border: 1px solid %1; border-radius: 5px;").arg(Theme::kHairline));
 }
 
 // =============================================================================
@@ -5014,6 +4799,42 @@ void ManualSeedSelector::update3DMaskView()
 void ManualSeedSelector::setMaskMode(int mode)
 {
     m_maskMode = mode;
+    // Painting the mask and placing seeds both want the left button, so turning
+    // one on turns the other off rather than letting them fight over the click.
+    if (mode != 0 && m_seedMode != 0)
+    {
+        m_seedMode = 0;
+        if (m_btnSeedOff)
+        {
+            QSignalBlocker blocker(m_btnSeedOff);
+            m_btnSeedOff->setChecked(true);
+        }
+    }
+    syncActiveTool();
+}
+
+void ManualSeedSelector::setSeedMode(int mode)
+{
+    m_seedMode = mode;
+    if (mode != 0 && m_maskMode != 0)
+    {
+        m_maskMode = 0;
+        if (m_btnMaskOff)
+        {
+            QSignalBlocker blocker(m_btnMaskOff);
+            m_btnMaskOff->setChecked(true);
+        }
+    }
+    syncActiveTool();
+}
+
+void ManualSeedSelector::syncActiveTool()
+{
+    // The active tool is not chosen anywhere; it is read back off the two
+    // Drawing Mode rows, which are the only place the choice is expressed.
+    setActiveTool(m_maskMode != 0   ? InteractionTool::Mask
+                  : m_seedMode != 0 ? InteractionTool::Seeds
+                                    : InteractionTool::Navigate);
 }
 
 void ManualSeedSelector::cleanMask()
@@ -5112,8 +4933,9 @@ void ManualSeedSelector::rebuildMaskLabelFilter()
 
         QLabel *swatch = new QLabel();
         swatch->setFixedSize(14, 14);
-        swatch->setStyleSheet(QString("background-color: %1; border: 1px solid #000000; border-radius: 2px;")
-                                  .arg(color.name()));
+        swatch->setStyleSheet(QString("background-color: %1; border: 1px solid %2; border-radius: 4px;")
+                                  .arg(color.name())
+                                  .arg(Theme::kHairline));
         rowLayout->addWidget(swatch, 0);
 
         QCheckBox *check = new QCheckBox(QString("Label %1").arg(label));
