@@ -134,6 +134,41 @@ else()
   message(WARNING "Qt6 Svg module not found. NIfTI icon buttons will use non-SVG fallbacks.")
 endif()
 
+# Off by default: these targets are only needed to run the self-tests.
+option(BUILD_ROIFT_TESTS "Build the import probe and path-helper tests" OFF)
+if(BUILD_ROIFT_TESTS)
+  enable_testing()
+
+  add_executable(ui_paths_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_paths_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/UiUtils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/RangeSlider.cpp
+  )
+  target_include_directories(ui_paths_test PRIVATE src)
+  target_link_libraries(ui_paths_test PRIVATE Qt6::Widgets)
+  add_test(NAME ui_paths COMMAND ui_paths_test)
+
+  add_executable(npz_import_probe
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/npz_import_probe.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NpzVolume.cpp
+  )
+  target_include_directories(npz_import_probe PRIVATE src)
+  target_link_libraries(npz_import_probe PRIVATE ${ITK_LIBRARIES})
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME npz_import
+      COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/npz_import_selftest.py
+        $<TARGET_FILE:npz_import_probe>
+    )
+    # The script exits 77 when numpy/SimpleITK are missing rather than failing.
+    set_tests_properties(npz_import PROPERTIES SKIP_RETURN_CODE 77)
+  else()
+    message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
+  endif()
+endif()
+
 if(DEFINED _vcpkg_root AND _vcpkg_root)
   target_link_directories(roift_gui PRIVATE
     "$<$<CONFIG:Debug>:${_vcpkg_root}/debug/lib>"

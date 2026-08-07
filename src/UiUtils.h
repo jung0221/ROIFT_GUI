@@ -92,23 +92,42 @@ QWidget *makeSliderStepperRow(QSlider *slider, QWidget *parent = nullptr);
 /// Trim and unquote a single CSV cell value.
 QString normalizeCsvCell(QString value);
 
+// ---------------------------------------------------------------------------
+// Openable image formats
+//
+// Kept in one place so the file dialogs, the CSV importer and the folder scan
+// all agree on what counts as an image instead of each repeating the list.
+// ---------------------------------------------------------------------------
+
+/// True when the path's extension is one the GUI can open as a volume.
+bool isSupportedImagePath(const QString &path);
+
+/// QFileDialog filter for opening images (NIfTI, DICOM and NumPy).
+QString imageOpenFileFilter();
+
+/// QFileDialog filter for opening masks (NIfTI and NumPy; DICOM holds no labels).
+QString maskOpenFileFilter();
+
+/// Strip a known image extension (.nii, .nii.gz, .npz, .npy) from a filename.
+QString stripImageSuffix(const QString &fileName);
+
 /// Escape a value for CSV output (handles commas, quotes, newlines).
 QString csvEscapeCell(const QString &value);
 
 /// Parse a single CSV row into a list of field values.
 QStringList parseCsvRow(const QString &line);
 
-/// Return true if the cell value looks like a NIfTI file path.
-bool isNiftiPathCell(const QString &value);
+/// Return true if the cell value looks like a path to an openable image.
+bool isImagePathCell(const QString &value);
 
-/// Return true if the filename looks like a NIfTI mask (ends in .nii or .nii.gz).
-bool isNiftiMaskFilenameCandidate(const QString &fileName);
+/// Return true if the filename looks like a mask volume (NIfTI or NumPy).
+bool isMaskFilenameCandidate(const QString &fileName);
 
 /// Return true if the filename looks like a seed file (ends in .txt).
 bool isSeedFilenameCandidate(const QString &fileName);
 
-/// Heuristically choose the column most likely to contain NIfTI paths.
-int chooseNiftiColumn(const QStringList &headers, const std::vector<int> &niftiCounts);
+/// Heuristically choose the column most likely to contain image paths.
+int chooseImageColumn(const QStringList &headers, const std::vector<int> &pathCounts);
 
 // ---------------------------------------------------------------------------
 // Path resolution
@@ -134,9 +153,6 @@ QString resolveProjectScriptPath(const QString &relativePath);
 
 /// Open the containing folder in the OS file manager, optionally selecting the file.
 bool revealPathInFileManager(const QString &path, QString *openedPath = nullptr, QString *errorMessage = nullptr);
-
-/// Strip .nii or .nii.gz suffix from a filename.
-QString stripNiftiSuffix(const QString &fileName);
 
 // ---------------------------------------------------------------------------
 // Progress / display helpers

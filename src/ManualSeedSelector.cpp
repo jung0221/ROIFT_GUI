@@ -104,6 +104,7 @@
 #include <itkNiftiImageIO.h>
 #include <zlib.h>
 
+#include "NpzImportDialog.h"
 #include "UiUtils.h"
 
 using namespace UiUtils;
@@ -790,12 +791,12 @@ void ManualSeedSelector::setupUi()
     mainToolBar->setFloatable(false);
 
     QAction *actOpen = mainToolBar->addAction("Open");
-    actOpen->setToolTip("Open a NIfTI image or DICOM series (Ctrl+O)");
+    actOpen->setToolTip("Open an image: NIfTI, DICOM series or NumPy array (Ctrl+O)");
     actOpen->setShortcut(QKeySequence("Ctrl+O"));
     connect(actOpen, &QAction::triggered, this, &ManualSeedSelector::openImage);
 
     QAction *actOpenCsv = mainToolBar->addAction("Open CSV");
-    actOpenCsv->setToolTip("Open a CSV and add NIfTI paths listed in it");
+    actOpenCsv->setToolTip("Open a CSV and add the image paths listed in it");
     connect(actOpenCsv, &QAction::triggered, this, &ManualSeedSelector::openImagesFromCsv);
 
     QAction *actSave = mainToolBar->addAction("Save");
@@ -1147,10 +1148,11 @@ void ManualSeedSelector::setupUi()
     maskFileLayout->addWidget(btnMaskSave);
 
     QPushButton *btnMaskLoad = new QPushButton("Load");
-    btnMaskLoad->setToolTip("Load mask from NIfTI");
+    btnMaskLoad->setToolTip("Load mask from NIfTI or NumPy");
     connect(btnMaskLoad, &QPushButton::clicked, [this]()
             {
-        QString f = QFileDialog::getOpenFileName(this, "Open Mask", "", "NIfTI files (*.nii *.nii.gz)");
+        QString f = QFileDialog::getOpenFileName(this, "Open Mask", "",
+                                                 maskOpenFileFilter());
         if (!f.isEmpty()) {
             loadMaskFromFile(f.toStdString());
             updateViews();
@@ -1714,8 +1716,8 @@ void ManualSeedSelector::setupUi()
 
     sidebarSplitter->addWidget(labelGroup);
 
-    // NIfTI Images section
-    QGroupBox *niftiListGroup = new QGroupBox("NIfTI Images");
+    // Loaded images section
+    QGroupBox *niftiListGroup = new QGroupBox("Images");
     niftiListGroup->setMinimumHeight(150);
     QVBoxLayout *niftiListLayout = new QVBoxLayout(niftiListGroup);
     niftiListLayout->setSpacing(4);
@@ -1778,11 +1780,11 @@ void ManualSeedSelector::setupUi()
     connect(btnExportNiftiCsv, &QToolButton::clicked, [this]()
             {
         if (m_images.empty()) {
-            QMessageBox::information(this, "Export CSV", "There are no NIfTI paths to export.");
+            QMessageBox::information(this, "Export CSV", "There are no image paths to export.");
             return;
         }
 
-        QString outputPath = QFileDialog::getSaveFileName(this, "Export NIfTI Paths CSV", "", "CSV files (*.csv);;All files (*)");
+        QString outputPath = QFileDialog::getSaveFileName(this, "Export Image Paths CSV", "", "CSV files (*.csv);;All files (*)");
         if (outputPath.isEmpty())
             return;
         if (!outputPath.toLower().endsWith(".csv"))
@@ -1795,12 +1797,12 @@ void ManualSeedSelector::setupUi()
         }
 
         QTextStream stream(&outputFile);
-        stream << "nifti_path\n";
+        stream << "image_path\n";
         for (const ImageData &imageData : m_images)
             stream << csvEscapeCell(QString::fromStdString(imageData.imagePath)) << '\n';
 
         if (m_statusLabel)
-            m_statusLabel->setText(QString("Exported %1 NIfTI path(s) to %2").arg(m_images.size()).arg(outputPath));
+            m_statusLabel->setText(QString("Exported %1 image path(s) to %2").arg(m_images.size()).arg(outputPath));
     });
 
     QToolButton *btnRemoveNifti = new QToolButton();
@@ -1842,7 +1844,7 @@ void ManualSeedSelector::setupUi()
         QMessageBox::StandardButton answer = QMessageBox::question(
             this,
             "Confirm Remove All",
-            "Are you sure you want to remove all NIfTI images from the list?",
+            "Are you sure you want to remove all images from the list?",
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
         if (answer != QMessageBox::Yes)
@@ -1877,7 +1879,7 @@ void ManualSeedSelector::setupUi()
         updateMaskSeedLists();
         updateViews();
         if (m_statusLabel)
-            m_statusLabel->setText("All NIfTI images removed.");
+            m_statusLabel->setText("All images removed.");
     });
 
     niftiButtonsLayout->addStretch(1);
@@ -1918,7 +1920,7 @@ void ManualSeedSelector::setupUi()
             }
 
             const std::string &path = m_images[row].imagePath;
-            if (m_image.load(path)) {
+            if (loadImageData(m_images[row])) {
                 m_currentImageIndex = row;
                 m_path = path;
                 autoDetectAssociatedFilesForImage(row, false);
@@ -2007,7 +2009,8 @@ void ManualSeedSelector::setupUi()
     connect(btnLoadMask, &QToolButton::clicked, [this]()
             {
         const bool hadImage = hasImage();
-        QStringList files = QFileDialog::getOpenFileNames(this, "Open Masks", "", "NIfTI files (*.nii *.nii.gz)");
+        QStringList files = QFileDialog::getOpenFileNames(this, "Open Masks", "",
+                                                          maskOpenFileFilter());
         if (files.isEmpty())
             return;
 
@@ -2840,11 +2843,79 @@ void ManualSeedSelector::setupUi()
 // IMAGE I/O
 // =============================================================================
 
+bool ManualSeedSelector::loadImageData(ImageData &data)
+{
+    if (!data.isNumpy)
+        return m_image.load(data.imagePath);
+
+    NpzImportReport report;
+    if (!m_image.loadNumpy(data.imagePath, data.npzOptions, &report))
+        return false;
+
+    // Pin down whatever "Automatic" resolved to. Masks loaded next inherit it,
+    // and reselecting the image later cannot silently resolve it differently.
+    data.npzOptions.axisOrder = report.axisOrder;
+    for (int i = 0; i < 3; ++i)
+        data.npzOptions.flip[i] = report.flip[i];
+    return true;
+}
+
+std::string ManualSeedSelector::nativeImagePath()
+{
+    if (m_path.empty() || !NiftiImage::isNumpyPath(m_path))
+        return m_path;
+
+    // Reuse the export while the same image stays loaded.
+    if (m_nativeImageSource == m_path && !m_nativeImagePath.empty() &&
+        QFileInfo::exists(QString::fromStdString(m_nativeImagePath)))
+        return m_nativeImagePath;
+
+    const QString baseName = stripImageSuffix(QFileInfo(QString::fromStdString(m_path)).fileName());
+    const QString exportPath = QDir::temp().filePath(QString("roift_npz_%1.nii.gz").arg(baseName));
+    if (!m_image.save(exportPath.toStdString()))
+    {
+        QMessageBox::warning(this, "NumPy image",
+                             "Could not export this NumPy volume to a temporary NIfTI file, which the "
+                             "segmentation tools need in order to read it.");
+        return m_path;
+    }
+
+    m_nativeImagePath = exportPath.toStdString();
+    m_nativeImageSource = m_path;
+    std::cerr << "ManualSeedSelector::nativeImagePath: exported '" << m_path << "' to '"
+              << m_nativeImagePath << "' for the external tools\n";
+    return m_nativeImagePath;
+}
+
+NpzImportOptions ManualSeedSelector::numpyOptionsForMask() const
+{
+    NpzImportOptions options;
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        const ImageData &current = m_images[static_cast<size_t>(m_currentImageIndex)];
+        if (current.isNumpy)
+        {
+            // Only the reading convention carries over; the array name and
+            // channel belong to the mask file, not to the image.
+            options.axisOrder = current.npzOptions.axisOrder;
+            for (int i = 0; i < 3; ++i)
+                options.flip[i] = current.npzOptions.flip[i];
+        }
+    }
+    if (m_image.getSizeX() > 0)
+    {
+        options.spacing[0] = m_image.getSpacingX();
+        options.spacing[1] = m_image.getSpacingY();
+        options.spacing[2] = m_image.getSpacingZ();
+    }
+    return options;
+}
+
 void ManualSeedSelector::openImage()
 {
     QStringList files = QFileDialog::getOpenFileNames(
-        this, "Open Medical Images", "",
-        "Medical images (*.nii *.nii.gz *.dcm *.dicom *.ima);;NIfTI files (*.nii *.nii.gz);;DICOM files (*.dcm *.dicom *.ima);;All files (*)");
+        this, "Open Images", "",
+        imageOpenFileFilter());
     if (files.isEmpty())
         return;
 
@@ -2865,7 +2936,7 @@ void ManualSeedSelector::openImage()
 
 void ManualSeedSelector::openImagesFromCsv()
 {
-    const QString csvPath = QFileDialog::getOpenFileName(this, "Open CSV with NIfTI paths", "", "CSV files (*.csv);;All files (*)");
+    const QString csvPath = QFileDialog::getOpenFileName(this, "Open CSV with image paths", "", "CSV files (*.csv);;All files (*)");
     if (csvPath.isEmpty())
         return;
 
@@ -2873,7 +2944,7 @@ void ManualSeedSelector::openImagesFromCsv()
     const QStringList paths = extractNiftiPathsFromCsv(csvPath, &errorMessage);
     if (paths.isEmpty())
     {
-        QMessageBox::warning(this, "Open CSV", errorMessage.isEmpty() ? "No valid NIfTI paths were found in the selected CSV." : errorMessage);
+        QMessageBox::warning(this, "Open CSV", errorMessage.isEmpty() ? "No valid image paths were found in the selected CSV." : errorMessage);
         return;
     }
 
@@ -2912,7 +2983,7 @@ void ManualSeedSelector::openMasksFromCsv()
     const QStringList paths = extractNiftiPathsFromCsv(csvPath, &errorMessage);
     if (paths.isEmpty())
     {
-        QMessageBox::warning(this, "Open CSV", errorMessage.isEmpty() ? "No valid NIfTI paths were found in the selected CSV." : errorMessage);
+        QMessageBox::warning(this, "Open CSV", errorMessage.isEmpty() ? "No valid image paths were found in the selected CSV." : errorMessage);
         return;
     }
 
@@ -3003,6 +3074,14 @@ int ManualSeedSelector::addImagesToList(const QStringList &paths, int *duplicate
         ImageData imageData;
         imageData.imagePath = key;
         imageData.color = getColorForImageIndex(static_cast<int>(m_images.size()));
+        // Settle how to read a numpy container now, while the user is here to
+        // answer; the choice is then reused each time the entry is selected.
+        if (NiftiImage::isNumpyPath(key))
+        {
+            if (!NpzImportDialog::chooseOptions(this, normalized, imageData.npzOptions))
+                continue;
+            imageData.isNumpy = true;
+        }
         m_images.push_back(std::move(imageData));
 
         const QString filename = QFileInfo(normalized).fileName();
@@ -3221,7 +3300,7 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
 
     std::vector<QStringList> rows;
     rows.reserve(512);
-    std::vector<int> niftiCounts(headers.size(), 0);
+    std::vector<int> imagePathCounts(headers.size(), 0);
 
     while (!stream.atEnd())
     {
@@ -3240,8 +3319,8 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
 
         for (int i = 0; i < columns.size(); ++i)
         {
-            if (isNiftiPathCell(columns[i]))
-                ++niftiCounts[i];
+            if (isImagePathCell(columns[i]))
+                ++imagePathCounts[i];
         }
 
         rows.push_back(columns);
@@ -3254,11 +3333,11 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
         return {};
     }
 
-    const int pathColumn = chooseNiftiColumn(headers, niftiCounts);
+    const int pathColumn = chooseImageColumn(headers, imagePathCounts);
     if (pathColumn < 0)
     {
         if (errorMessage)
-            *errorMessage = "Could not find a column containing NIfTI paths (.nii/.nii.gz).";
+            *errorMessage = "Could not find a column containing image paths (.nii, .nii.gz, .npz, .npy, DICOM).";
         return {};
     }
 
@@ -3274,7 +3353,7 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
             continue;
 
         const QString rawPath = normalizeCsvCell(row[pathColumn]);
-        if (!isNiftiPathCell(rawPath))
+        if (!isImagePathCell(rawPath))
             continue;
 
         const QFileInfo rowPathInfo(rawPath);
@@ -3287,7 +3366,7 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
     }
 
     if (extractedPaths.isEmpty() && errorMessage)
-        *errorMessage = QString("Column '%1' was found, but no valid NIfTI paths were extracted.").arg(headers[pathColumn]);
+        *errorMessage = QString("Column '%1' was found, but no valid image paths were extracted.").arg(headers[pathColumn]);
 
     return extractedPaths;
 }
@@ -3305,7 +3384,7 @@ void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex, bool 
     const QDir imageDir = QFileInfo(imagePath).dir();
     if (!imageDir.exists())
         return;
-    const QString currentImageBaseName = stripNiftiSuffix(QFileInfo(imagePath).fileName()).trimmed().toLower();
+    const QString currentImageBaseName = stripImageSuffix(QFileInfo(imagePath).fileName()).trimmed().toLower();
 
     std::vector<std::string> detectedMaskPaths;
     std::vector<std::string> detectedSeedPaths;
@@ -3333,9 +3412,9 @@ void ManualSeedSelector::autoDetectAssociatedFilesForImage(int imageIndex, bool 
         const QString fileName = fileInfo.fileName();
         const std::string absolutePath = QDir::cleanPath(fileInfo.absoluteFilePath()).toStdString();
 
-        if (isNiftiMaskFilenameCandidate(fileName))
+        if (isMaskFilenameCandidate(fileName))
         {
-            const QString candidateBaseName = stripNiftiSuffix(fileName).trimmed().toLower();
+            const QString candidateBaseName = stripImageSuffix(fileName).trimmed().toLower();
             if (candidateBaseName != currentImageBaseName)
             {
                 if (maskKeys.insert(absolutePath).second)
@@ -3375,7 +3454,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
     if (imageSX == 0 || imageSY == 0 || imageSZ == 0)
         return false;
 
-    const QString imageBaseName = stripNiftiSuffix(QFileInfo(QString::fromStdString(m_images[static_cast<size_t>(m_currentImageIndex)].imagePath)).fileName()).trimmed().toLower();
+    const QString imageBaseName = stripImageSuffix(QFileInfo(QString::fromStdString(m_images[static_cast<size_t>(m_currentImageIndex)].imagePath)).fileName()).trimmed().toLower();
     if (imageBaseName.isEmpty())
         return false;
 
@@ -3409,9 +3488,9 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
     for (const std::string &path : candidatePaths)
     {
         const QString fileName = QFileInfo(QString::fromStdString(path)).fileName();
-        if (!isNiftiMaskFilenameCandidate(fileName))
+        if (!isMaskFilenameCandidate(fileName))
             continue;
-        const QString base = stripNiftiSuffix(fileName).trimmed().toLower();
+        const QString base = stripImageSuffix(fileName).trimmed().toLower();
         if (!base.contains(imageBaseName))
             continue;
 
@@ -5250,17 +5329,61 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
         const QString absoluteMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath());
         const bool hasImage = (m_image.getSizeX() > 0 && m_image.getSizeY() > 0 && m_image.getSizeZ() > 0);
 
-        using ImageType = itk::Image<int32_t, 3>;
-        using ReaderType = itk::ImageFileReader<ImageType>;
-        ReaderType::Pointer reader = ReaderType::New();
-        reader->SetFileName(path);
-        reader->Update();
-        ImageType::Pointer img = reader->GetOutput();
-        ImageType::RegionType region = img->GetLargestPossibleRegion();
-        ImageType::SizeType size = region.GetSize();
-        unsigned int sx = static_cast<unsigned int>(size[0]);
-        unsigned int sy = static_cast<unsigned int>(size[1]);
-        unsigned int sz = static_cast<unsigned int>(size[2]);
+        // Read the labels first, then apply them; the two readers differ but
+        // everything downstream only needs dimensions, spacing and values.
+        unsigned int sx = 0, sy = 0, sz = 0;
+        double maskSpacing[3] = {1.0, 1.0, 1.0};
+        std::vector<int> labelValues; // C-order, X fastest
+
+        if (NiftiImage::isNumpyPath(path))
+        {
+            // Numpy masks go through the same importer as numpy images, and
+            // inherit the current image's axis order and mirroring: read under
+            // a different convention a mask still matches in size, so the
+            // mismatch would show up only as labels sitting on wrong anatomy.
+            NiftiImage volume;
+            std::string importError;
+            if (!volume.loadNumpy(path, numpyOptionsForMask(), nullptr, &importError))
+            {
+                m_loadedMaskPath.clear();
+                QMessageBox::critical(this, "Load Mask", QString::fromStdString(importError));
+                return false;
+            }
+            sx = volume.getSizeX();
+            sy = volume.getSizeY();
+            sz = volume.getSizeZ();
+            maskSpacing[0] = volume.getSpacingX();
+            maskSpacing[1] = volume.getSpacingY();
+            maskSpacing[2] = volume.getSpacingZ();
+            labelValues.resize(size_t(sx) * size_t(sy) * size_t(sz));
+            size_t writeIdx = 0;
+            for (unsigned int z = 0; z < sz; ++z)
+                for (unsigned int y = 0; y < sy; ++y)
+                    for (unsigned int x = 0; x < sx; ++x)
+                        labelValues[writeIdx++] = static_cast<int>(std::lround(volume.getVoxelValue(x, y, z)));
+        }
+        else
+        {
+            using MaskImageType = itk::Image<int32_t, 3>;
+            using ReaderType = itk::ImageFileReader<MaskImageType>;
+            ReaderType::Pointer reader = ReaderType::New();
+            reader->SetFileName(path);
+            reader->Update();
+            MaskImageType::Pointer img = reader->GetOutput();
+            MaskImageType::RegionType region = img->GetLargestPossibleRegion();
+            MaskImageType::SizeType size = region.GetSize();
+            sx = static_cast<unsigned int>(size[0]);
+            sy = static_cast<unsigned int>(size[1]);
+            sz = static_cast<unsigned int>(size[2]);
+            const auto spacing = img->GetSpacing();
+            for (int i = 0; i < 3; ++i)
+                maskSpacing[i] = std::abs(static_cast<double>(spacing[i]));
+            labelValues.resize(size_t(sx) * size_t(sy) * size_t(sz));
+            itk::ImageRegionConstIterator<MaskImageType> it(img, region);
+            size_t writeIdx = 0;
+            for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++writeIdx)
+                labelValues[writeIdx] = static_cast<int>(it.Get());
+        }
 
         if (hasImage &&
             (sx != m_image.getSizeX() || sy != m_image.getSizeY()))
@@ -5289,7 +5412,6 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
             return false;
         }
 
-        const auto spacing = img->GetSpacing();
         if (hasImage)
         {
             m_maskSpacingX = m_image.getSpacingX();
@@ -5298,9 +5420,9 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
         }
         else
         {
-            m_maskSpacingX = std::abs(static_cast<double>(spacing[0]));
-            m_maskSpacingY = std::abs(static_cast<double>(spacing[1]));
-            m_maskSpacingZ = std::abs(static_cast<double>(spacing[2]));
+            m_maskSpacingX = maskSpacing[0];
+            m_maskSpacingY = maskSpacing[1];
+            m_maskSpacingZ = maskSpacing[2];
             if (!std::isfinite(m_maskSpacingX) || m_maskSpacingX <= 0.0)
                 m_maskSpacingX = 1.0;
             if (!std::isfinite(m_maskSpacingY) || m_maskSpacingY <= 0.0)
@@ -5308,18 +5430,10 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
             if (!std::isfinite(m_maskSpacingZ) || m_maskSpacingZ <= 0.0)
                 m_maskSpacingZ = 1.0;
         }
-        size_t tot = size_t(sx) * size_t(sy) * size_t(sz);
-        m_maskData.clear();
-        m_maskData.resize(tot);
         m_maskDimX = sx;
         m_maskDimY = sy;
         m_maskDimZ = sz;
-        itk::ImageRegionConstIterator<ImageType> it(img, region);
-        size_t idx = 0;
-        for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++idx)
-        {
-            m_maskData[idx] = static_cast<int>(it.Get());
-        }
+        m_maskData = std::move(labelValues);
 
         if (hasImage && sz != m_image.getSizeZ() && m_statusLabel)
         {
