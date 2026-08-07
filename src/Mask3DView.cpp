@@ -1,5 +1,6 @@
 #include "Mask3DView.h"
 #include "ColorUtils.h"
+#include "Theme.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -44,7 +45,11 @@ Mask3DView::Mask3DView(QWidget *parent)
     : QWidget(parent)
 {
     setAutoFillBackground(true);
-    setStyleSheet("background-color:#111111; color: #ffffff;");
+    // The render surface sits at bezel depth: it is the frame the geometry
+    // floats in, not a panel laid on top of one.
+    setStyleSheet(QString("Mask3DView { background-color: %1; } QLabel { color: %2; }")
+                      .arg(Theme::kBezel)
+                      .arg(Theme::kInk2));
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(2, 2, 2, 2);
@@ -79,7 +84,10 @@ void Mask3DView::buildPipeline()
     m_vtkWidget->setRenderWindow(m_renderWindow.Get());
 
     m_renderer = vtkSmartPointer<vtkRenderer>::New();
-    m_renderer->SetBackground(0.012, 0.012, 0.012);
+    // Match the bezel so the 3D canvas reads as the same surface as the frame
+    // around it instead of a darker hole cut into the window.
+    const QColor bezel(Theme::kBezel);
+    m_renderer->SetBackground(bezel.redF(), bezel.greenF(), bezel.blueF());
     m_renderer->GradientBackgroundOn();
 
     // Add lights for better visualization
@@ -721,8 +729,11 @@ void Mask3DView::updateColorButtonStyle()
     int label = m_labelCombo->itemData(idx).toInt();
     auto it = m_labelColors.find(label);
     QColor color = (it != m_labelColors.end()) ? it->second : QColor(Qt::white);
-    QString textColor = (color.valueF() > 0.5f) ? "#000000" : "#ffffff";
-    m_colorButton->setStyleSheet(QString("background:%1; color:%2;").arg(color.name()).arg(textColor));
+    QString textColor = (color.valueF() > 0.5f) ? Theme::kOnAccent : Theme::kInk;
+    m_colorButton->setStyleSheet(QString("background: %1; color: %2; border: none; border-radius: %3px;")
+                                     .arg(color.name())
+                                     .arg(textColor)
+                                     .arg(Theme::kRadiusField));
 }
 
 void Mask3DView::setStatusText(const QString &text)
