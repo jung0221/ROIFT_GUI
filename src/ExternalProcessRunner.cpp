@@ -44,7 +44,7 @@ void ManualSeedSelector::runLunasSeedGeneration()
         return;
     }
 
-    const QString inputPath = QString::fromStdString(m_path);
+    const QString inputPath = QString::fromStdString(nativeImagePath());
     if (!QFileInfo::exists(inputPath))
     {
         QMessageBox::warning(this, "Generate Seeds", "The current image path does not exist on disk.");
@@ -67,7 +67,7 @@ void ManualSeedSelector::runLunasSeedGeneration()
     }
 
     const QFileInfo inputInfo(inputPath);
-    const QString patientName = stripNiftiSuffix(inputInfo.fileName());
+    const QString patientName = stripImageSuffix(inputInfo.fileName());
     QDir outputRootDir = inputInfo.absoluteDir();
     if (QString::compare(outputRootDir.dirName(), patientName, Qt::CaseInsensitive) == 0)
     {
@@ -183,7 +183,7 @@ void ManualSeedSelector::runRibsSeedGeneration()
         return;
     }
 
-    const QString inputPath = QString::fromStdString(m_path);
+    const QString inputPath = QString::fromStdString(nativeImagePath());
     if (!QFileInfo::exists(inputPath))
     {
         QMessageBox::warning(this, "Generate Seeds", "The current image path does not exist on disk.");
@@ -206,7 +206,7 @@ void ManualSeedSelector::runRibsSeedGeneration()
     }
 
     const QFileInfo inputInfo(inputPath);
-    const QString patientName = stripNiftiSuffix(inputInfo.fileName());
+    const QString patientName = stripImageSuffix(inputInfo.fileName());
     const QString segmentedDir = inputInfo.absolutePath();
 
     const QDir segDir(segmentedDir);
@@ -365,7 +365,7 @@ void ManualSeedSelector::runSuperResolution()
         return;
     }
 
-    const QString inputPath = QString::fromStdString(m_path);
+    const QString inputPath = QString::fromStdString(nativeImagePath());
     if (!QFileInfo::exists(inputPath))
     {
         QMessageBox::warning(this, "Super Resolution", "The current image path does not exist on disk.");
@@ -598,7 +598,7 @@ void ManualSeedSelector::runMaskPostProcessing()
         return;
     }
 
-    QString baseName = stripNiftiSuffix(QFileInfo(inputMaskPath).fileName());
+    QString baseName = stripImageSuffix(QFileInfo(inputMaskPath).fileName());
     QString defaultOutput = QDir(QFileInfo(inputMaskPath).absolutePath()).filePath(baseName + "_post.nii.gz");
     QString outQ = QFileDialog::getSaveFileName(
         this,
@@ -855,8 +855,11 @@ void ManualSeedSelector::runVesselGraph()
             return;
     }
 
+    // Output names follow the image the user opened; the payload path may be
+    // a temporary NIfTI when that image is a numpy array.
     const QFileInfo imageInfo(QString::fromStdString(m_path));
-    const QString baseName = stripNiftiSuffix(imageInfo.fileName());
+    const QFileInfo imagePayload(QString::fromStdString(nativeImagePath()));
+    const QString baseName = stripImageSuffix(imageInfo.fileName());
     const QDir outDir = imageInfo.absoluteDir();
     const QString outPath = outDir.filePath(baseName + "_vessel_graph.nii.gz");
     const QString centerlinePath = outDir.filePath(baseName + "_vessel_centerline.nii.gz");
@@ -880,11 +883,11 @@ void ManualSeedSelector::runVesselGraph()
     QStringList args = pythonPrefixArgs;
     args << scriptPath;
     if (segmentFromCt)
-        args << "--ct" << imageInfo.absoluteFilePath()
+        args << "--ct" << imagePayload.absoluteFilePath()
              << "--save-segmentation" << segmentationPath;
     else
         args << "--mask" << tmpMask
-             << "--image" << imageInfo.absoluteFilePath()
+             << "--image" << imagePayload.absoluteFilePath()
              << "--label" << QString::number(domainLabel);
     args << "--root" << QString::number(root->x) << QString::number(root->y) << QString::number(root->z)
          << "--out" << outPath

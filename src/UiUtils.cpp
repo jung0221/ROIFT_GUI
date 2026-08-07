@@ -384,16 +384,73 @@ QStringList parseCsvRow(const QString &line)
     return fields;
 }
 
-bool isNiftiPathCell(const QString &value)
+namespace
 {
-    const QString lower = normalizeCsvCell(value).toLower();
-    return lower.endsWith(".nii") || lower.endsWith(".nii.gz");
+
+// One list, used by every entry point that decides whether a path is an image.
+const QStringList &niftiExtensions()
+{
+    static const QStringList extensions{".nii.gz", ".nii"};
+    return extensions;
 }
 
-bool isNiftiMaskFilenameCandidate(const QString &fileName)
+const QStringList &numpyExtensions()
+{
+    static const QStringList extensions{".npz", ".npy"};
+    return extensions;
+}
+
+const QStringList &dicomExtensions()
+{
+    static const QStringList extensions{".dcm", ".dicom", ".ima"};
+    return extensions;
+}
+
+bool endsWithAny(const QString &lowered, const QStringList &extensions)
+{
+    for (const QString &extension : extensions)
+        if (lowered.endsWith(extension))
+            return true;
+    return false;
+}
+
+} // namespace
+
+bool isSupportedImagePath(const QString &path)
+{
+    const QString lower = path.trimmed().toLower();
+    return endsWithAny(lower, niftiExtensions()) || endsWithAny(lower, numpyExtensions()) ||
+           endsWithAny(lower, dicomExtensions());
+}
+
+QString imageOpenFileFilter()
+{
+    return QStringLiteral(
+        "Images (*.nii *.nii.gz *.dcm *.dicom *.ima *.npz *.npy);;"
+        "NIfTI files (*.nii *.nii.gz);;"
+        "DICOM files (*.dcm *.dicom *.ima);;"
+        "NumPy arrays (*.npz *.npy);;"
+        "All files (*)");
+}
+
+QString maskOpenFileFilter()
+{
+    return QStringLiteral(
+        "Mask volumes (*.nii *.nii.gz *.npz *.npy);;"
+        "NIfTI files (*.nii *.nii.gz);;"
+        "NumPy arrays (*.npz *.npy);;"
+        "All files (*)");
+}
+
+bool isImagePathCell(const QString &value)
+{
+    return isSupportedImagePath(normalizeCsvCell(value));
+}
+
+bool isMaskFilenameCandidate(const QString &fileName)
 {
     const QString lower = fileName.trimmed().toLower();
-    return lower.endsWith(".nii.gz") || lower.endsWith(".nii");
+    return endsWithAny(lower, niftiExtensions()) || endsWithAny(lower, numpyExtensions());
 }
 
 bool isSeedFilenameCandidate(const QString &fileName)
@@ -401,27 +458,25 @@ bool isSeedFilenameCandidate(const QString &fileName)
     return fileName.trimmed().toLower().endsWith(".txt");
 }
 
-int chooseNiftiColumn(const QStringList &headers, const std::vector<int> &niftiCounts)
+int chooseImageColumn(const QStringList &headers, const std::vector<int> &pathCounts)
 {
     int selected = -1;
     int bestScore = -1;
 
     for (int i = 0; i < headers.size(); ++i)
     {
-        if (i < 0 || i >= static_cast<int>(niftiCounts.size()) || niftiCounts[i] <= 0)
+        if (i < 0 || i >= static_cast<int>(pathCounts.size()) || pathCounts[i] <= 0)
             continue;
 
         const QString header = headers[i].trimmed().toLower();
-        int score = niftiCounts[i] * 10;
+        int score = pathCounts[i] * 10;
 
         if (header == "path" || header == "filepath" || header == "file_path" || header == "image_path" || header == "nifti_path")
             score += 1000;
         if (header.contains("path"))
             score += 400;
-        if (header.contains("nifti"))
+        if (header.contains("nifti") || header.contains("image") || header.contains("volume"))
             score += 250;
-        if (header.contains("image"))
-            score += 150;
         if (header.contains("file"))
             score += 100;
 
@@ -697,12 +752,14 @@ bool revealPathInFileManager(const QString &path, QString *openedPath, QString *
     return false;
 }
 
-QString stripNiftiSuffix(const QString &fileName)
+QString stripImageSuffix(const QString &fileName)
 {
     QString baseName = fileName;
     if (baseName.endsWith(".nii.gz", Qt::CaseInsensitive))
         baseName.chop(7);
-    else if (baseName.endsWith(".nii", Qt::CaseInsensitive))
+    else if (baseName.endsWith(".nii", Qt::CaseInsensitive) ||
+             baseName.endsWith(".npz", Qt::CaseInsensitive) ||
+             baseName.endsWith(".npy", Qt::CaseInsensitive))
         baseName.chop(4);
     return baseName;
 }

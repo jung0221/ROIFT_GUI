@@ -71,6 +71,12 @@ public:
     const std::vector<Seed> &getSeeds() const { return m_seeds; }
     // expose image path
     std::string getImagePath() const { return m_path; }
+
+    // A path the native binaries and Python helpers can actually read. Those
+    // consume files, not the in-memory volume, and none of them speak numpy —
+    // so a .npz/.npy image is exported once to a temporary NIfTI carrying the
+    // orientation and spacing it was imported with. Other formats pass through.
+    std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
     // refresh mask/seed associations from disk for current image
@@ -405,7 +411,24 @@ private:
         int lastAxialSlice = -1;
         int lastSagittalSlice = -1;
         int lastCoronalSlice = -1;
+        // Numpy containers hold no header, so how to read them is settled once
+        // when the file is added and reused every time it is selected again.
+        bool isNumpy = false;
+        NpzImportOptions npzOptions;
     };
+
+    // Load a list entry, honouring its numpy import options when it has any.
+    // Writes back what an automatic axis order resolved to, so masks opened
+    // afterwards can be read exactly the same way.
+    bool loadImageData(ImageData &data);
+
+    // Numpy import options for a mask of the current image: the image's own
+    // axis order and mirroring, so both land on the same voxel grid.
+    NpzImportOptions numpyOptionsForMask() const;
+
+    // Cached NIfTI export of a numpy image, and the image it was made from.
+    std::string m_nativeImagePath;
+    std::string m_nativeImageSource;
 
     QListWidget *m_niftiList = nullptr;
     QListWidget *m_maskList = nullptr;
