@@ -143,10 +143,21 @@ if(BUILD_ROIFT_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_paths_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/UiUtils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/RangeSlider.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Theme.cpp
   )
   target_include_directories(ui_paths_test PRIVATE src)
   target_link_libraries(ui_paths_test PRIVATE Qt6::Widgets)
   add_test(NAME ui_paths COMMAND ui_paths_test)
+
+  add_executable(wheel_guard_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/wheel_guard_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Theme.cpp
+  )
+  target_include_directories(wheel_guard_test PRIVATE src)
+  target_link_libraries(wheel_guard_test PRIVATE Qt6::Widgets)
+  add_test(NAME wheel_guard COMMAND wheel_guard_test)
+  # Needs a QApplication but no display.
+  set_tests_properties(wheel_guard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   add_executable(npz_import_probe
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/npz_import_probe.cpp

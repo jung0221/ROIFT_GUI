@@ -1,4 +1,5 @@
 #include "SeedOptionsDialog.h"
+#include "Theme.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QDialogButtonBox>
@@ -37,4 +38,6 @@ SeedOptionsDialog::SeedOptionsDialog(QWidget *parent): QDialog(parent) {
     QDialogButtonBox *box = new QDialogButtonBox(QDialogButtonBox::Close);
     v->addWidget(box);
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    Theme::guardWheel(this);
 }
