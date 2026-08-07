@@ -519,7 +519,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
                 QString outPol = QDir(outDir).filePath(QString("segmentation_pol_%1.nii.gz").arg(tag));
                 QProcess *p = new QProcess();
                 QStringList argsPol;
-                argsPol << QString::fromStdString(parent->getImagePath()) << seedPath << QString::number(polVal, 'f', 1) << QString::number(niter) << QString::number(percentile) << outPol;
+                argsPol << QString::fromStdString(parent->nativeImagePath()) << seedPath << QString::number(polVal, 'f', 1) << QString::number(niter) << QString::number(percentile) << outPol;
                 QStringList quotedArgs;
                 for (const QString &a : argsPol)
                     quotedArgs << '"' + a + '"';
@@ -608,7 +608,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
         {
             QProcess proc;
             QStringList args;
-            args << QString::fromStdString(parent->getImagePath()) << seedPath << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp;
+            args << QString::fromStdString(parent->nativeImagePath()) << seedPath << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp;
             if (useGpuExecution)
                 args << "8" << "" << "0";  // boundary_stride, pol_file (empty), cost_mode=fmax
             QStringList quotedArgs;
@@ -754,7 +754,7 @@ void SegmentationRunner::showSegmentationDialog(ManualSeedSelector *parent)
         // allocate QProcess without parent; we will manage its lifetime manually
         QProcess *proc2 = new QProcess();
         QStringList args2;
-        args2 << QString::fromStdString(parent->getImagePath()) << perSeed << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp2;
+        args2 << QString::fromStdString(parent->nativeImagePath()) << perSeed << QString::number(pol) << QString::number(niter) << QString::number(percentile) << outp2;
         QStringList quoted2;
         for (const QString &a : args2)
             quoted2 << '"' + a + '"';
@@ -1148,7 +1148,7 @@ namespace
         if (!parent || !request)
             return false;
 
-        const QString sourceImagePath = QFileInfo(QString::fromStdString(parent->getImagePath())).absoluteFilePath();
+        const QString sourceImagePath = QFileInfo(QString::fromStdString(parent->nativeImagePath())).absoluteFilePath();
         if (sourceImagePath.isEmpty())
         {
             QMessageBox::warning(parent, "ROIFT", "Load an image before running segmentation.");
