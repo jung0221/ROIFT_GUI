@@ -9,8 +9,11 @@
 
 static void print_help()
 {
-    std::cerr << "roift_gui [--input <nifti_path> [more_paths...]]\n";
-    std::cerr << "You can pass multiple NIfTI paths after --input/-i or as positional arguments.\n";
+    std::cerr << "roift_gui [--input <image_path> [more_paths...]]\n";
+    std::cerr << "You can pass multiple paths after --input/-i or as positional arguments.\n";
+    std::cerr << "Accepted: .nii, .nii.gz, DICOM (file or directory), .npz and .npy.\n";
+    std::cerr << "A .npz/.npy carries no spacing: it is taken from a matching .nii.gz next to it,\n";
+    std::cerr << "or from a <name>.json sidecar, otherwise 1 mm isotropic is assumed.\n";
 }
 
 int main(int argc, char **argv)
