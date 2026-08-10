@@ -26,10 +26,14 @@
 - **The eye decides what is drawn, and nothing else does.** Every row in `Masks` has one
   at its left edge, closed by default. Every mask with an open eye is drawn — one, two or
   a dozen, in the slices and in the 3D view alike.
-- **Clicking a name only chooses which mask you edit.** That mask goes into the editable
-  buffer (it is the one painted, thresholded, cleaned or saved) and the row is selected,
-  but it does not appear on screen until you open its eye. So you can edit one mask while
-  looking at another.
+- **Clicking a name only chooses which mask you edit.** That mask becomes the one painted,
+  thresholded, cleaned or saved, and the row is selected, but it does not appear on screen
+  until you open its eye. So you can edit one mask while looking at another.
+- Selecting is instant: since nothing is drawn by it, the file is not read either. The
+  voxels are fetched by the first thing that actually needs them — opening its eye,
+  picking up the mask brush, saving, thresholding — with a busy cursor while that happens.
+  Selecting a mask that is already on screen costs nothing at all: it takes the voxels
+  from the layer instead of re-reading the file.
 - Click an open eye to hide that mask again and free the memory it held.
 - Three cases open an eye for you, because nobody clicked one and a blank viewer would be
   a lie: a mask loaded by `Open Mask`, a mask that arrives from a segmentation run or the
