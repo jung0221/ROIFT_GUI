@@ -22,6 +22,31 @@
 - Needs `Show 3D` enabled — the pick ray only tests the mask surface, not the seed glyphs.
 - Shift is reserved for this gesture, so it never pans the 3D camera.
 
+## Showing several masks at once
+- **The eye decides what is drawn, and nothing else does.** Every row in `Masks` has one
+  at its left edge, closed by default. Every mask with an open eye is drawn — one, two or
+  a dozen, in the slices and in the 3D view alike.
+- **Clicking a name only chooses which mask you edit.** That mask goes into the editable
+  buffer (it is the one painted, thresholded, cleaned or saved) and the row is selected,
+  but it does not appear on screen until you open its eye. So you can edit one mask while
+  looking at another.
+- Click an open eye to hide that mask again and free the memory it held.
+- Three cases open an eye for you, because nobody clicked one and a blank viewer would be
+  a lie: a mask loaded by `Open Mask`, a mask that arrives from a segmentation run or the
+  `--mask` argument, and the mask you are editing when you pick up the mask brush.
+- A mask painted from scratch has no row and therefore no eye, so it is always drawn.
+- Colours are picked so masks stay apart: a mask with a single label gets one colour
+  from a per-mask palette (shown as the swatch beside the eye), and a multi-label mask
+  (ribs, TotalSegmentator) keeps the shared per-label palette. Right-click a row to force
+  either rule or to set the mask's colour by hand.
+- Drawn masks share the overlay opacity and the per-view `Show Mask` toggles. The
+  `Mask Labels` filter applies to the mask being edited.
+- Masks must sit on the same X/Y grid as the image; one that does not is refused with a
+  message instead of being drawn misaligned. Switching image closes every eye, since the
+  grid changes under them.
+- Each drawn mask is a full label volume in memory, so opening several large masks is
+  answered with a size warning before it happens.
+
 ## Mask I/O
 - `Mask Options` dialog exposes load/save. When built with ITK the app saves masks as NIfTI using int16 as the pixel type.
 - Segmentation outputs from `SegmentationRunner` are merged using ITK when available and then loaded into the GUI as the current mask.

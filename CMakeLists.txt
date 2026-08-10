@@ -159,6 +159,24 @@ if(BUILD_ROIFT_TESTS)
   # Needs a QApplication but no display.
   set_tests_properties(wheel_guard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+  # Drives the real window (mask list, overlay blend), so it needs the whole
+  # application except its entry point.
+  set(GUI_TEST_SOURCES ${SRC_FILES})
+  list(REMOVE_ITEM GUI_TEST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
+  add_executable(mask_overlay_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_overlay_test.cpp
+    ${GUI_TEST_SOURCES}
+  )
+  target_include_directories(mask_overlay_test PRIVATE src)
+  target_link_libraries(mask_overlay_test PRIVATE Qt6::Widgets ${ITK_LIBRARIES} ${VTK_LIBRARIES})
+  if(TARGET Qt6::Svg)
+    target_link_libraries(mask_overlay_test PRIVATE Qt6::Svg)
+    target_compile_definitions(mask_overlay_test PRIVATE ROIFT_HAS_QT_SVG=1)
+  endif()
+  add_test(NAME mask_overlay COMMAND mask_overlay_test)
+  # Builds a window and reads composed slices back; no display needed.
+  set_tests_properties(mask_overlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
   add_executable(npz_import_probe
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/npz_import_probe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp

@@ -53,13 +53,19 @@ public:
     };
 
     explicit Mask3DView(QWidget *parent = nullptr);
+    /// Render one label volume. With several masks on screen the caller merges
+    /// them into one volume of unique ids, and then the label values no longer
+    /// carry their own colours or names — pass @p labelColors and @p labelNames
+    /// so the surface and the label picker still say which mask each id is.
     void setMaskData(const std::vector<int> &mask,
                      unsigned int sizeX,
                      unsigned int sizeY,
                      unsigned int sizeZ,
                      double spacingX,
                      double spacingY,
-                     double spacingZ);
+                     double spacingZ,
+                     const std::map<int, QColor> *labelColors = nullptr,
+                     const std::map<int, QString> *labelNames = nullptr);
     void setVoxelSpacing(double spacingX, double spacingY, double spacingZ);
     void setSeedData(const std::vector<SeedRenderData> &seeds);
     void setMaskVisible(bool visible);
@@ -117,6 +123,9 @@ private:
     std::vector<SeedRenderData> m_seedRenderData;
     std::vector<int> m_activeLabels;
     std::map<int, QColor> m_labelColors;
+    // Names for the label picker when the ids are merged-mask ids and "Label 7"
+    // would mean nothing. Empty while a single mask is rendered.
+    std::map<int, QString> m_labelNames;
     bool m_seedCameraFramed = false;
     bool m_seedRectEraseEnabled = false;
     bool m_maskVisible = true;

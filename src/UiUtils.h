@@ -33,6 +33,10 @@ namespace UiUtils
 constexpr int kPathRole = Qt::UserRole;
 /// Qt item data role for storing the source image path on mask list items.
 constexpr int kMaskSourceImageRole = Qt::UserRole + 1;
+/// Qt item data role holding a mask row's MaskVisibility, as an int.
+constexpr int kMaskVisibilityRole = Qt::UserRole + 2;
+/// Qt item data role holding a mask row's swatch colours (QVariantList of QColor).
+constexpr int kMaskSwatchRole = Qt::UserRole + 3;
 /// Number of discrete ticks used by the window range slider.
 constexpr int kWindowSliderTicks = 4096;
 

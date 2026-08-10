@@ -12,8 +12,10 @@
 #include "SegmentationRunner.h"
 #include "ColorUtils.h"
 #include "Mask3DView.h"
+#include "MaskListDelegate.h"
 #include "RangeSlider.h"
 
+#include <QColorDialog>
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -70,9 +72,11 @@
 #include <QMoveEvent>
 #include <QWindow>
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 #include <limits>
 #include <fstream>
@@ -480,6 +484,11 @@ bool ManualSeedSelector::applyMaskFromPath(const std::string &path)
     const bool ok = loadMaskFromFile(path);
     if (!ok)
         return false;
+
+    // Nobody clicked an eye for this one — it arrived from a segmentation run
+    // or the command line — so open it here rather than land the result on a
+    // viewer that shows nothing.
+    setActiveMaskVisible();
 
     if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
     {
@@ -899,7 +908,10 @@ void ManualSeedSelector::setupUi()
         QString f = QFileDialog::getOpenFileName(this, "Open Mask", "",
                                                  maskOpenFileFilter());
         if (!f.isEmpty()) {
-            loadMaskFromFile(f.toStdString());
+            // Opening a mask by hand is a request to look at it, so it does not
+            // wait for its eye the way selecting a listed mask does.
+            if (loadMaskFromFile(f.toStdString()))
+                setActiveMaskVisible();
             updateViews();
         } });
     maskFileLayout->addWidget(btnMaskLoad);
@@ -1277,8 +1289,11 @@ void ManualSeedSelector::setupUi()
     // =====================================================
     QGridLayout *viewGrid = new QGridLayout();
     m_axialView = new OrthogonalView();
+    m_axialView->setObjectName("axialView");
     m_sagittalView = new OrthogonalView();
+    m_sagittalView->setObjectName("sagittalView");
     m_coronalView = new OrthogonalView();
+    m_coronalView->setObjectName("coronalView");
     m_mask3DView = new Mask3DView();
 
     // Slice navigation now lives inside each view panel so it is always visible.
@@ -1612,6 +1627,8 @@ void ManualSeedSelector::setupUi()
         m_currentImageIndex = -1;
         m_image = NiftiImage();
         m_path.clear();
+        clearMaskLayers();
+        m_unsavedMaskStyle = MaskLayer();
         m_loadedMaskPath.clear();
         m_maskData.clear();
         m_maskDimX = 0;
@@ -1682,7 +1699,10 @@ void ManualSeedSelector::setupUi()
                 m_path = path;
                 autoDetectAssociatedFilesForImage(row, false);
                 
-                // Clear mask and seed data when switching images
+                // Clear mask and seed data when switching images: masks drawn
+                // for the old image sit on a grid the new one does not share.
+                clearMaskLayers();
+                m_unsavedMaskStyle = MaskLayer();
                 m_loadedMaskPath.clear();
                 m_maskData.clear();
                 m_maskDimX = 0;
@@ -1750,9 +1770,16 @@ void ManualSeedSelector::setupUi()
     maskListLayout->setSpacing(4);
 
     m_maskList = new QListWidget();
+    m_maskList->setObjectName("maskList");
     m_maskList->setMinimumHeight(70);
     m_maskList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_maskList->setToolTip("Click to load mask - Colors indicate which image they belong to");
+    m_maskList->setToolTip("Click the eye to show a mask; every mask with an open eye is drawn.\n"
+                           "Click a name only to choose which mask you edit.");
+    // The eye lives in the row's left margin: the delegate paints it, and the
+    // viewport filter turns a click there into a visibility toggle rather than
+    // a selection.
+    m_maskList->setItemDelegate(new MaskListDelegate(m_maskList));
+    m_maskList->viewport()->installEventFilter(this);
     maskListLayout->addWidget(m_maskList);
 
     QHBoxLayout *maskButtonsLayout = new QHBoxLayout();
@@ -1789,7 +1816,9 @@ void ManualSeedSelector::setupUi()
                 const QString abs = QFileInfo(candidate).absoluteFilePath();
                 if (QFileInfo::exists(abs))
                 {
-                    loadMaskFromFile(abs.toStdString());
+                    // No image to look at: show the first mask straight away.
+                    if (loadMaskFromFile(abs.toStdString()))
+                        setActiveMaskVisible();
                     updateViews();
                     break;
                 }
@@ -1852,6 +1881,9 @@ void ManualSeedSelector::setupUi()
             return;
         }
 
+        // A removed row has no eye left to close, so it must not stay drawn.
+        dropMaskLayer(path);
+
         if (removingActiveMask)
         {
             m_loadedMaskPath.clear();
@@ -1859,11 +1891,11 @@ void ManualSeedSelector::setupUi()
             m_maskDimX = 0;
             m_maskDimY = 0;
             m_maskDimZ = 0;
-            m_mask3DDirty = true;
-            updateViews();
         }
 
+        m_mask3DDirty = true;
         updateMaskSeedLists();
+        updateViews();
         if (m_statusLabel)
             m_statusLabel->setText(removingActiveMask
                                        ? QString("Removed active mask: %1 (overlay cleared)").arg(path)
@@ -1904,6 +1936,7 @@ void ManualSeedSelector::setupUi()
                 continue;
 
             const std::string key = path.toStdString();
+            dropMaskLayer(path); // a removed row has no eye left to close
             const int sourceImageIndex = item->data(kMaskSourceImageRole).toInt();
             if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size()))
                 perImageToRemove[static_cast<size_t>(sourceImageIndex)].insert(key);
@@ -1962,11 +1995,11 @@ void ManualSeedSelector::setupUi()
             m_maskDimX = 0;
             m_maskDimY = 0;
             m_maskDimZ = 0;
-            m_mask3DDirty = true;
-            updateViews();
         }
 
+        m_mask3DDirty = true;
         updateMaskSeedLists();
+        updateViews();
         if (m_statusLabel)
             m_statusLabel->setText(removedActiveMask
                                        ? QString("Removed %1 mask(s) from current list scope (active overlay cleared).").arg(removedCount)
@@ -1982,7 +2015,9 @@ void ManualSeedSelector::setupUi()
     maskButtonsLayout->addStretch(1);
     maskListLayout->addLayout(maskButtonsLayout);
 
-    // Connect item selection to load the mask
+    // Selecting a row loads that mask into the editable buffer. It does not put
+    // it on screen — the eye does that, so a mask can be edited while another
+    // one is being looked at.
     connect(m_maskList, &QListWidget::itemClicked, [this](QListWidgetItem *item)
             {
         if (!item)
@@ -1995,9 +2030,20 @@ void ManualSeedSelector::setupUi()
         }
 
         if (loadMaskFromFile(maskPath.toStdString())) {
+            // Read the row before refreshing the list: that rebuild deletes
+            // every item, this one included.
+            const QString name = displayNameForPath(maskPath, QFileInfo(maskPath).fileName());
+            const MaskLayer *layer = findMaskLayer(maskPath);
+            const bool shown = (layer && layer->visible);
+
+            updateMaskSeedLists();
             updateViews();
             if (m_statusLabel)
-                m_statusLabel->setText(QString("Loaded mask: %1").arg(item->text()));
+            {
+                m_statusLabel->setText(shown
+                                           ? QString("Editing mask: %1").arg(name)
+                                           : QString("Editing mask: %1 (click its eye to show it)").arg(name));
+            }
         }
     });
 
@@ -2137,12 +2183,18 @@ void ManualSeedSelector::setupUi()
             return;
 
         QMenu menu(this);
+        MaskMenuActions maskActions;
+        if (list == m_maskList)
+            maskActions = appendMaskLayerMenuActions(menu, cleanPath);
         QAction *renameAction = menu.addAction("Rename\tF12");
         menu.addSeparator();
         QAction *copyPathAction = menu.addAction("Copy Path");
         QAction *revealPathAction = menu.addAction("Reveal File in Explorer");
         QAction *selectedAction = menu.exec(globalPos);
         if (!selectedAction)
+            return;
+
+        if (list == m_maskList && applyMaskLayerMenuAction(maskActions, selectedAction, cleanPath))
             return;
 
         if (selectedAction == renameAction)
@@ -2780,7 +2832,9 @@ void ManualSeedSelector::openMasksFromCsv()
             const QString abs = QFileInfo(candidate).absoluteFilePath();
             if (QFileInfo::exists(abs))
             {
-                loadMaskFromFile(abs.toStdString());
+                // No image to look at: show the first mask straight away.
+                if (loadMaskFromFile(abs.toStdString()))
+                    setActiveMaskVisible();
                 updateViews();
                 break;
             }
@@ -4449,15 +4503,17 @@ void ManualSeedSelector::updateViews()
         hi = m_windowGlobalMax;
     }
 
-    const size_t expectedTotal = size_t(sizeX) * size_t(sizeY) * size_t(sizeZ);
+    // The editable buffer has to sit on the image grid; the drawn masks are
+    // checked one by one as they are blended.
     const bool maskDimsKnown = (m_maskDimX > 0 && m_maskDimY > 0 && m_maskDimZ > 0);
     const size_t expectedMaskTotal = maskDimsKnown ? (size_t(m_maskDimX) * size_t(m_maskDimY) * size_t(m_maskDimZ)) : 0;
     const bool maskBufferShapeValid = (!m_maskData.empty() && maskDimsKnown && m_maskData.size() == expectedMaskTotal);
     const bool maskXYMatchImage = (m_maskDimX == sizeX && m_maskDimY == sizeY);
-    bool maskOverlayReady = (maskBufferShapeValid && maskXYMatchImage);
-    if (!m_maskData.empty() && !maskOverlayReady)
+    if (!m_maskData.empty() && !(maskBufferShapeValid && maskXYMatchImage))
     {
         std::cerr << "updateViews: mask/image mismatch in X/Y or invalid mask buffer, skipping overlay and clearing mask buffer\n";
+        if (!m_loadedMaskPath.empty())
+            dropMaskLayer(QString::fromStdString(m_loadedMaskPath));
         m_maskData.clear();
         m_maskDimX = 0;
         m_maskDimY = 0;
@@ -4466,7 +4522,6 @@ void ManualSeedSelector::updateViews()
         m_maskSpacingY = m_image.getSpacingY();
         m_maskSpacingZ = m_image.getSpacingZ();
         m_mask3DDirty = true;
-        maskOverlayReady = false;
     }
 
     // Display each slice with physically-correct proportions so anisotropic
@@ -4486,90 +4541,24 @@ void ManualSeedSelector::updateViews()
 
     // Axial view
     auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
-    if (m_enableAxialMask && maskOverlayReady)
-    {
-        const unsigned int mappedZ = mapDepthIndex(static_cast<unsigned int>(z), sizeZ, m_maskDimZ);
-        for (unsigned int yy = 0; yy < sizeY; ++yy)
-        {
-            for (unsigned int xx = 0; xx < sizeX; ++xx)
-            {
-                const size_t idx3 = size_t(xx) + size_t(yy) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
-                int lbl = m_maskData[idx3];
-                if (lbl != 0 && maskLabelVisible(lbl))
-                {
-                    int dl = std::max(0, std::min(255, lbl));
-                    QColor col = colorForLabel(dl);
-                    unsigned char r = static_cast<unsigned char>(col.red());
-                    unsigned char g = static_cast<unsigned char>(col.green());
-                    unsigned char b = static_cast<unsigned char>(col.blue());
-                    size_t pix = (yy * sizeX + xx) * 3;
-                    axial_rgb[pix + 0] = static_cast<unsigned char>(m_maskOpacity * r + (1.0f - m_maskOpacity) * axial_rgb[pix + 0]);
-                    axial_rgb[pix + 1] = static_cast<unsigned char>(m_maskOpacity * g + (1.0f - m_maskOpacity) * axial_rgb[pix + 1]);
-                    axial_rgb[pix + 2] = static_cast<unsigned char>(m_maskOpacity * b + (1.0f - m_maskOpacity) * axial_rgb[pix + 2]);
-                }
-            }
-        }
-    }
+    if (m_enableAxialMask)
+        blendMaskOverlays(axial_rgb, SlicePlane::Axial, z);
     QImage axial = makeQImageFromRGB(axial_rgb, int(sizeX), int(sizeY));
     m_axialView->setImage(axial);
 
     // Sagittal view
     int sagX = m_sagittalSlider->value();
     auto sagittal_rgb = m_image.getSagittalSliceAsRGB(sagX, lo, hi);
-    if (m_enableSagittalMask && maskOverlayReady)
-    {
-        for (unsigned int zz = 0; zz < sizeZ; ++zz)
-        {
-            const unsigned int mappedZ = mapDepthIndex(zz, sizeZ, m_maskDimZ);
-            for (unsigned int yy = 0; yy < sizeY; ++yy)
-            {
-                const size_t idx3 = size_t(sagX) + size_t(yy) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
-                int lbl = m_maskData[idx3];
-                if (lbl != 0 && maskLabelVisible(lbl))
-                {
-                    int dl = std::max(0, std::min(255, lbl));
-                    QColor col = colorForLabel(dl);
-                    unsigned char r = static_cast<unsigned char>(col.red());
-                    unsigned char g = static_cast<unsigned char>(col.green());
-                    unsigned char b = static_cast<unsigned char>(col.blue());
-                    size_t pix = (zz * sizeY + yy) * 3;
-                    sagittal_rgb[pix + 0] = static_cast<unsigned char>(m_maskOpacity * r + (1.0f - m_maskOpacity) * sagittal_rgb[pix + 0]);
-                    sagittal_rgb[pix + 1] = static_cast<unsigned char>(m_maskOpacity * g + (1.0f - m_maskOpacity) * sagittal_rgb[pix + 1]);
-                    sagittal_rgb[pix + 2] = static_cast<unsigned char>(m_maskOpacity * b + (1.0f - m_maskOpacity) * sagittal_rgb[pix + 2]);
-                }
-            }
-        }
-    }
+    if (m_enableSagittalMask)
+        blendMaskOverlays(sagittal_rgb, SlicePlane::Sagittal, sagX);
     QImage sagittal = makeQImageFromRGB(sagittal_rgb, int(sizeY), int(sizeZ));
     m_sagittalView->setImage(sagittal);
 
     // Coronal view
     int corY = m_coronalSlider->value();
     auto coronal_rgb = m_image.getCoronalSliceAsRGB(corY, lo, hi);
-    if (m_enableCoronalMask && maskOverlayReady)
-    {
-        for (unsigned int zz = 0; zz < sizeZ; ++zz)
-        {
-            const unsigned int mappedZ = mapDepthIndex(zz, sizeZ, m_maskDimZ);
-            for (unsigned int xx = 0; xx < sizeX; ++xx)
-            {
-                const size_t idx3 = size_t(xx) + size_t(corY) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
-                int lbl = m_maskData[idx3];
-                if (lbl != 0 && maskLabelVisible(lbl))
-                {
-                    int dl = std::max(0, std::min(255, lbl));
-                    QColor col = colorForLabel(dl);
-                    unsigned char r = static_cast<unsigned char>(col.red());
-                    unsigned char g = static_cast<unsigned char>(col.green());
-                    unsigned char b = static_cast<unsigned char>(col.blue());
-                    size_t pix = (zz * sizeX + xx) * 3;
-                    coronal_rgb[pix + 0] = static_cast<unsigned char>(m_maskOpacity * r + (1.0f - m_maskOpacity) * coronal_rgb[pix + 0]);
-                    coronal_rgb[pix + 1] = static_cast<unsigned char>(m_maskOpacity * g + (1.0f - m_maskOpacity) * coronal_rgb[pix + 1]);
-                    coronal_rgb[pix + 2] = static_cast<unsigned char>(m_maskOpacity * b + (1.0f - m_maskOpacity) * coronal_rgb[pix + 2]);
-                }
-            }
-        }
-    }
+    if (m_enableCoronalMask)
+        blendMaskOverlays(coronal_rgb, SlicePlane::Coronal, corY);
     QImage coronal = makeQImageFromRGB(coronal_rgb, int(sizeX), int(sizeZ));
     m_coronalView->setImage(coronal);
 
@@ -4713,6 +4702,640 @@ void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
         m_statusLabel->setText(QString("Located 3D point at x:%1 y:%2 z:%3").arg(x).arg(y).arg(z));
 }
 
+// =============================================================================
+// MASK LAYERS
+//
+// Two independent things: one mask is editable — the buffer in m_maskData,
+// picked by clicking a row — and the masks drawn are those whose eye is open.
+// Selecting a mask does not put it on screen; opening its eye does, and it
+// stays there while other masks are selected and edited.
+//
+// m_maskLayers holds one entry per drawn mask, plus one for the mask being
+// edited even while it is hidden, since that entry carries its colour rule.
+// The entry for the editable mask holds no voxels of its own, so nothing is
+// ever stored twice.
+// =============================================================================
+
+namespace
+{
+// Label -> RGB for one mask, resolved once per drawn slice. colorForLabel()
+// builds a 256-entry palette on first use and the blend asks per voxel, so the
+// lookup has to be an array read. Dense while the label values are small (a
+// mask labels 1..N); a hash map catches the exotic ones.
+class LabelColorTable
+{
+public:
+    explicit LabelColorTable(const MaskLayer &layer)
+        : m_layer(layer)
+    {
+        int maxLabel = 0;
+        for (int label : layer.labels)
+            maxLabel = std::max(maxLabel, label);
+        if (maxLabel > 0 && maxLabel <= kDenseLimit)
+            m_dense.assign(static_cast<size_t>(maxLabel) + 1, Entry{});
+        for (int label : layer.labels)
+            store(label, layer.colorForLabelValue(label));
+    }
+
+    /// RGB triple for @p label, resolving labels the mask gained since it was
+    /// read (a freshly painted one) on the spot.
+    const unsigned char *colorFor(int label)
+    {
+        if (label >= 0 && static_cast<size_t>(label) < m_dense.size() && m_dense[static_cast<size_t>(label)].valid)
+            return m_dense[static_cast<size_t>(label)].rgb;
+        auto it = m_sparse.find(label);
+        if (it != m_sparse.end())
+            return it->second.rgb;
+        return store(label, m_layer.colorForLabelValue(label));
+    }
+
+private:
+    struct Entry
+    {
+        unsigned char rgb[3] = {0, 0, 0};
+        bool valid = false;
+    };
+    static constexpr int kDenseLimit = 4096;
+
+    const unsigned char *store(int label, const QColor &color)
+    {
+        Entry entry;
+        entry.rgb[0] = static_cast<unsigned char>(color.red());
+        entry.rgb[1] = static_cast<unsigned char>(color.green());
+        entry.rgb[2] = static_cast<unsigned char>(color.blue());
+        entry.valid = true;
+        if (label >= 0 && static_cast<size_t>(label) < m_dense.size())
+        {
+            m_dense[static_cast<size_t>(label)] = entry;
+            return m_dense[static_cast<size_t>(label)].rgb;
+        }
+        return m_sparse.insert_or_assign(label, entry).first->second.rgb;
+    }
+
+    const MaskLayer &m_layer;
+    std::vector<Entry> m_dense;
+    std::unordered_map<int, Entry> m_sparse;
+};
+
+// Label value -> id in a merged volume, same dense/sparse trade-off.
+class LabelIdMap
+{
+public:
+    LabelIdMap(const std::vector<int> &labels, int &nextId)
+    {
+        int maxLabel = 0;
+        for (int label : labels)
+            maxLabel = std::max(maxLabel, label);
+        if (maxLabel > 0 && maxLabel <= kDenseLimit)
+            m_dense.assign(static_cast<size_t>(maxLabel) + 1, 0);
+        for (int label : labels)
+            assign(label, ++nextId);
+    }
+
+    /// 0 when the mask did not declare @p label, so the voxel is skipped.
+    int idFor(int label) const
+    {
+        if (label >= 0 && static_cast<size_t>(label) < m_dense.size())
+            return m_dense[static_cast<size_t>(label)];
+        auto it = m_sparse.find(label);
+        return (it != m_sparse.end()) ? it->second : 0;
+    }
+
+private:
+    static constexpr int kDenseLimit = 4096;
+
+    void assign(int label, int id)
+    {
+        if (label >= 0 && static_cast<size_t>(label) < m_dense.size())
+            m_dense[static_cast<size_t>(label)] = id;
+        else
+            m_sparse[label] = id;
+    }
+
+    std::vector<int> m_dense;
+    std::unordered_map<int, int> m_sparse;
+};
+} // namespace
+
+MaskLayer *ManualSeedSelector::findMaskLayer(const QString &absolutePath)
+{
+    const QString key = QDir::cleanPath(absolutePath);
+    if (key.isEmpty())
+        return nullptr;
+    for (MaskLayer &layer : m_maskLayers)
+    {
+        if (layer.path == key)
+            return &layer;
+    }
+    return nullptr;
+}
+
+const MaskLayer *ManualSeedSelector::findMaskLayer(const QString &absolutePath) const
+{
+    return const_cast<ManualSeedSelector *>(this)->findMaskLayer(absolutePath);
+}
+
+MaskLayer *ManualSeedSelector::activeMaskStyle()
+{
+    if (m_loadedMaskPath.empty())
+        return &m_unsavedMaskStyle;
+    if (MaskLayer *layer = findMaskLayer(QString::fromStdString(m_loadedMaskPath)))
+        return layer;
+    return &m_unsavedMaskStyle;
+}
+
+const MaskLayer *ManualSeedSelector::activeMaskStyle() const
+{
+    return const_cast<ManualSeedSelector *>(this)->activeMaskStyle();
+}
+
+int ManualSeedSelector::nextFreeMaskColorSlot() const
+{
+    std::set<int> used;
+    for (const MaskLayer &layer : m_maskLayers)
+        used.insert(layer.colorSlot);
+    if (m_unsavedMaskStyle.color.isValid())
+        used.insert(m_unsavedMaskStyle.colorSlot);
+    for (int slot = 0; slot < maskSlotCount(); ++slot)
+    {
+        if (used.find(slot) == used.end())
+            return slot;
+    }
+    return static_cast<int>(m_maskLayers.size()) % maskSlotCount();
+}
+
+void ManualSeedSelector::adoptActiveMaskLayer(const QString &absolutePath)
+{
+    const QString key = QDir::cleanPath(absolutePath);
+    if (key.isEmpty())
+        return;
+
+    MaskLayer *layer = findMaskLayer(key);
+    if (!layer)
+    {
+        MaskLayer created;
+        created.path = key;
+        created.colorSlot = nextFreeMaskColorSlot();
+        created.color = maskSlotColor(created.colorSlot);
+        m_maskLayers.push_back(std::move(created));
+        layer = &m_maskLayers.back();
+    }
+
+    // The editable buffer owns the voxels from here on; a copy the layer was
+    // holding (it was already drawn before being clicked) would only go stale.
+    layer->volume = MaskVolume();
+    layer->labels = distinctMaskLabels(m_maskData);
+    m_unsavedMaskStyle = MaskLayer(); // the buffer belongs to a file again
+}
+
+void ManualSeedSelector::releaseActiveMaskLayer()
+{
+    if (m_loadedMaskPath.empty())
+        return;
+    const QString key = QDir::cleanPath(QString::fromStdString(m_loadedMaskPath));
+    for (auto it = m_maskLayers.begin(); it != m_maskLayers.end(); ++it)
+    {
+        if (it->path != key)
+            continue;
+        if (!it->visible)
+        {
+            // Hidden: nothing to keep, and the style is rebuilt on reload.
+            m_maskLayers.erase(it);
+            return;
+        }
+        // Drawn: the layer takes the voxels over, and stays on screen while the
+        // buffer goes to whichever mask is loaded next. They move rather than
+        // copy — a thorax mask is hundreds of MB — so the buffer is left empty
+        // here and every caller assigns or clears it straight after.
+        it->volume.data = std::move(m_maskData);
+        m_maskData.clear();
+        it->volume.dimX = m_maskDimX;
+        it->volume.dimY = m_maskDimY;
+        it->volume.dimZ = m_maskDimZ;
+        it->volume.spacingX = m_maskSpacingX;
+        it->volume.spacingY = m_maskSpacingY;
+        it->volume.spacingZ = m_maskSpacingZ;
+        it->labels = it->volume.distinctLabels();
+        return;
+    }
+}
+
+void ManualSeedSelector::dropMaskLayer(const QString &absolutePath)
+{
+    const QString key = QDir::cleanPath(absolutePath);
+    if (key.isEmpty())
+        return;
+    m_maskLayers.erase(std::remove_if(m_maskLayers.begin(), m_maskLayers.end(),
+                                      [&key](const MaskLayer &layer)
+                                      { return layer.path == key; }),
+                       m_maskLayers.end());
+}
+
+void ManualSeedSelector::clearMaskLayers()
+{
+    m_maskLayers.clear();
+}
+
+MaskVisibility ManualSeedSelector::maskVisibilityForPath(const QString &absolutePath) const
+{
+    const MaskLayer *layer = findMaskLayer(absolutePath);
+    if (!layer)
+        return MaskVisibility::Hidden;
+    return layer->visible ? MaskVisibility::Visible : MaskVisibility::Hidden;
+}
+
+bool ManualSeedSelector::maskVolumeCoregisters(const MaskVolume &volume, QString *reason) const
+{
+    // Overlays map depth only, so X/Y have to agree with whatever grid the
+    // window is already drawing on: the image if there is one, else the mask
+    // that established the grid.
+    unsigned int refX = m_image.getSizeX();
+    unsigned int refY = m_image.getSizeY();
+    if (refX == 0 || refY == 0)
+    {
+        refX = m_maskDimX;
+        refY = m_maskDimY;
+    }
+    if (refX == 0 || refY == 0)
+    {
+        for (const MaskLayer &layer : m_maskLayers)
+        {
+            if (layer.volume.isValid())
+            {
+                refX = layer.volume.dimX;
+                refY = layer.volume.dimY;
+                break;
+            }
+        }
+    }
+    if (refX == 0 || refY == 0)
+        return true; // nothing on screen yet: this mask sets the grid
+
+    if (volume.dimX == refX && volume.dimY == refY)
+        return true;
+
+    if (reason)
+    {
+        *reason = QString("Mask dimensions (%1 x %2 x %3) do not match the current grid (%4 x %5). "
+                          "Overlay requires matching X/Y dimensions.")
+                      .arg(volume.dimX)
+                      .arg(volume.dimY)
+                      .arg(volume.dimZ)
+                      .arg(refX)
+                      .arg(refY);
+    }
+    return false;
+}
+
+bool ManualSeedSelector::confirmMaskLayerMemory(std::size_t additionalVoxels)
+{
+    // Every drawn mask is a full label volume; a thorax CT is ~100M voxels, so
+    // a handful of eyes adds up fast enough to be worth a question.
+    constexpr std::size_t kBytesPerVoxel = sizeof(int);
+    constexpr std::size_t kWarnBytes = std::size_t(1536) * 1024 * 1024;
+
+    std::size_t bytes = additionalVoxels * kBytesPerVoxel;
+    for (const MaskLayer &layer : m_maskLayers)
+        bytes += layer.volume.data.size() * kBytesPerVoxel;
+    if (bytes <= kWarnBytes)
+        return true;
+
+    const double gib = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+    return QMessageBox::question(this,
+                                 "Show Mask",
+                                 QString("Showing this mask brings the masks held for display to about %1 GiB.\n\n"
+                                         "Continue?")
+                                     .arg(gib, 0, 'f', 1),
+                                 QMessageBox::Yes | QMessageBox::No,
+                                 QMessageBox::No) == QMessageBox::Yes;
+}
+
+void ManualSeedSelector::toggleMaskVisible(const QString &absolutePath)
+{
+    const QString key = QDir::cleanPath(QFileInfo(absolutePath.trimmed()).absoluteFilePath());
+    if (key.isEmpty())
+        return;
+
+    const QString activeKey = m_loadedMaskPath.empty()
+                                  ? QString()
+                                  : QDir::cleanPath(QString::fromStdString(m_loadedMaskPath));
+    const QString name = QFileInfo(key).fileName();
+
+    if (MaskLayer *layer = findMaskLayer(key))
+    {
+        if (key == activeKey)
+        {
+            // The edited mask keeps its entry either way — it carries the
+            // colour rule — and its voxels are the buffer, not the layer.
+            layer->visible = !layer->visible;
+            if (m_statusLabel)
+                m_statusLabel->setText(layer->visible ? QString("Showing mask: %1").arg(name)
+                                                      : QString("Hidden mask: %1").arg(name));
+        }
+        else
+        {
+            dropMaskLayer(key); // closing the eye is what frees the volume
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Hidden mask: %1").arg(name));
+        }
+    }
+    else
+    {
+        MaskVolume volume;
+        QString error;
+        if (!readMaskVolume(key.toStdString(), numpyOptionsForMask(), volume, &error))
+        {
+            QMessageBox::critical(this, "Show Mask", error.isEmpty() ? QString("Failed to read %1").arg(key) : error);
+            return;
+        }
+
+        QString reason;
+        if (!maskVolumeCoregisters(volume, &reason))
+        {
+            QMessageBox::warning(this, "Show Mask", reason);
+            return;
+        }
+
+        if (!confirmMaskLayerMemory(volume.voxelCount()))
+            return;
+
+        MaskLayer created;
+        created.path = key;
+        created.labels = volume.distinctLabels();
+        created.volume = std::move(volume);
+        created.colorSlot = nextFreeMaskColorSlot();
+        created.color = maskSlotColor(created.colorSlot);
+        created.visible = true;
+        m_maskLayers.push_back(std::move(created));
+
+        if (!m_enable3DView && m_show3DCheck && !m_show3DCheck->isChecked() && !hasImage())
+        {
+            // Mask-only mode: without the render window there is nothing to look at.
+            QSignalBlocker blocker(m_show3DCheck);
+            m_show3DCheck->setChecked(true);
+            m_enable3DView = true;
+            if (m_mask3DView)
+                m_mask3DView->setMaskVisible(true);
+        }
+
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Showing mask: %1").arg(name));
+    }
+
+    m_mask3DDirty = true;
+    updateMaskSeedLists();
+    updateViews();
+}
+
+bool ManualSeedSelector::setActiveMaskVisible()
+{
+    MaskLayer *style = activeMaskStyle();
+    if (!style)
+        return false;
+    if (style->path.isEmpty())
+        return true; // a buffer with no file has no row and no eye; always drawn
+    if (style->visible)
+        return true;
+
+    style->visible = true;
+    m_mask3DDirty = true;
+    updateMaskSeedLists();
+    return true;
+}
+
+void ManualSeedSelector::noteActiveMaskLabel(int label)
+{
+    if (label == 0)
+        return;
+    MaskLayer *style = activeMaskStyle();
+    if (!style)
+        return;
+    // Keeps the Auto colour rule honest: a mask stops being single-label the
+    // moment a second label is painted into it.
+    auto it = std::lower_bound(style->labels.begin(), style->labels.end(), label);
+    if (it == style->labels.end() || *it != label)
+        style->labels.insert(it, label);
+}
+
+ManualSeedSelector::MaskMenuActions ManualSeedSelector::appendMaskLayerMenuActions(QMenu &menu, const QString &absolutePath)
+{
+    MaskMenuActions actions;
+    const QString key = QDir::cleanPath(absolutePath);
+    if (key.isEmpty())
+        return actions;
+
+    const MaskLayer *layer = findMaskLayer(key);
+    const bool visible = (layer && layer->visible);
+    actions.pin = menu.addAction(visible ? "Hide" : "Show");
+
+    if (layer)
+    {
+        QMenu *colorMenu = menu.addMenu("Colour");
+        actions.colorAuto = colorMenu->addAction("Auto");
+        actions.colorPerMask = colorMenu->addAction("One colour for this mask");
+        actions.colorPerLabel = colorMenu->addAction("One colour per label");
+        for (QAction *action : {actions.colorAuto, actions.colorPerMask, actions.colorPerLabel})
+            action->setCheckable(true);
+        actions.colorAuto->setChecked(layer->colorMode == MaskColorMode::Auto);
+        actions.colorPerMask->setChecked(layer->colorMode == MaskColorMode::PerMask);
+        actions.colorPerLabel->setChecked(layer->colorMode == MaskColorMode::PerLabel);
+        colorMenu->addSeparator();
+        actions.pickColor = colorMenu->addAction("Set mask colour...");
+        // A mask drawn in the label palette has no single colour to set.
+        actions.pickColor->setEnabled(!layer->usesLabelPalette());
+    }
+
+    menu.addSeparator();
+    return actions;
+}
+
+bool ManualSeedSelector::applyMaskLayerMenuAction(const MaskMenuActions &actions,
+                                                  QAction *selected,
+                                                  const QString &absolutePath)
+{
+    if (!selected)
+        return false;
+
+    if (selected == actions.pin)
+    {
+        toggleMaskVisible(absolutePath);
+        return true;
+    }
+
+    MaskLayer *layer = findMaskLayer(absolutePath);
+    if (!layer)
+        return false;
+
+    if (selected == actions.colorAuto || selected == actions.colorPerMask || selected == actions.colorPerLabel)
+    {
+        layer->colorMode = (selected == actions.colorPerMask)    ? MaskColorMode::PerMask
+                           : (selected == actions.colorPerLabel) ? MaskColorMode::PerLabel
+                                                                 : MaskColorMode::Auto;
+    }
+    else if (selected == actions.pickColor)
+    {
+        const QColor picked = QColorDialog::getColor(layer->color.isValid() ? layer->color : maskSlotColor(layer->colorSlot),
+                                                     this,
+                                                     "Mask Colour");
+        if (!picked.isValid())
+            return true;
+        layer->color = picked;
+    }
+    else
+    {
+        return false;
+    }
+
+    m_mask3DDirty = true;
+    updateMaskSeedLists();
+    updateViews();
+    return true;
+}
+
+std::vector<ManualSeedSelector::MaskRenderItem> ManualSeedSelector::visibleMaskRenderItems() const
+{
+    std::vector<MaskRenderItem> items;
+    items.reserve(m_maskLayers.size());
+
+    const QString activeKey = m_loadedMaskPath.empty()
+                                  ? QString()
+                                  : QDir::cleanPath(QString::fromStdString(m_loadedMaskPath));
+    // A style with no path belongs to a buffer that came from no file — a mask
+    // painted from scratch, or the anatomy masks merged on load.
+    const MaskLayer *activeStyle = activeMaskStyle();
+
+    for (const MaskLayer &layer : m_maskLayers)
+    {
+        if (!activeKey.isEmpty() && layer.path == activeKey)
+            continue; // drawn last, on top of the others
+        if (!layer.visible || !layer.volume.isValid())
+            continue;
+        MaskRenderItem item;
+        item.data = &layer.volume.data;
+        item.dimX = layer.volume.dimX;
+        item.dimY = layer.volume.dimY;
+        item.dimZ = layer.volume.dimZ;
+        item.style = &layer;
+        items.push_back(item);
+    }
+
+    const size_t expectedActiveTotal = size_t(m_maskDimX) * size_t(m_maskDimY) * size_t(m_maskDimZ);
+    const bool activeBufferValid = (!m_maskData.empty() && expectedActiveTotal > 0 &&
+                                    m_maskData.size() == expectedActiveTotal);
+    // Selecting a mask does not draw it: the edited mask is on screen only when
+    // its own eye is open. A buffer with no file has no row to hold an eye, so
+    // it is drawn whenever it holds voxels — otherwise painting a new mask
+    // would show nothing.
+    const bool activeDrawn = activeStyle && (activeStyle->path.isEmpty() || activeStyle->visible);
+    if (activeDrawn && activeBufferValid)
+    {
+        MaskRenderItem item;
+        item.data = &m_maskData;
+        item.dimX = m_maskDimX;
+        item.dimY = m_maskDimY;
+        item.dimZ = m_maskDimZ;
+        item.style = activeStyle;
+        item.active = true;
+        items.push_back(item);
+    }
+    return items;
+}
+
+void ManualSeedSelector::blendMaskOverlays(std::vector<unsigned char> &rgb,
+                                           SlicePlane plane,
+                                           int sliceIndex) const
+{
+    const unsigned int sizeX = m_image.getSizeX();
+    const unsigned int sizeY = m_image.getSizeY();
+    const unsigned int sizeZ = m_image.getSizeZ();
+    if (sizeX == 0 || sizeY == 0 || sizeZ == 0 || sliceIndex < 0)
+        return;
+
+    const std::vector<MaskRenderItem> items = visibleMaskRenderItems();
+    if (items.empty())
+        return;
+
+    // Which image axes span the slice buffer, and which one the slider indexes.
+    unsigned int outW = 0;
+    unsigned int outH = 0;
+    unsigned int sliceLimit = 0;
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        outW = sizeX;
+        outH = sizeY;
+        sliceLimit = sizeZ;
+        break;
+    case SlicePlane::Sagittal:
+        outW = sizeY;
+        outH = sizeZ;
+        sliceLimit = sizeX;
+        break;
+    case SlicePlane::Coronal:
+        outW = sizeX;
+        outH = sizeZ;
+        sliceLimit = sizeY;
+        break;
+    }
+    if (static_cast<unsigned int>(sliceIndex) >= sliceLimit)
+        return;
+    if (rgb.size() < size_t(outW) * size_t(outH) * 3)
+        return;
+
+    const float opacity = std::max(0.0f, std::min(1.0f, m_maskOpacity));
+    const float inverse = 1.0f - opacity;
+
+    for (const MaskRenderItem &item : items)
+    {
+        if (item.dimX != sizeX || item.dimY != sizeY || item.dimZ == 0 || !item.style)
+            continue; // cannot be co-registered with what is on screen
+
+        LabelColorTable colors(*item.style);
+        const std::vector<int> &data = *item.data;
+        const size_t maskPlane = size_t(item.dimX) * size_t(item.dimY);
+
+        for (unsigned int v = 0; v < outH; ++v)
+        {
+            for (unsigned int u = 0; u < outW; ++u)
+            {
+                unsigned int x = 0;
+                unsigned int y = 0;
+                unsigned int z = 0;
+                switch (plane)
+                {
+                case SlicePlane::Axial:
+                    x = u;
+                    y = v;
+                    z = static_cast<unsigned int>(sliceIndex);
+                    break;
+                case SlicePlane::Sagittal:
+                    x = static_cast<unsigned int>(sliceIndex);
+                    y = u;
+                    z = v;
+                    break;
+                case SlicePlane::Coronal:
+                    x = u;
+                    y = static_cast<unsigned int>(sliceIndex);
+                    z = v;
+                    break;
+                }
+
+                const unsigned int mappedZ = mapDepthIndex(z, sizeZ, item.dimZ);
+                const int label = data[size_t(x) + size_t(y) * item.dimX + size_t(mappedZ) * maskPlane];
+                if (label == 0)
+                    continue;
+                if (item.active && !maskLabelVisible(label))
+                    continue;
+
+                const unsigned char *color = colors.colorFor(label);
+                const size_t pix = (size_t(v) * outW + u) * 3;
+                for (int c = 0; c < 3; ++c)
+                    rgb[pix + c] = static_cast<unsigned char>(opacity * color[c] + inverse * rgb[pix + c]);
+            }
+        }
+    }
+}
+
 void ManualSeedSelector::update3DMaskView()
 {
     if (!m_mask3DView)
@@ -4721,56 +5344,98 @@ void ManualSeedSelector::update3DMaskView()
     const unsigned int sx = m_image.getSizeX();
     const unsigned int sy = m_image.getSizeY();
     const unsigned int sz = m_image.getSizeZ();
-
-    const bool maskDimsValid = (m_maskDimX > 0 && m_maskDimY > 0 && m_maskDimZ > 0);
-    const size_t expectedMaskTotal = size_t(m_maskDimX) * size_t(m_maskDimY) * size_t(m_maskDimZ);
-    const bool maskBufferValid = (!m_maskData.empty() && maskDimsValid && m_maskData.size() == expectedMaskTotal);
     const bool hasImageVolume = (sx > 0 && sy > 0 && sz > 0);
 
-    // Honor the label-visibility filter in 3D as well. Only pay for a copy when
-    // some label is actually hidden; otherwise render the buffer directly.
-    std::vector<int> filteredMask;
-    const bool useFiltered = maskBufferValid && maskHasHiddenLabels();
-    if (useFiltered)
-        filteredMask = applyMaskLabelFilter(m_maskData);
-    const std::vector<int> &maskSrc = useFiltered ? filteredMask : m_maskData;
-
-    if (!maskBufferValid)
+    const std::vector<MaskRenderItem> items = visibleMaskRenderItems();
+    if (items.empty())
     {
         m_mask3DView->clearMask();
     }
-    else if (!hasImageVolume)
-    {
-        // No reference CT loaded: render the mask volume directly in 3D.
-        m_mask3DView->setMaskData(maskSrc, m_maskDimX, m_maskDimY, m_maskDimZ,
-                                  m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
-    }
     else
     {
-        const bool maskXYMatchImage = (m_maskDimX == sx && m_maskDimY == sy);
-        if (!maskXYMatchImage)
+        // The surface is contoured from one volume, so several masks have to be
+        // merged into one first. Grid: the image when there is one, otherwise
+        // the first mask's own (mask-only mode).
+        const unsigned int targetX = hasImageVolume ? sx : items.front().dimX;
+        const unsigned int targetY = hasImageVolume ? sy : items.front().dimY;
+        const unsigned int targetZ = hasImageVolume ? sz : items.front().dimZ;
+        const double targetSpacingX = hasImageVolume ? m_image.getSpacingX() : m_maskSpacingX;
+        const double targetSpacingY = hasImageVolume ? m_image.getSpacingY() : m_maskSpacingY;
+        const double targetSpacingZ = hasImageVolume ? m_image.getSpacingZ() : m_maskSpacingZ;
+
+        // A single mask keeps its own label values: the 3D panel's label picker
+        // and any colour chosen in it then still refer to the mask's own labels.
+        const bool mergeLabels = (items.size() > 1);
+        const MaskRenderItem &first = items.front();
+        const bool passThrough = (!mergeLabels &&
+                                  first.dimX == targetX && first.dimY == targetY && first.dimZ == targetZ &&
+                                  !(first.active && maskHasHiddenLabels()));
+
+        if (passThrough)
         {
-            m_mask3DView->clearMask();
-        }
-        else if (m_maskDimZ == sz)
-        {
-            m_mask3DView->setMaskData(maskSrc, sx, sy, sz, m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ());
+            m_mask3DView->setMaskData(*first.data, targetX, targetY, targetZ,
+                                      targetSpacingX, targetSpacingY, targetSpacingZ);
         }
         else
         {
-            std::vector<int> remappedMask(size_t(sx) * size_t(sy) * size_t(sz), 0);
-            const size_t planeStride = size_t(sx) * size_t(sy);
-            const size_t sourcePlaneStride = size_t(m_maskDimX) * size_t(m_maskDimY);
-            for (unsigned int z = 0; z < sz; ++z)
+            std::vector<int> merged(size_t(targetX) * size_t(targetY) * size_t(targetZ), 0);
+            std::map<int, QColor> mergedColors;
+            std::map<int, QString> mergedNames;
+            int nextId = 0;
+            bool anyVoxel = false;
+
+            for (const MaskRenderItem &item : items)
             {
-                const unsigned int mappedZ = mapDepthIndex(z, sz, m_maskDimZ);
-                const size_t srcOffset = size_t(mappedZ) * sourcePlaneStride;
-                const size_t dstOffset = size_t(z) * planeStride;
-                std::copy_n(maskSrc.begin() + static_cast<std::ptrdiff_t>(srcOffset),
-                            static_cast<std::ptrdiff_t>(planeStride),
-                            remappedMask.begin() + static_cast<std::ptrdiff_t>(dstOffset));
+                if (item.dimX != targetX || item.dimY != targetY || item.dimZ == 0 || !item.style)
+                    continue;
+
+                LabelIdMap ids(item.style->labels, nextId);
+                if (mergeLabels)
+                {
+                    const QString name = displayNameForPath(item.style->path, QFileInfo(item.style->path).fileName());
+                    const bool manyLabels = (item.style->labels.size() > 1);
+                    for (int label : item.style->labels)
+                    {
+                        const int id = ids.idFor(label);
+                        mergedColors[id] = item.style->colorForLabelValue(label);
+                        mergedNames[id] = manyLabels ? QString("%1: %2").arg(name).arg(label) : name;
+                    }
+                }
+
+                const std::vector<int> &data = *item.data;
+                const size_t sourcePlane = size_t(item.dimX) * size_t(item.dimY);
+                const size_t targetPlane = size_t(targetX) * size_t(targetY);
+                for (unsigned int z = 0; z < targetZ; ++z)
+                {
+                    const size_t srcOffset = size_t(mapDepthIndex(z, targetZ, item.dimZ)) * sourcePlane;
+                    const size_t dstOffset = size_t(z) * targetPlane;
+                    for (size_t i = 0; i < targetPlane; ++i)
+                    {
+                        const int label = data[srcOffset + i];
+                        if (label == 0)
+                            continue;
+                        if (item.active && !maskLabelVisible(label))
+                            continue;
+                        const int id = mergeLabels ? ids.idFor(label) : label;
+                        if (id == 0)
+                            continue;
+                        merged[dstOffset + i] = id;
+                        anyVoxel = true;
+                    }
+                }
             }
-            m_mask3DView->setMaskData(remappedMask, sx, sy, sz, m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ());
+
+            if (!anyVoxel)
+            {
+                m_mask3DView->clearMask();
+            }
+            else
+            {
+                m_mask3DView->setMaskData(merged, targetX, targetY, targetZ,
+                                          targetSpacingX, targetSpacingY, targetSpacingZ,
+                                          mergeLabels ? &mergedColors : nullptr,
+                                          mergeLabels ? &mergedNames : nullptr);
+            }
         }
     }
 
@@ -4799,6 +5464,10 @@ void ManualSeedSelector::update3DMaskView()
 void ManualSeedSelector::setMaskMode(int mode)
 {
     m_maskMode = mode;
+    // Painting into a mask nobody can see is a trap, so picking up the brush
+    // opens the edited mask's eye.
+    if (mode != 0)
+        setActiveMaskVisible();
     // Painting the mask and placing seeds both want the left button, so turning
     // one on turns the other off rather than letting them fight over the click.
     if (mode != 0 && m_seedMode != 0)
@@ -4868,17 +5537,6 @@ bool ManualSeedSelector::maskHasHiddenLabels() const
     return false;
 }
 
-std::vector<int> ManualSeedSelector::applyMaskLabelFilter(const std::vector<int> &data) const
-{
-    std::vector<int> filtered = data;
-    for (int &v : filtered)
-    {
-        if (v != 0 && !maskLabelVisible(v))
-            v = 0;
-    }
-    return filtered;
-}
-
 void ManualSeedSelector::setAllMaskLabelsVisible(bool visible)
 {
     for (auto &entry : m_maskLabelVisibility)
@@ -4890,16 +5548,24 @@ void ManualSeedSelector::setAllMaskLabelsVisible(bool visible)
 
 void ManualSeedSelector::rebuildMaskLabelFilter()
 {
+    // Collect the distinct non-zero labels currently present in the mask.
+    const std::vector<int> present = distinctMaskLabels(m_maskData);
+    const std::set<int> presentLabels(present.begin(), present.end());
+
+    // The style record of whatever is in the editable buffer follows those
+    // labels: the Auto colour rule reads how many there are.
+    if (MaskLayer *style = activeMaskStyle())
+    {
+        style->labels = present;
+        if (!style->color.isValid())
+        {
+            style->colorSlot = nextFreeMaskColorSlot();
+            style->color = maskSlotColor(style->colorSlot);
+        }
+    }
+
     if (!m_maskLabelSection || !m_maskLabelFilterLayout)
         return;
-
-    // Collect the distinct non-zero labels currently present in the mask.
-    std::set<int> presentLabels;
-    for (int v : m_maskData)
-    {
-        if (v != 0)
-            presentLabels.insert(v);
-    }
 
     // Keep prior visibility for labels that persist; new labels default visible;
     // drop labels that no longer exist so the map never grows unbounded.
@@ -4972,6 +5638,8 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     {
         if (!loadMaskFromFile(selectedMaskPath.toStdString()))
             return;
+        // Thresholding a mask is pointless without seeing what it did to it.
+        setActiveMaskVisible();
         activeMaskPath = selectedMaskPath;
         updateViews();
     }
@@ -5146,145 +5814,89 @@ bool ManualSeedSelector::saveMaskToFile(const std::string &path)
 
 bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
 {
-    try
+    const QString absoluteMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath());
+    const bool hasImage = (m_image.getSizeX() > 0 && m_image.getSizeY() > 0 && m_image.getSizeZ() > 0);
+
+    // Read first, take the buffer over second: a failed read must not cost the
+    // mask that is already loaded.
+    MaskVolume volume;
+    QString error;
+    if (!readMaskVolume(path, numpyOptionsForMask(), volume, &error))
     {
-        const QString absoluteMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath());
-        const bool hasImage = (m_image.getSizeX() > 0 && m_image.getSizeY() > 0 && m_image.getSizeZ() > 0);
-
-        // Read the labels first, then apply them; the two readers differ but
-        // everything downstream only needs dimensions, spacing and values.
-        unsigned int sx = 0, sy = 0, sz = 0;
-        double maskSpacing[3] = {1.0, 1.0, 1.0};
-        std::vector<int> labelValues; // C-order, X fastest
-
-        if (NiftiImage::isNumpyPath(path))
-        {
-            // Numpy masks go through the same importer as numpy images, and
-            // inherit the current image's axis order and mirroring: read under
-            // a different convention a mask still matches in size, so the
-            // mismatch would show up only as labels sitting on wrong anatomy.
-            NiftiImage volume;
-            std::string importError;
-            if (!volume.loadNumpy(path, numpyOptionsForMask(), nullptr, &importError))
-            {
-                m_loadedMaskPath.clear();
-                QMessageBox::critical(this, "Load Mask", QString::fromStdString(importError));
-                return false;
-            }
-            sx = volume.getSizeX();
-            sy = volume.getSizeY();
-            sz = volume.getSizeZ();
-            maskSpacing[0] = volume.getSpacingX();
-            maskSpacing[1] = volume.getSpacingY();
-            maskSpacing[2] = volume.getSpacingZ();
-            labelValues.resize(size_t(sx) * size_t(sy) * size_t(sz));
-            size_t writeIdx = 0;
-            for (unsigned int z = 0; z < sz; ++z)
-                for (unsigned int y = 0; y < sy; ++y)
-                    for (unsigned int x = 0; x < sx; ++x)
-                        labelValues[writeIdx++] = static_cast<int>(std::lround(volume.getVoxelValue(x, y, z)));
-        }
-        else
-        {
-            using MaskImageType = itk::Image<int32_t, 3>;
-            using ReaderType = itk::ImageFileReader<MaskImageType>;
-            ReaderType::Pointer reader = ReaderType::New();
-            reader->SetFileName(path);
-            reader->Update();
-            MaskImageType::Pointer img = reader->GetOutput();
-            MaskImageType::RegionType region = img->GetLargestPossibleRegion();
-            MaskImageType::SizeType size = region.GetSize();
-            sx = static_cast<unsigned int>(size[0]);
-            sy = static_cast<unsigned int>(size[1]);
-            sz = static_cast<unsigned int>(size[2]);
-            const auto spacing = img->GetSpacing();
-            for (int i = 0; i < 3; ++i)
-                maskSpacing[i] = std::abs(static_cast<double>(spacing[i]));
-            labelValues.resize(size_t(sx) * size_t(sy) * size_t(sz));
-            itk::ImageRegionConstIterator<MaskImageType> it(img, region);
-            size_t writeIdx = 0;
-            for (it.GoToBegin(); !it.IsAtEnd(); ++it, ++writeIdx)
-                labelValues[writeIdx] = static_cast<int>(it.Get());
-        }
-
-        if (hasImage &&
-            (sx != m_image.getSizeX() || sy != m_image.getSizeY()))
-        {
-            m_maskData.clear();
-            m_maskDimX = 0;
-            m_maskDimY = 0;
-            m_maskDimZ = 0;
-            m_maskSpacingX = m_image.getSpacingX();
-            m_maskSpacingY = m_image.getSpacingY();
-            m_maskSpacingZ = m_image.getSpacingZ();
-            m_mask3DDirty = true;
-
-            const QString msg = QString("Mask dimensions (%1 x %2 x %3) do not match image dimensions (%4 x %5 x %6). "
-                                        "Overlay requires matching X/Y dimensions.")
-                                    .arg(sx)
-                                    .arg(sy)
-                                    .arg(sz)
-                                    .arg(m_image.getSizeX())
-                                    .arg(m_image.getSizeY())
-                                    .arg(m_image.getSizeZ());
-            QMessageBox::warning(this, "Load Mask", msg);
-            if (m_statusLabel)
-                m_statusLabel->setText("Mask not overlaid: X/Y dimensions do not match current image.");
-            m_loadedMaskPath.clear();
-            return false;
-        }
-
-        if (hasImage)
-        {
-            m_maskSpacingX = m_image.getSpacingX();
-            m_maskSpacingY = m_image.getSpacingY();
-            m_maskSpacingZ = m_image.getSpacingZ();
-        }
-        else
-        {
-            m_maskSpacingX = maskSpacing[0];
-            m_maskSpacingY = maskSpacing[1];
-            m_maskSpacingZ = maskSpacing[2];
-            if (!std::isfinite(m_maskSpacingX) || m_maskSpacingX <= 0.0)
-                m_maskSpacingX = 1.0;
-            if (!std::isfinite(m_maskSpacingY) || m_maskSpacingY <= 0.0)
-                m_maskSpacingY = 1.0;
-            if (!std::isfinite(m_maskSpacingZ) || m_maskSpacingZ <= 0.0)
-                m_maskSpacingZ = 1.0;
-        }
-        m_maskDimX = sx;
-        m_maskDimY = sy;
-        m_maskDimZ = sz;
-        m_maskData = std::move(labelValues);
-
-        if (hasImage && sz != m_image.getSizeZ() && m_statusLabel)
-        {
-            m_statusLabel->setText(QString("Loaded mask with depth mismatch (%1 vs %2): overlay adapted to image height.")
-                                       .arg(sz)
-                                       .arg(m_image.getSizeZ()));
-        }
-
-        if (!hasImage && m_show3DCheck && !m_show3DCheck->isChecked())
-        {
-            // In mask-only mode, ensure render window actually shows the loaded mask.
-            QSignalBlocker blocker(m_show3DCheck);
-            m_show3DCheck->setChecked(true);
-            m_enable3DView = true;
-            if (m_mask3DView)
-                m_mask3DView->setMaskVisible(true);
-        }
-
-        m_mask3DDirty = true;
-        m_loadedMaskPath = absoluteMaskPath.toStdString();
-        rebuildMaskLabelFilter();
-        return true;
-    }
-    catch (const std::exception &e)
-    {
-        m_loadedMaskPath.clear();
-        QMessageBox::critical(this, "Load Mask", QString("Failed: %1").arg(e.what()));
+        QMessageBox::critical(this, "Load Mask", error.isEmpty() ? QString("Failed to read %1").arg(absoluteMaskPath) : error);
         return false;
     }
+
+    if (hasImage && (volume.dimX != m_image.getSizeX() || volume.dimY != m_image.getSizeY()))
+    {
+        const QString msg = QString("Mask dimensions (%1 x %2 x %3) do not match image dimensions (%4 x %5 x %6). "
+                                    "Overlay requires matching X/Y dimensions.")
+                                .arg(volume.dimX)
+                                .arg(volume.dimY)
+                                .arg(volume.dimZ)
+                                .arg(m_image.getSizeX())
+                                .arg(m_image.getSizeY())
+                                .arg(m_image.getSizeZ());
+        QMessageBox::warning(this, "Load Mask", msg);
+        if (m_statusLabel)
+            m_statusLabel->setText("Mask not overlaid: X/Y dimensions do not match current image.");
+
+        // The buffer is emptied, so the mask that was in it keeps being drawn
+        // only if its eye is open — the same rule as loading a mask that fits.
+        releaseActiveMaskLayer();
+        m_loadedMaskPath.clear();
+        m_maskData.clear();
+        m_maskDimX = 0;
+        m_maskDimY = 0;
+        m_maskDimZ = 0;
+        m_maskSpacingX = m_image.getSpacingX();
+        m_maskSpacingY = m_image.getSpacingY();
+        m_maskSpacingZ = m_image.getSpacingZ();
+        m_mask3DDirty = true;
+        return false;
+    }
+
+    releaseActiveMaskLayer();
+
+    if (hasImage)
+    {
+        m_maskSpacingX = m_image.getSpacingX();
+        m_maskSpacingY = m_image.getSpacingY();
+        m_maskSpacingZ = m_image.getSpacingZ();
+    }
+    else
+    {
+        m_maskSpacingX = volume.spacingX;
+        m_maskSpacingY = volume.spacingY;
+        m_maskSpacingZ = volume.spacingZ;
+    }
+    m_maskDimX = volume.dimX;
+    m_maskDimY = volume.dimY;
+    m_maskDimZ = volume.dimZ;
+    m_maskData = std::move(volume.data);
+    m_loadedMaskPath = absoluteMaskPath.toStdString();
+    adoptActiveMaskLayer(absoluteMaskPath);
+
+    if (hasImage && m_maskDimZ != m_image.getSizeZ() && m_statusLabel)
+    {
+        m_statusLabel->setText(QString("Loaded mask with depth mismatch (%1 vs %2): overlay adapted to image height.")
+                                   .arg(m_maskDimZ)
+                                   .arg(m_image.getSizeZ()));
+    }
+
+    if (!hasImage && m_show3DCheck && !m_show3DCheck->isChecked())
+    {
+        // In mask-only mode, ensure render window actually shows the loaded mask.
+        QSignalBlocker blocker(m_show3DCheck);
+        m_show3DCheck->setChecked(true);
+        m_enable3DView = true;
+        if (m_mask3DView)
+            m_mask3DView->setMaskVisible(true);
+    }
+
+    m_mask3DDirty = true;
+    rebuildMaskLabelFilter();
+    return true;
 }
 
 void ManualSeedSelector::paintAxialMask(int x, int y)
@@ -5372,6 +5984,9 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
         }
         m_mask3DDirty = true;
     }
+
+    if (!erase)
+        noteActiveMaskLabel(labelValue);
 }
 
 // =============================================================================
@@ -5548,6 +6163,25 @@ bool ManualSeedSelector::handleSliceKey(QKeyEvent *event)
 
 bool ManualSeedSelector::eventFilter(QObject *obj, QEvent *event)
 {
+    if (m_maskList && obj == m_maskList->viewport() && event->type() == QEvent::MouseButtonPress)
+    {
+        QMouseEvent *me = static_cast<QMouseEvent *>(event);
+        if (me && me->button() == Qt::LeftButton)
+        {
+            const QPoint pos = me->position().toPoint();
+            if (QListWidgetItem *item = m_maskList->itemAt(pos))
+            {
+                if (MaskListDelegate::eyeRect(m_maskList->visualItemRect(item)).contains(pos))
+                {
+                    // The eye is not a selection: consuming the press keeps the
+                    // click from also making this the mask being edited.
+                    toggleMaskVisible(item->data(kPathRole).toString());
+                    return true;
+                }
+            }
+        }
+    }
+
     if (obj == (m_niftiList ? m_niftiList->viewport() : nullptr) && event->type() == QEvent::MouseButtonPress)
     {
         QMouseEvent *me = static_cast<QMouseEvent *>(event);
@@ -5650,6 +6284,14 @@ void ManualSeedSelector::updateMaskSeedLists()
         item->setForeground(QBrush(color));
         item->setData(kPathRole, absolutePath);
         item->setData(kMaskSourceImageRole, sourceImageIndex);
+        item->setData(kMaskVisibilityRole, static_cast<int>(maskVisibilityForPath(absolutePath)));
+        QVariantList swatch;
+        if (const MaskLayer *layer = findMaskLayer(absolutePath))
+        {
+            for (const QColor &swatchColor : layer->swatchColors())
+                swatch.append(swatchColor);
+        }
+        item->setData(kMaskSwatchRole, swatch);
         m_maskList->addItem(item);
         const int row = m_maskList->count() - 1;
         if (!activeMaskPath.isEmpty() && activeMaskRow < 0 && QDir::cleanPath(absolutePath) == activeMaskPath)
