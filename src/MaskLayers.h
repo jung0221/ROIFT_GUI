@@ -4,10 +4,9 @@
  * MaskLayers.h — the mask volumes the viewer draws.
  *
  * The window *edits* exactly one mask (the buffer in ManualSeedSelector), but
- * it may *draw* several at once. Every drawn mask is a MaskLayer: a label
- * volume plus the rule that turns its labels into colours. Pinning a layer —
- * the eye in the mask list — is what keeps it on screen after another mask is
- * made active.
+ * it may *draw* several at once, and the two are independent: a MaskLayer is a
+ * label volume plus the rule that turns its labels into colours, and the eye in
+ * the mask list is the only thing that decides whether it is drawn.
  */
 
 #include <QColor>
@@ -57,14 +56,13 @@ enum class MaskColorMode
     PerLabel, ///< the shared label palette (colorForLabel), whatever the mask
 };
 
-/// Why a mask is on screen. Only Pinned survives a change of active mask; the
-/// eye in the list toggles between Hidden and Pinned, and Active is the mask
-/// currently being edited, drawn until another row is clicked.
+/// Whether a mask is drawn. The eye in the mask list is the only thing that
+/// sets it: which mask is *edited* is a separate matter, marked by the row
+/// selection, and does not put anything on screen.
 enum class MaskVisibility
 {
     Hidden = 0,
-    Active = 1,
-    Pinned = 2,
+    Visible = 1,
 };
 
 /// A mask the viewer draws. `volume` is empty for the mask being edited: its
@@ -77,7 +75,7 @@ struct MaskLayer
     MaskColorMode colorMode = MaskColorMode::Auto;
     QColor color;         ///< the mask's own colour: palette slot, or user override
     int colorSlot = 0;    ///< slot the colour came from, released when the layer goes
-    bool pinned = false;  ///< the eye is open: keep drawing it whatever is active
+    bool visible = false; ///< the eye is open: draw it, whatever is being edited
 
     /// Resolves Auto: a mask with more than one label reads better in the
     /// shared label palette than flattened into a single colour.

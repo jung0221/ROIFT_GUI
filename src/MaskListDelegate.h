@@ -3,8 +3,8 @@
 /**
  * MaskListDelegate.h — the mask list row: [eye] [colour swatch] name.
  *
- * The eye is painted rather than iconised because it has three states and each
- * one is a different ink (see MaskVisibility), which a fixed-colour SVG cannot
+ * The eye is painted rather than iconised because its states are the same glyph
+ * in different inks (see MaskVisibility), which a fixed-colour SVG cannot
  * express. Rows stay plain QListWidgetItems — no per-row widgets — so renaming,
  * selection and the path context menu keep working untouched.
  */

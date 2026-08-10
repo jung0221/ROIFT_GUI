@@ -485,6 +485,11 @@ bool ManualSeedSelector::applyMaskFromPath(const std::string &path)
     if (!ok)
         return false;
 
+    // Nobody clicked an eye for this one — it arrived from a segmentation run
+    // or the command line — so open it here rather than land the result on a
+    // viewer that shows nothing.
+    setActiveMaskVisible();
+
     if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
     {
         const std::string absolutePath =
@@ -903,7 +908,10 @@ void ManualSeedSelector::setupUi()
         QString f = QFileDialog::getOpenFileName(this, "Open Mask", "",
                                                  maskOpenFileFilter());
         if (!f.isEmpty()) {
-            loadMaskFromFile(f.toStdString());
+            // Opening a mask by hand is a request to look at it, so it does not
+            // wait for its eye the way selecting a listed mask does.
+            if (loadMaskFromFile(f.toStdString()))
+                setActiveMaskVisible();
             updateViews();
         } });
     maskFileLayout->addWidget(btnMaskLoad);
@@ -1765,10 +1773,11 @@ void ManualSeedSelector::setupUi()
     m_maskList->setObjectName("maskList");
     m_maskList->setMinimumHeight(70);
     m_maskList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    m_maskList->setToolTip("Click a name to load that mask for editing.\n"
-                           "Click the eye to keep a mask on screen beside it.");
+    m_maskList->setToolTip("Click the eye to show a mask; every mask with an open eye is drawn.\n"
+                           "Click a name only to choose which mask you edit.");
     // The eye lives in the row's left margin: the delegate paints it, and the
-    // viewport filter turns a click there into a pin instead of a selection.
+    // viewport filter turns a click there into a visibility toggle rather than
+    // a selection.
     m_maskList->setItemDelegate(new MaskListDelegate(m_maskList));
     m_maskList->viewport()->installEventFilter(this);
     maskListLayout->addWidget(m_maskList);
@@ -1807,7 +1816,9 @@ void ManualSeedSelector::setupUi()
                 const QString abs = QFileInfo(candidate).absoluteFilePath();
                 if (QFileInfo::exists(abs))
                 {
-                    loadMaskFromFile(abs.toStdString());
+                    // No image to look at: show the first mask straight away.
+                    if (loadMaskFromFile(abs.toStdString()))
+                        setActiveMaskVisible();
                     updateViews();
                     break;
                 }
@@ -1870,7 +1881,7 @@ void ManualSeedSelector::setupUi()
             return;
         }
 
-        // A removed row can no longer be unpinned, so it must not stay drawn.
+        // A removed row has no eye left to close, so it must not stay drawn.
         dropMaskLayer(path);
 
         if (removingActiveMask)
@@ -1925,7 +1936,7 @@ void ManualSeedSelector::setupUi()
                 continue;
 
             const std::string key = path.toStdString();
-            dropMaskLayer(path); // a removed row can no longer be unpinned
+            dropMaskLayer(path); // a removed row has no eye left to close
             const int sourceImageIndex = item->data(kMaskSourceImageRole).toInt();
             if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size()))
                 perImageToRemove[static_cast<size_t>(sourceImageIndex)].insert(key);
@@ -2004,7 +2015,9 @@ void ManualSeedSelector::setupUi()
     maskButtonsLayout->addStretch(1);
     maskListLayout->addLayout(maskButtonsLayout);
 
-    // Connect item selection to load the mask
+    // Selecting a row loads that mask into the editable buffer. It does not put
+    // it on screen — the eye does that, so a mask can be edited while another
+    // one is being looked at.
     connect(m_maskList, &QListWidget::itemClicked, [this](QListWidgetItem *item)
             {
         if (!item)
@@ -2017,9 +2030,20 @@ void ManualSeedSelector::setupUi()
         }
 
         if (loadMaskFromFile(maskPath.toStdString())) {
+            // Read the row before refreshing the list: that rebuild deletes
+            // every item, this one included.
+            const QString name = displayNameForPath(maskPath, QFileInfo(maskPath).fileName());
+            const MaskLayer *layer = findMaskLayer(maskPath);
+            const bool shown = (layer && layer->visible);
+
+            updateMaskSeedLists();
             updateViews();
             if (m_statusLabel)
-                m_statusLabel->setText(QString("Loaded mask: %1").arg(item->text()));
+            {
+                m_statusLabel->setText(shown
+                                           ? QString("Editing mask: %1").arg(name)
+                                           : QString("Editing mask: %1 (click its eye to show it)").arg(name));
+            }
         }
     });
 
@@ -2808,7 +2832,9 @@ void ManualSeedSelector::openMasksFromCsv()
             const QString abs = QFileInfo(candidate).absoluteFilePath();
             if (QFileInfo::exists(abs))
             {
-                loadMaskFromFile(abs.toStdString());
+                // No image to look at: show the first mask straight away.
+                if (loadMaskFromFile(abs.toStdString()))
+                    setActiveMaskVisible();
                 updateViews();
                 break;
             }
@@ -4679,11 +4705,15 @@ void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
 // =============================================================================
 // MASK LAYERS
 //
-// One mask is editable — the buffer in m_maskData — and any number may be drawn
-// beside it. m_maskLayers holds one entry per drawn mask; the entry for the
-// editable one carries no voxels of its own, so nothing is ever stored twice.
-// Only pinned entries survive a change of active mask: that is what the eye in
-// the mask list toggles.
+// Two independent things: one mask is editable — the buffer in m_maskData,
+// picked by clicking a row — and the masks drawn are those whose eye is open.
+// Selecting a mask does not put it on screen; opening its eye does, and it
+// stays there while other masks are selected and edited.
+//
+// m_maskLayers holds one entry per drawn mask, plus one for the mask being
+// edited even while it is hidden, since that entry carries its colour rule.
+// The entry for the editable mask holds no voxels of its own, so nothing is
+// ever stored twice.
 // =============================================================================
 
 namespace
@@ -4852,7 +4882,7 @@ void ManualSeedSelector::adoptActiveMaskLayer(const QString &absolutePath)
     }
 
     // The editable buffer owns the voxels from here on; a copy the layer was
-    // holding (it was pinned before being clicked) would only go stale.
+    // holding (it was already drawn before being clicked) would only go stale.
     layer->volume = MaskVolume();
     layer->labels = distinctMaskLabels(m_maskData);
     m_unsavedMaskStyle = MaskLayer(); // the buffer belongs to a file again
@@ -4867,15 +4897,16 @@ void ManualSeedSelector::releaseActiveMaskLayer()
     {
         if (it->path != key)
             continue;
-        if (!it->pinned)
+        if (!it->visible)
         {
+            // Hidden: nothing to keep, and the style is rebuilt on reload.
             m_maskLayers.erase(it);
             return;
         }
-        // Pinned: the layer takes the voxels over, and keeps being drawn while
-        // the buffer goes to whichever mask is loaded next. They move rather
-        // than copy — a thorax mask is hundreds of MB — so the buffer is left
-        // empty here and every caller assigns or clears it straight after.
+        // Drawn: the layer takes the voxels over, and stays on screen while the
+        // buffer goes to whichever mask is loaded next. They move rather than
+        // copy — a thorax mask is hundreds of MB — so the buffer is left empty
+        // here and every caller assigns or clears it straight after.
         it->volume.data = std::move(m_maskData);
         m_maskData.clear();
         it->volume.dimX = m_maskDimX;
@@ -4910,7 +4941,7 @@ MaskVisibility ManualSeedSelector::maskVisibilityForPath(const QString &absolute
     const MaskLayer *layer = findMaskLayer(absolutePath);
     if (!layer)
         return MaskVisibility::Hidden;
-    return layer->pinned ? MaskVisibility::Pinned : MaskVisibility::Active;
+    return layer->visible ? MaskVisibility::Visible : MaskVisibility::Hidden;
 }
 
 bool ManualSeedSelector::maskVolumeCoregisters(const MaskVolume &volume, QString *reason) const
@@ -4979,7 +5010,7 @@ bool ManualSeedSelector::confirmMaskLayerMemory(std::size_t additionalVoxels)
                                  QMessageBox::No) == QMessageBox::Yes;
 }
 
-void ManualSeedSelector::toggleMaskPinned(const QString &absolutePath)
+void ManualSeedSelector::toggleMaskVisible(const QString &absolutePath)
 {
     const QString key = QDir::cleanPath(QFileInfo(absolutePath.trimmed()).absoluteFilePath());
     if (key.isEmpty())
@@ -4994,13 +5025,12 @@ void ManualSeedSelector::toggleMaskPinned(const QString &absolutePath)
     {
         if (key == activeKey)
         {
-            // The mask being edited is drawn either way; the eye only decides
-            // whether it stays on screen once another mask is loaded.
-            layer->pinned = !layer->pinned;
+            // The edited mask keeps its entry either way — it carries the
+            // colour rule — and its voxels are the buffer, not the layer.
+            layer->visible = !layer->visible;
             if (m_statusLabel)
-                m_statusLabel->setText(layer->pinned
-                                           ? QString("Keeping %1 visible while other masks are loaded.").arg(name)
-                                           : QString("%1 will be replaced when another mask is loaded.").arg(name));
+                m_statusLabel->setText(layer->visible ? QString("Showing mask: %1").arg(name)
+                                                      : QString("Hidden mask: %1").arg(name));
         }
         else
         {
@@ -5035,7 +5065,7 @@ void ManualSeedSelector::toggleMaskPinned(const QString &absolutePath)
         created.volume = std::move(volume);
         created.colorSlot = nextFreeMaskColorSlot();
         created.color = maskSlotColor(created.colorSlot);
-        created.pinned = true;
+        created.visible = true;
         m_maskLayers.push_back(std::move(created));
 
         if (!m_enable3DView && m_show3DCheck && !m_show3DCheck->isChecked() && !hasImage())
@@ -5055,6 +5085,22 @@ void ManualSeedSelector::toggleMaskPinned(const QString &absolutePath)
     m_mask3DDirty = true;
     updateMaskSeedLists();
     updateViews();
+}
+
+bool ManualSeedSelector::setActiveMaskVisible()
+{
+    MaskLayer *style = activeMaskStyle();
+    if (!style)
+        return false;
+    if (style->path.isEmpty())
+        return true; // a buffer with no file has no row and no eye; always drawn
+    if (style->visible)
+        return true;
+
+    style->visible = true;
+    m_mask3DDirty = true;
+    updateMaskSeedLists();
+    return true;
 }
 
 void ManualSeedSelector::noteActiveMaskLabel(int label)
@@ -5079,8 +5125,8 @@ ManualSeedSelector::MaskMenuActions ManualSeedSelector::appendMaskLayerMenuActio
         return actions;
 
     const MaskLayer *layer = findMaskLayer(key);
-    const bool pinned = (layer && layer->pinned);
-    actions.pin = menu.addAction(pinned ? "Stop keeping visible" : "Keep visible (pin)");
+    const bool visible = (layer && layer->visible);
+    actions.pin = menu.addAction(visible ? "Hide" : "Show");
 
     if (layer)
     {
@@ -5112,7 +5158,7 @@ bool ManualSeedSelector::applyMaskLayerMenuAction(const MaskMenuActions &actions
 
     if (selected == actions.pin)
     {
-        toggleMaskPinned(absolutePath);
+        toggleMaskVisible(absolutePath);
         return true;
     }
 
@@ -5154,15 +5200,15 @@ std::vector<ManualSeedSelector::MaskRenderItem> ManualSeedSelector::visibleMaskR
     const QString activeKey = m_loadedMaskPath.empty()
                                   ? QString()
                                   : QDir::cleanPath(QString::fromStdString(m_loadedMaskPath));
-    // No entry for the buffer means it came from no file — a mask being painted
-    // from scratch, or the anatomy masks merged on load.
+    // A style with no path belongs to a buffer that came from no file — a mask
+    // painted from scratch, or the anatomy masks merged on load.
     const MaskLayer *activeStyle = activeMaskStyle();
 
     for (const MaskLayer &layer : m_maskLayers)
     {
         if (!activeKey.isEmpty() && layer.path == activeKey)
-            continue; // drawn last, on top of the pinned ones
-        if (!layer.pinned || !layer.volume.isValid())
+            continue; // drawn last, on top of the others
+        if (!layer.visible || !layer.volume.isValid())
             continue;
         MaskRenderItem item;
         item.data = &layer.volume.data;
@@ -5176,7 +5222,12 @@ std::vector<ManualSeedSelector::MaskRenderItem> ManualSeedSelector::visibleMaskR
     const size_t expectedActiveTotal = size_t(m_maskDimX) * size_t(m_maskDimY) * size_t(m_maskDimZ);
     const bool activeBufferValid = (!m_maskData.empty() && expectedActiveTotal > 0 &&
                                     m_maskData.size() == expectedActiveTotal);
-    if (activeStyle && activeBufferValid)
+    // Selecting a mask does not draw it: the edited mask is on screen only when
+    // its own eye is open. A buffer with no file has no row to hold an eye, so
+    // it is drawn whenever it holds voxels — otherwise painting a new mask
+    // would show nothing.
+    const bool activeDrawn = activeStyle && (activeStyle->path.isEmpty() || activeStyle->visible);
+    if (activeDrawn && activeBufferValid)
     {
         MaskRenderItem item;
         item.data = &m_maskData;
@@ -5413,6 +5464,10 @@ void ManualSeedSelector::update3DMaskView()
 void ManualSeedSelector::setMaskMode(int mode)
 {
     m_maskMode = mode;
+    // Painting into a mask nobody can see is a trap, so picking up the brush
+    // opens the edited mask's eye.
+    if (mode != 0)
+        setActiveMaskVisible();
     // Painting the mask and placing seeds both want the left button, so turning
     // one on turns the other off rather than letting them fight over the click.
     if (mode != 0 && m_seedMode != 0)
@@ -5583,6 +5638,8 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     {
         if (!loadMaskFromFile(selectedMaskPath.toStdString()))
             return;
+        // Thresholding a mask is pointless without seeing what it did to it.
+        setActiveMaskVisible();
         activeMaskPath = selectedMaskPath;
         updateViews();
     }
@@ -5785,7 +5842,7 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
             m_statusLabel->setText("Mask not overlaid: X/Y dimensions do not match current image.");
 
         // The buffer is emptied, so the mask that was in it keeps being drawn
-        // only if it was pinned — the same rule as loading a mask that fits.
+        // only if its eye is open — the same rule as loading a mask that fits.
         releaseActiveMaskLayer();
         m_loadedMaskPath.clear();
         m_maskData.clear();
@@ -6117,8 +6174,8 @@ bool ManualSeedSelector::eventFilter(QObject *obj, QEvent *event)
                 if (MaskListDelegate::eyeRect(m_maskList->visualItemRect(item)).contains(pos))
                 {
                     // The eye is not a selection: consuming the press keeps the
-                    // click from also loading the mask for editing.
-                    toggleMaskPinned(item->data(kPathRole).toString());
+                    // click from also making this the mask being edited.
+                    toggleMaskVisible(item->data(kPathRole).toString());
                     return true;
                 }
             }

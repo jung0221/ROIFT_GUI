@@ -23,15 +23,18 @@
 - Shift is reserved for this gesture, so it never pans the 3D camera.
 
 ## Showing several masks at once
-- Every row in `Masks` has an eye at its left edge. It starts closed: the mask is
-  listed but not drawn.
-- **Click the name** to load a mask for editing, as before. It is drawn straight away
-  (the eye shows open but dimmed) and it is *transient* — clicking another row
-  replaces it. Only this mask can be painted, thresholded, cleaned or saved.
-- **Click the eye** to pin a mask. A pinned mask (accent-coloured eye) stays drawn no
-  matter which mask you load next, so two or more masks can be compared in the slices
-  and in the 3D view at once. Click the eye again to hide it and free its memory.
-- Pinning the mask you are editing keeps it on screen when you move on to the next one.
+- **The eye decides what is drawn, and nothing else does.** Every row in `Masks` has one
+  at its left edge, closed by default. Every mask with an open eye is drawn — one, two or
+  a dozen, in the slices and in the 3D view alike.
+- **Clicking a name only chooses which mask you edit.** That mask goes into the editable
+  buffer (it is the one painted, thresholded, cleaned or saved) and the row is selected,
+  but it does not appear on screen until you open its eye. So you can edit one mask while
+  looking at another.
+- Click an open eye to hide that mask again and free the memory it held.
+- Three cases open an eye for you, because nobody clicked one and a blank viewer would be
+  a lie: a mask loaded by `Open Mask`, a mask that arrives from a segmentation run or the
+  `--mask` argument, and the mask you are editing when you pick up the mask brush.
+- A mask painted from scratch has no row and therefore no eye, so it is always drawn.
 - Colours are picked so masks stay apart: a mask with a single label gets one colour
   from a per-mask palette (shown as the swatch beside the eye), and a multi-label mask
   (ribs, TotalSegmentator) keeps the shared per-label palette. Right-click a row to force
@@ -39,9 +42,9 @@
 - Drawn masks share the overlay opacity and the per-view `Show Mask` toggles. The
   `Mask Labels` filter applies to the mask being edited.
 - Masks must sit on the same X/Y grid as the image; one that does not is refused with a
-  message instead of being drawn misaligned. Switching image drops every pinned mask,
-  since the grid changes.
-- Each drawn mask is a full label volume in memory, so pinning several large masks is
+  message instead of being drawn misaligned. Switching image closes every eye, since the
+  grid changes under them.
+- Each drawn mask is a full label volume in memory, so opening several large masks is
   answered with a size warning before it happens.
 
 ## Mask I/O

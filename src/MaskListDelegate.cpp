@@ -12,31 +12,19 @@
 
 namespace
 {
-// Ink for each eye state. Pinned is the accent because pinning is a state the
-// user put the row into; active is metadata ink because it is merely where the
-// selection happens to be; hidden is dimmer still. A selected row is already
+// Ink for the eye. Visible is the accent because showing a mask is a state the
+// user put the row into; hidden is the disabled ink. A selected row is already
 // accent-filled, so there the ink has to come off the fill instead.
 QColor eyeInk(MaskVisibility visibility, bool selected)
 {
+    const bool visible = (visibility != MaskVisibility::Hidden);
     if (selected)
     {
         QColor ink(Theme::kOnAccent);
-        ink.setAlpha(visibility == MaskVisibility::Pinned  ? 255
-                     : visibility == MaskVisibility::Active ? 190
-                                                            : 130);
+        ink.setAlpha(visible ? 255 : 130);
         return ink;
     }
-
-    switch (visibility)
-    {
-    case MaskVisibility::Pinned:
-        return QColor(Theme::kAccent);
-    case MaskVisibility::Active:
-        return QColor(Theme::kInk3);
-    case MaskVisibility::Hidden:
-    default:
-        return QColor(Theme::kInkDisabled);
-    }
+    return QColor(visible ? Theme::kAccent : Theme::kInkDisabled);
 }
 
 // The eye, drawn in a square box: almond outline plus pupil when open, and a

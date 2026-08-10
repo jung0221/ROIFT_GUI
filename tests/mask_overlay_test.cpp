@@ -1,10 +1,12 @@
-// Checks that the viewer can draw more than one mask at a time.
+// Checks that the viewer can draw more than one mask at a time, and that it
+// draws exactly the masks whose eye is open.
 //
-// The window edits one mask and draws any number: the eye in the mask list pins
-// a mask on screen, and a pinned mask has to survive another mask being loaded
-// for editing. Both halves are easy to break from either side — the pin
-// bookkeeping in ManualSeedSelector, or the blend that walks the layers — so
-// this drives the real window and reads the composed axial slice back.
+// Editing and drawing are independent: selecting a mask loads it into the
+// editable buffer without putting it on screen, while the eye shows a mask
+// whether or not it is the one being edited. Either half is easy to break from
+// either side — the layer bookkeeping in ManualSeedSelector, or the blend that
+// walks the layers — so this drives the real window and reads the composed
+// axial slice back.
 //
 // The two test masks occupy opposite quadrants, so a coloured pixel in one
 // quadrant can only have come from one of them.
@@ -103,16 +105,27 @@ int rowForFile(QListWidget *list, const QString &fileName)
     return -1;
 }
 
-/// Click the eye of a row, exactly where the viewport filter looks for it.
-void clickEye(QListWidget *list, int row)
+/// Send a left click to a row at @p pos, in viewport coordinates.
+void clickAt(QListWidget *list, const QPointF &pos)
 {
-    const QRect itemRect = list->visualItemRect(list->item(row));
-    const QPointF pos = QRectF(MaskListDelegate::eyeRect(itemRect)).center();
     const QPointF global = list->viewport()->mapToGlobal(pos);
     QMouseEvent press(QEvent::MouseButtonPress, pos, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QMouseEvent release(QEvent::MouseButtonRelease, pos, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QApplication::sendEvent(list->viewport(), &press);
     QApplication::sendEvent(list->viewport(), &release);
+}
+
+/// Click the eye of a row, exactly where the viewport filter looks for it.
+void clickEye(QListWidget *list, int row)
+{
+    clickAt(list, QRectF(MaskListDelegate::eyeRect(list->visualItemRect(list->item(row)))).center());
+}
+
+/// Click a row's name, which selects the mask for editing and nothing else.
+void clickName(QListWidget *list, int row)
+{
+    const QRect itemRect = list->visualItemRect(list->item(row));
+    clickAt(list, QPointF(itemRect.left() + MaskListDelegate::kTextOffset + 2, itemRect.center().y()));
 }
 
 /// The CT under the overlay is greyscale, so any pixel that is not grey has a
@@ -202,20 +215,31 @@ int main(int argc, char **argv)
     maskList->resize(220, 120); // give the rows a width worth painting
     const QImage closedEye = paintedEye(maskList, rowForFile(maskList, leftName));
 
-    // Pin the left mask: it is drawn without ever being loaded for editing.
+    // Selecting a mask is not a request to see it.
+    clickName(maskList, rowForFile(maskList, rightName));
+    check(window.activeMaskPath() == QFileInfo(rightPath).absoluteFilePath(),
+          "clicking a name loads that mask for editing");
+    check(visibilityOf(rightName) == MaskVisibility::Hidden, "its eye stays closed");
+    check(isGrey(rightQuadrantPixel(axial->image())), "and the selected mask is not drawn");
+
+    // The eye draws a mask that is not the one being edited.
     clickEye(maskList, rowForFile(maskList, leftName));
-    check(visibilityOf(leftName) == MaskVisibility::Pinned, "eye click pins the mask");
-    check(!isGrey(leftQuadrantPixel(axial->image())), "pinned mask is drawn in the axial slice");
-    check(isGrey(rightQuadrantPixel(axial->image())), "the other mask is still not drawn");
+    check(visibilityOf(leftName) == MaskVisibility::Visible, "eye click shows the mask");
+    check(!isGrey(leftQuadrantPixel(axial->image())), "shown mask is drawn in the axial slice");
+    check(window.activeMaskPath() == QFileInfo(rightPath).absoluteFilePath(),
+          "showing a mask does not change which one is edited");
+    check(isGrey(rightQuadrantPixel(axial->image())), "the edited mask is still not drawn");
 
     const QImage openEye = paintedEye(maskList, rowForFile(maskList, leftName));
     check(!closedEye.isNull() && !openEye.isNull() && closedEye != openEye,
-          "the eye is painted differently once the mask is pinned");
+          "the eye is painted differently once the mask is shown");
 
-    // Load the other mask for editing: the pinned one has to stay on screen.
-    check(window.applyMaskFromPath(rightPath.toStdString()), "second mask loaded for editing");
-    check(visibilityOf(leftName) == MaskVisibility::Pinned, "pinned mask stays pinned");
-    check(visibilityOf(rightName) == MaskVisibility::Active, "edited mask reads as active");
+    // Two masks on screen at once, and the shown one survives the other being
+    // loaded for editing.
+    clickEye(maskList, rowForFile(maskList, rightName));
+    check(visibilityOf(leftName) == MaskVisibility::Visible &&
+              visibilityOf(rightName) == MaskVisibility::Visible,
+          "both eyes open");
 
     const QImage bothSlice = axial->image();
     check(!isGrey(leftQuadrantPixel(bothSlice)) && !isGrey(rightQuadrantPixel(bothSlice)),
@@ -223,11 +247,23 @@ int main(int argc, char **argv)
     check(leftQuadrantPixel(bothSlice) != rightQuadrantPixel(bothSlice),
           "the two masks are drawn in different colours");
 
+    clickName(maskList, rowForFile(maskList, leftName));
+    check(window.activeMaskPath() == QFileInfo(leftPath).absoluteFilePath(), "editing switched masks");
+    check(!isGrey(leftQuadrantPixel(axial->image())) && !isGrey(rightQuadrantPixel(axial->image())),
+          "a shown mask survives another being loaded for editing");
+
     // Closing the eye takes the mask off screen again.
+    clickEye(maskList, rowForFile(maskList, rightName));
+    check(visibilityOf(rightName) == MaskVisibility::Hidden, "second eye click hides the mask");
+    check(isGrey(rightQuadrantPixel(axial->image())), "hidden mask leaves the slice grey again");
+    check(!isGrey(leftQuadrantPixel(axial->image())), "the other mask is still drawn");
+
+    // A mask that arrives on the program's initiative is not silently invisible.
     clickEye(maskList, rowForFile(maskList, leftName));
-    check(visibilityOf(leftName) == MaskVisibility::Hidden, "second eye click hides the mask");
-    check(isGrey(leftQuadrantPixel(axial->image())), "hidden mask leaves the slice grey again");
-    check(!isGrey(rightQuadrantPixel(axial->image())), "the edited mask is still drawn");
+    check(isGrey(leftQuadrantPixel(axial->image())), "both masks hidden again");
+    check(window.applyMaskFromPath(rightPath.toStdString()), "mask applied programmatically");
+    check(visibilityOf(rightName) == MaskVisibility::Visible, "a segmentation result opens its own eye");
+    check(!isGrey(rightQuadrantPixel(axial->image())), "and lands on screen");
 
     // Colour policy: one colour per mask while the mask is binary, the shared
     // label palette once it carries more than one label.
