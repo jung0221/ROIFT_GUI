@@ -74,6 +74,10 @@ public:
     const std::vector<Seed> &getSeeds() const { return m_seeds; }
     // expose image path
     std::string getImagePath() const { return m_path; }
+    // Path of the mask in the editable buffer — the one a row click selects.
+    // Empty when the buffer belongs to no file. Which masks are *drawn* is a
+    // separate question; see MaskVisibility.
+    QString activeMaskPath() const { return QString::fromStdString(m_loadedMaskPath); }
 
     // A path the native binaries and Python helpers can actually read. Those
     // consume files, not the in-memory volume, and none of them speak numpy —
@@ -270,10 +274,11 @@ private:
     LocatedPoint m_locatedPoint;
     void drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const;
     // -- Mask layers ---------------------------------------------------------
-    // The viewer edits one mask (m_maskData) and may draw several. Every drawn
-    // mask has an entry in m_maskLayers; the entry for the active mask carries
-    // an empty volume, because its voxels are the editable buffer. Only pinned
-    // entries survive a change of active mask — that is what the eye toggles.
+    // The viewer edits one mask (m_maskData) and draws whichever masks have
+    // their eye open — two independent things. m_maskLayers has an entry per
+    // drawn mask, plus one for the mask being edited whether it is drawn or
+    // not (it holds that mask's colour rule); the entry for the edited mask
+    // carries an empty volume, because its voxels are the editable buffer.
     std::vector<MaskLayer> m_maskLayers;
     // Style for a buffer that belongs to no file yet: a mask being painted from
     // scratch, or the anatomy masks merged on load. It has no entry in
@@ -303,11 +308,15 @@ private:
     MaskLayer *activeMaskStyle();
     const MaskLayer *activeMaskStyle() const;
     void adoptActiveMaskLayer(const QString &absolutePath);
-    // Hand the editable buffer to the outgoing layer if it is pinned, and drop
-    // the entry otherwise. Called before another mask takes the buffer over.
+    // Hand the editable buffer to the outgoing layer if that mask is drawn, and
+    // drop the entry otherwise. Called before another mask takes the buffer.
     void releaseActiveMaskLayer();
-    // Eye click: load and keep this mask on screen, or drop it again.
-    void toggleMaskPinned(const QString &absolutePath);
+    // Eye click: read this mask and draw it, or take it off screen again.
+    void toggleMaskVisible(const QString &absolutePath);
+    // Draw a mask that was loaded on the program's initiative rather than by a
+    // click — a segmentation result, a CLI argument — so it is not silently
+    // invisible. Returns false when it could not be shown.
+    bool setActiveMaskVisible();
     // Forget a mask entirely, freeing whatever voxels it held.
     void dropMaskLayer(const QString &absolutePath);
     void clearMaskLayers();
