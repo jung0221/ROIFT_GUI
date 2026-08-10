@@ -22,6 +22,28 @@
 - Needs `Show 3D` enabled — the pick ray only tests the mask surface, not the seed glyphs.
 - Shift is reserved for this gesture, so it never pans the 3D camera.
 
+## Showing several masks at once
+- Every row in `Masks` has an eye at its left edge. It starts closed: the mask is
+  listed but not drawn.
+- **Click the name** to load a mask for editing, as before. It is drawn straight away
+  (the eye shows open but dimmed) and it is *transient* — clicking another row
+  replaces it. Only this mask can be painted, thresholded, cleaned or saved.
+- **Click the eye** to pin a mask. A pinned mask (accent-coloured eye) stays drawn no
+  matter which mask you load next, so two or more masks can be compared in the slices
+  and in the 3D view at once. Click the eye again to hide it and free its memory.
+- Pinning the mask you are editing keeps it on screen when you move on to the next one.
+- Colours are picked so masks stay apart: a mask with a single label gets one colour
+  from a per-mask palette (shown as the swatch beside the eye), and a multi-label mask
+  (ribs, TotalSegmentator) keeps the shared per-label palette. Right-click a row to force
+  either rule or to set the mask's colour by hand.
+- Drawn masks share the overlay opacity and the per-view `Show Mask` toggles. The
+  `Mask Labels` filter applies to the mask being edited.
+- Masks must sit on the same X/Y grid as the image; one that does not is refused with a
+  message instead of being drawn misaligned. Switching image drops every pinned mask,
+  since the grid changes.
+- Each drawn mask is a full label volume in memory, so pinning several large masks is
+  answered with a size warning before it happens.
+
 ## Mask I/O
 - `Mask Options` dialog exposes load/save. When built with ITK the app saves masks as NIfTI using int16 as the pixel type.
 - Segmentation outputs from `SegmentationRunner` are merged using ITK when available and then loaded into the GUI as the current mask.
