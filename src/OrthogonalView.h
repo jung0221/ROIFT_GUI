@@ -12,6 +12,8 @@ public:
     explicit OrthogonalView(QWidget *parent = nullptr);
 
     void setImage(const QImage &img);
+    /// The slice as last composed, mask overlay included.
+    const QImage &image() const { return m_image; }
     void setOverlayDraw(std::function<void(QPainter &p, float scaleX, float scaleY)> func);
     // Physical aspect ratio of one voxel as displayed in this view:
     // (physical height per image row) / (physical width per image column).

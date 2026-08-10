@@ -191,7 +191,9 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
                              unsigned int sizeZ,
                              double spacingX,
                              double spacingY,
-                             double spacingZ)
+                             double spacingZ,
+                             const std::map<int, QColor> *labelColors,
+                             const std::map<int, QString> *labelNames)
 {
     if (mask.empty() || sizeX == 0 || sizeY == 0 || sizeZ == 0)
     {
@@ -264,10 +266,18 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
         return;
     }
 
+    m_labelNames = labelNames ? *labelNames : std::map<int, QString>();
     for (int lbl : m_activeLabels)
     {
+        // A supplied palette owns its ids: they are handed out per rebuild, so
+        // a colour remembered from a previous merge would land on another mask.
+        if (labelColors)
+        {
+            auto supplied = labelColors->find(lbl);
+            m_labelColors[lbl] = (supplied != labelColors->end()) ? supplied->second : colorForLabel(lbl);
+        }
         // Keep anatomy colors stable and high-contrast across updates.
-        if (lbl == 1 || lbl == 2 || lbl == 3)
+        else if (lbl == 1 || lbl == 2 || lbl == 3)
             m_labelColors[lbl] = colorForLabel(lbl);
         else if (m_labelColors.find(lbl) == m_labelColors.end())
             m_labelColors[lbl] = colorForLabel(lbl);
@@ -360,6 +370,7 @@ void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacin
 void Mask3DView::clearMask()
 {
     m_activeLabels.clear();
+    m_labelNames.clear();
     m_dimX = m_dimY = m_dimZ = 0;
     m_actor->VisibilityOff();
     updateLabelControls();
@@ -704,7 +715,12 @@ void Mask3DView::updateLabelControls()
     else
     {
         for (int lbl : m_activeLabels)
-            m_labelCombo->addItem(QString("Label %1").arg(lbl), lbl);
+        {
+            auto named = m_labelNames.find(lbl);
+            m_labelCombo->addItem(named != m_labelNames.end() ? named->second
+                                                              : QString("Label %1").arg(lbl),
+                                  lbl);
+        }
         m_labelCombo->setEnabled(true);
         m_colorButton->setEnabled(true);
         m_opacitySlider->setEnabled(true);
