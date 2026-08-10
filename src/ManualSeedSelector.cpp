@@ -1630,6 +1630,7 @@ void ManualSeedSelector::setupUi()
         clearMaskLayers();
         m_unsavedMaskStyle = MaskLayer();
         m_loadedMaskPath.clear();
+        m_pendingActiveMaskPath.clear();
         m_maskData.clear();
         m_maskDimX = 0;
         m_maskDimY = 0;
@@ -1704,6 +1705,7 @@ void ManualSeedSelector::setupUi()
                 clearMaskLayers();
                 m_unsavedMaskStyle = MaskLayer();
                 m_loadedMaskPath.clear();
+                m_pendingActiveMaskPath.clear();
                 m_maskData.clear();
                 m_maskDimX = 0;
                 m_maskDimY = 0;
@@ -1887,6 +1889,7 @@ void ManualSeedSelector::setupUi()
         if (removingActiveMask)
         {
             m_loadedMaskPath.clear();
+            m_pendingActiveMaskPath.clear();
             m_maskData.clear();
             m_maskDimX = 0;
             m_maskDimY = 0;
@@ -1991,6 +1994,7 @@ void ManualSeedSelector::setupUi()
         if (removedActiveMask)
         {
             m_loadedMaskPath.clear();
+            m_pendingActiveMaskPath.clear();
             m_maskData.clear();
             m_maskDimX = 0;
             m_maskDimY = 0;
@@ -2015,9 +2019,10 @@ void ManualSeedSelector::setupUi()
     maskButtonsLayout->addStretch(1);
     maskListLayout->addLayout(maskButtonsLayout);
 
-    // Selecting a row loads that mask into the editable buffer. It does not put
-    // it on screen — the eye does that, so a mask can be edited while another
-    // one is being looked at.
+    // Selecting a row picks which mask is editable. It does not put it on
+    // screen — the eye does that — and it does not read the file either: the
+    // voxels are fetched by the first operation that needs them, so clicking
+    // down a list of masks costs nothing.
     connect(m_maskList, &QListWidget::itemClicked, [this](QListWidgetItem *item)
             {
         if (!item)
@@ -2029,21 +2034,21 @@ void ManualSeedSelector::setupUi()
             return;
         }
 
-        if (loadMaskFromFile(maskPath.toStdString())) {
-            // Read the row before refreshing the list: that rebuild deletes
-            // every item, this one included.
-            const QString name = displayNameForPath(maskPath, QFileInfo(maskPath).fileName());
-            const MaskLayer *layer = findMaskLayer(maskPath);
-            const bool shown = (layer && layer->visible);
+        selectActiveMask(maskPath);
 
-            updateMaskSeedLists();
-            updateViews();
-            if (m_statusLabel)
-            {
-                m_statusLabel->setText(shown
-                                           ? QString("Editing mask: %1").arg(name)
-                                           : QString("Editing mask: %1 (click its eye to show it)").arg(name));
-            }
+        // Read the row before refreshing the list: that rebuild deletes every
+        // item, this one included.
+        const QString name = displayNameForPath(maskPath, QFileInfo(maskPath).fileName());
+        const MaskLayer *layer = findMaskLayer(maskPath);
+        const bool shown = (layer && layer->visible);
+
+        updateMaskSeedLists();
+        updateViews();
+        if (m_statusLabel)
+        {
+            m_statusLabel->setText(shown
+                                       ? QString("Editing mask: %1").arg(name)
+                                       : QString("Editing mask: %1 (click its eye to show it)").arg(name));
         }
     });
 
@@ -4514,6 +4519,7 @@ void ManualSeedSelector::updateViews()
         std::cerr << "updateViews: mask/image mismatch in X/Y or invalid mask buffer, skipping overlay and clearing mask buffer\n";
         if (!m_loadedMaskPath.empty())
             dropMaskLayer(QString::fromStdString(m_loadedMaskPath));
+        m_pendingActiveMaskPath.clear();
         m_maskData.clear();
         m_maskDimX = 0;
         m_maskDimY = 0;
@@ -4883,8 +4889,9 @@ void ManualSeedSelector::adoptActiveMaskLayer(const QString &absolutePath)
 
     // The editable buffer owns the voxels from here on; a copy the layer was
     // holding (it was already drawn before being clicked) would only go stale.
+    // Labels are left to rebuildMaskLabelFilter(), the one place that syncs
+    // them, so the buffer is not scanned twice per load.
     layer->volume = MaskVolume();
-    layer->labels = distinctMaskLabels(m_maskData);
     m_unsavedMaskStyle = MaskLayer(); // the buffer belongs to a file again
 }
 
@@ -5027,10 +5034,16 @@ void ManualSeedSelector::toggleMaskVisible(const QString &absolutePath)
         {
             // The edited mask keeps its entry either way — it carries the
             // colour rule — and its voxels are the buffer, not the layer.
-            layer->visible = !layer->visible;
+            // Showing it goes through setActiveMaskVisible() because that is
+            // what pays off a read the selection deferred.
+            const bool wasVisible = layer->visible;
+            if (wasVisible)
+                layer->visible = false;
+            else if (!setActiveMaskVisible())
+                return;
             if (m_statusLabel)
-                m_statusLabel->setText(layer->visible ? QString("Showing mask: %1").arg(name)
-                                                      : QString("Hidden mask: %1").arg(name));
+                m_statusLabel->setText(wasVisible ? QString("Hidden mask: %1").arg(name)
+                                                  : QString("Showing mask: %1").arg(name));
         }
         else
         {
@@ -5087,6 +5100,105 @@ void ManualSeedSelector::toggleMaskVisible(const QString &absolutePath)
     updateViews();
 }
 
+void ManualSeedSelector::selectActiveMask(const QString &absolutePath)
+{
+    const QString key = QDir::cleanPath(QFileInfo(absolutePath.trimmed()).absoluteFilePath());
+    if (key.isEmpty())
+        return;
+    if (!m_pendingActiveMaskPath.empty() && key.toStdString() == m_pendingActiveMaskPath)
+        return; // already the pending choice
+    if (m_pendingActiveMaskPath.empty() && key.toStdString() == m_loadedMaskPath)
+        return; // already the editable one, and read
+
+    releaseActiveMaskLayer();
+
+    MaskLayer *layer = findMaskLayer(key);
+    if (layer && layer->volume.isValid())
+    {
+        // Already on screen: the layer hands its voxels over instead of the
+        // file being read a second time. adoptActiveMaskLayer() empties the
+        // layer, which is what keeps the two from holding the same volume.
+        m_maskDimX = layer->volume.dimX;
+        m_maskDimY = layer->volume.dimY;
+        m_maskDimZ = layer->volume.dimZ;
+        if (hasImage())
+        {
+            m_maskSpacingX = m_image.getSpacingX();
+            m_maskSpacingY = m_image.getSpacingY();
+            m_maskSpacingZ = m_image.getSpacingZ();
+        }
+        else
+        {
+            m_maskSpacingX = layer->volume.spacingX;
+            m_maskSpacingY = layer->volume.spacingY;
+            m_maskSpacingZ = layer->volume.spacingZ;
+        }
+        m_maskData = std::move(layer->volume.data);
+        m_pendingActiveMaskPath.clear();
+    }
+    else
+    {
+        // Nothing needs these voxels yet: reading them here is what made
+        // picking a mask out of the list stall the window.
+        m_maskData.clear();
+        m_maskDimX = 0;
+        m_maskDimY = 0;
+        m_maskDimZ = 0;
+        m_pendingActiveMaskPath = key.toStdString();
+    }
+
+    m_loadedMaskPath = key.toStdString();
+    adoptActiveMaskLayer(key);
+    m_mask3DDirty = true;
+    rebuildMaskLabelFilter();
+}
+
+bool ManualSeedSelector::ensureActiveMaskLoaded()
+{
+    if (m_pendingActiveMaskPath.empty())
+        return !m_maskData.empty();
+
+    // One attempt: a file that cannot be read must not be retried by every
+    // operation that touches the buffer.
+    const std::string path = m_pendingActiveMaskPath;
+    m_pendingActiveMaskPath.clear();
+
+    // The read drops and recreates this mask's layer, so carry the colour over
+    // — it may have been set by hand while the mask was only selected.
+    MaskColorMode colorMode = MaskColorMode::Auto;
+    QColor color;
+    int colorSlot = 0;
+    if (const MaskLayer *style = activeMaskStyle(); style && !style->path.isEmpty())
+    {
+        colorMode = style->colorMode;
+        color = style->color;
+        colorSlot = style->colorSlot;
+    }
+
+    if (m_statusLabel)
+    {
+        m_statusLabel->setText(QString("Reading mask: %1").arg(QFileInfo(QString::fromStdString(path)).fileName()));
+        m_statusLabel->repaint();
+    }
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+    const bool ok = loadMaskFromFile(path);
+    QApplication::restoreOverrideCursor();
+
+    if (ok)
+    {
+        if (MaskLayer *style = activeMaskStyle(); style && !style->path.isEmpty())
+        {
+            style->colorMode = colorMode;
+            if (color.isValid())
+            {
+                style->color = color;
+                style->colorSlot = colorSlot;
+            }
+        }
+    }
+    return ok && !m_maskData.empty();
+}
+
 bool ManualSeedSelector::setActiveMaskVisible()
 {
     MaskLayer *style = activeMaskStyle();
@@ -5094,6 +5206,13 @@ bool ManualSeedSelector::setActiveMaskVisible()
         return false;
     if (style->path.isEmpty())
         return true; // a buffer with no file has no row and no eye; always drawn
+
+    // Showing it is the moment its voxels are finally needed.
+    if (activeMaskPending() && !ensureActiveMaskLoaded())
+        return false;
+    style = activeMaskStyle(); // the read rebuilt the entry
+    if (!style)
+        return false;
     if (style->visible)
         return true;
 
@@ -5508,6 +5627,9 @@ void ManualSeedSelector::syncActiveTool()
 
 void ManualSeedSelector::cleanMask()
 {
+    // Clearing settles the buffer's contents, so a deferred read would only
+    // bring back what was just cleared.
+    m_pendingActiveMaskPath.clear();
     m_maskData.clear();
     m_maskDimX = m_image.getSizeX();
     m_maskDimY = m_image.getSizeY();
@@ -5548,7 +5670,8 @@ void ManualSeedSelector::setAllMaskLabelsVisible(bool visible)
 
 void ManualSeedSelector::rebuildMaskLabelFilter()
 {
-    // Collect the distinct non-zero labels currently present in the mask.
+    // The one place that reads the buffer's labels back: it fills both the
+    // filter rows and the active style, so nothing else scans the buffer.
     const std::vector<int> present = distinctMaskLabels(m_maskData);
     const std::set<int> presentLabels(present.begin(), present.end());
 
@@ -5636,13 +5759,14 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
     if (!selectedMaskPath.isEmpty() && selectedMaskPath != activeMaskPath)
     {
-        if (!loadMaskFromFile(selectedMaskPath.toStdString()))
-            return;
-        // Thresholding a mask is pointless without seeing what it did to it.
-        setActiveMaskVisible();
+        selectActiveMask(selectedMaskPath);
         activeMaskPath = selectedMaskPath;
-        updateViews();
     }
+    // Thresholding a mask is pointless without seeing what it did to it, and
+    // the threshold itself needs the voxels either way.
+    if (!setActiveMaskVisible())
+        return;
+    updateViews();
 
     if (m_maskData.empty() || m_maskDimX == 0 || m_maskDimY == 0 || m_maskDimZ == 0)
     {
@@ -5719,6 +5843,11 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
 
 bool ManualSeedSelector::saveMaskToFile(const std::string &path)
 {
+    // Writing before the deferred read would save a blank volume over a mask
+    // the user only meant to select.
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
+
     try
     {
         using PixelType = int16_t;
@@ -5845,6 +5974,7 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
         // only if its eye is open — the same rule as loading a mask that fits.
         releaseActiveMaskLayer();
         m_loadedMaskPath.clear();
+        m_pendingActiveMaskPath.clear();
         m_maskData.clear();
         m_maskDimX = 0;
         m_maskDimY = 0;
@@ -5875,6 +6005,7 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
     m_maskDimZ = volume.dimZ;
     m_maskData = std::move(volume.data);
     m_loadedMaskPath = absoluteMaskPath.toStdString();
+    m_pendingActiveMaskPath.clear();
     adoptActiveMaskLayer(absoluteMaskPath);
 
     if (hasImage && m_maskDimZ != m_image.getSizeZ() && m_statusLabel)
@@ -5932,6 +6063,10 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
     const unsigned int imageSZ = m_image.getSizeZ();
     if (imageSX == 0)
         return;
+    // A selected mask may not have been read yet, and painting on the blank
+    // buffer below would quietly throw its contents away.
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
     if (m_maskData.empty())
     {
         m_maskData.assign(size_t(imageSX) * size_t(imageSY) * size_t(imageSZ), 0);
@@ -6325,7 +6460,9 @@ void ManualSeedSelector::updateMaskSeedLists()
     if (activeMaskRow >= 0)
         m_maskList->setCurrentRow(activeMaskRow);
 
-    if (m_maskData.empty() && hasImage())
+    // An empty buffer with a mask still pending is not an empty mask, so the
+    // anatomy auto-merge must not treat it as a free slot.
+    if (m_maskData.empty() && !activeMaskPending() && hasImage())
     {
         QString autoLoadSummary;
         if (autoLoadAnatomyMasksForCurrentImage(&autoLoadSummary) && m_statusLabel && !autoLoadSummary.isEmpty())

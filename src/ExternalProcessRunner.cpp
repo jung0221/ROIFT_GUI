@@ -723,7 +723,8 @@ void ManualSeedSelector::runMaskPostProcessing()
         maskPaths.push_back(outStd);
 
     updateMaskSeedLists();
-    loadMaskFromFile(outStd);
+    if (loadMaskFromFile(outStd))
+        setActiveMaskVisible();
     updateViews();
 
     const int outIndex = static_cast<int>(
@@ -771,6 +772,10 @@ void ManualSeedSelector::runVesselGraph()
     const unsigned int sz = m_image.getSizeZ();
     const bool segmentFromCt = (m_vgraphDomainCombo &&
                                 m_vgraphDomainCombo->currentData().toString() == "ct");
+
+    // The mask may only have been selected, not read yet.
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
 
     const bool maskEmpty = (m_maskData.empty() ||
                             std::none_of(m_maskData.begin(), m_maskData.end(), [](int v)
@@ -991,7 +996,8 @@ void ManualSeedSelector::runVesselGraph()
             m_maskList->setCurrentRow(outIndex);
     }
 
-    loadMaskFromFile(outAbs.toStdString());
+    if (loadMaskFromFile(outAbs.toStdString()))
+        setActiveMaskVisible();
     updateViews();
 
     QString summary = outAbs;

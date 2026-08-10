@@ -215,10 +215,13 @@ int main(int argc, char **argv)
     maskList->resize(220, 120); // give the rows a width worth painting
     const QImage closedEye = paintedEye(maskList, rowForFile(maskList, leftName));
 
-    // Selecting a mask is not a request to see it.
+    // Selecting a mask is not a request to see it, and — since nothing is drawn
+    // by it — not a reason to read the file either. That read is what made
+    // clicking down a list of masks stall the window.
     clickName(maskList, rowForFile(maskList, rightName));
     check(window.activeMaskPath() == QFileInfo(rightPath).absoluteFilePath(),
-          "clicking a name loads that mask for editing");
+          "clicking a name picks that mask for editing");
+    check(window.activeMaskPending(), "selecting it does not read the file");
     check(visibilityOf(rightName) == MaskVisibility::Hidden, "its eye stays closed");
     check(isGrey(rightQuadrantPixel(axial->image())), "and the selected mask is not drawn");
 
@@ -240,6 +243,7 @@ int main(int argc, char **argv)
     check(visibilityOf(leftName) == MaskVisibility::Visible &&
               visibilityOf(rightName) == MaskVisibility::Visible,
           "both eyes open");
+    check(!window.activeMaskPending(), "showing the selected mask is what reads it");
 
     const QImage bothSlice = axial->image();
     check(!isGrey(leftQuadrantPixel(bothSlice)) && !isGrey(rightQuadrantPixel(bothSlice)),
@@ -249,6 +253,8 @@ int main(int argc, char **argv)
 
     clickName(maskList, rowForFile(maskList, leftName));
     check(window.activeMaskPath() == QFileInfo(leftPath).absoluteFilePath(), "editing switched masks");
+    check(!window.activeMaskPending(),
+          "selecting a mask already on screen takes its voxels rather than re-reading them");
     check(!isGrey(leftQuadrantPixel(axial->image())) && !isGrey(rightQuadrantPixel(axial->image())),
           "a shown mask survives another being loaded for editing");
 
