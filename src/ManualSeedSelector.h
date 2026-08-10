@@ -78,6 +78,9 @@ public:
     // Empty when the buffer belongs to no file. Which masks are *drawn* is a
     // separate question; see MaskVisibility.
     QString activeMaskPath() const { return QString::fromStdString(m_loadedMaskPath); }
+    // True while that mask has been chosen but not read. Selecting a mask does
+    // no file I/O; the read happens on the first operation that needs voxels.
+    bool activeMaskPending() const { return !m_pendingActiveMaskPath.empty(); }
 
     // A path the native binaries and Python helpers can actually read. Those
     // consume files, not the in-memory volume, and none of them speak numpy —
@@ -299,6 +302,17 @@ private:
     std::vector<MaskRenderItem> visibleMaskRenderItems() const;
     // Blend those masks onto one slice's RGB buffer.
     void blendMaskOverlays(std::vector<unsigned char> &rgb, SlicePlane plane, int sliceIndex) const;
+
+    // The mask chosen in the list whose voxels have not been read. Selecting a
+    // mask is free — nothing is drawn by it — so the read waits for the first
+    // operation that actually needs the buffer. Empty when there is no debt.
+    std::string m_pendingActiveMaskPath;
+
+    // Make a listed mask the editable one without reading it: a mask already on
+    // screen hands its voxels straight over, and any other is left pending.
+    void selectActiveMask(const QString &absolutePath);
+    // Pay off a pending read. False when the buffer is still unusable after it.
+    bool ensureActiveMaskLoaded();
 
     MaskLayer *findMaskLayer(const QString &absolutePath);
     const MaskLayer *findMaskLayer(const QString &absolutePath) const;
