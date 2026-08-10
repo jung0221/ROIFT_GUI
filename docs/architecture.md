@@ -7,6 +7,13 @@
      - getImagePath() — path of the loaded image
      - applyMaskFromPath(path) — load a mask and refresh views
    - Notes: this class orchestrates the UI, keeps an undo/backup of the image (calls `NiftiImage::deepCopy()`), and connects dialogs to actions.
+   - Mask layers: which mask is *edited* (`m_maskData`, chosen by a row click) and which masks are *drawn* (`MaskLayer::visible`, set only by the eye) are independent. `m_maskLayers` holds one entry per drawn mask plus one for the edited mask whether or not it is drawn, since that entry carries its colour rule; the edited mask's entry holds no voxels of its own, so nothing is stored twice. `visibleMaskRenderItems()` resolves the layers into what the 2D blend and the 3D merge walk, with the edited mask last so it is on top.
+
+ - `MaskLayers` (src/MaskLayers.*)
+   - The mask volume model, free of the window: `MaskVolume` (label buffer + grid), `readMaskVolume()` (one reader for ITK formats and NumPy), and `MaskLayer` — a drawn mask plus the rule (`MaskColorMode`) that turns its labels into colours.
+
+ - `MaskListDelegate` (src/MaskListDelegate.*)
+   - Paints the mask list row: eye, colour swatch, name. The eye's hit target (`eyeRect()`) is shared with the viewport event filter in `ManualSeedSelector::eventFilter`, which turns a click there into a visibility toggle instead of a selection.
 
  - `SegmentationRunner` (src/SegmentationRunner.*)
    - Presents a dialog to configure ROIFT parameters (polarity, niter, percentile) and runs external ROIFT (`oiftrelax`) per-label.

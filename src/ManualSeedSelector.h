@@ -16,6 +16,7 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include "MaskLayers.h"
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
 #include "RangeSlider.h"
@@ -23,8 +24,10 @@
 class QDoubleSpinBox;
 class QCheckBox;
 #include <QComboBox>
+class QAction;
 class QListWidget;
 class QListWidgetItem;
+class QMenu;
 class QTabWidget;
 class QGroupBox;
 class QVBoxLayout;
@@ -71,6 +74,10 @@ public:
     const std::vector<Seed> &getSeeds() const { return m_seeds; }
     // expose image path
     std::string getImagePath() const { return m_path; }
+    // Path of the mask in the editable buffer — the one a row click selects.
+    // Empty when the buffer belongs to no file. Which masks are *drawn* is a
+    // separate question; see MaskVisibility.
+    QString activeMaskPath() const { return QString::fromStdString(m_loadedMaskPath); }
 
     // A path the native binaries and Python helpers can actually read. Those
     // consume files, not the in-memory volume, and none of them speak numpy —
@@ -266,12 +273,84 @@ private:
     };
     LocatedPoint m_locatedPoint;
     void drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const;
+    // -- Mask layers ---------------------------------------------------------
+    // The viewer edits one mask (m_maskData) and draws whichever masks have
+    // their eye open — two independent things. m_maskLayers has an entry per
+    // drawn mask, plus one for the mask being edited whether it is drawn or
+    // not (it holds that mask's colour rule); the entry for the edited mask
+    // carries an empty volume, because its voxels are the editable buffer.
+    std::vector<MaskLayer> m_maskLayers;
+    // Style for a buffer that belongs to no file yet: a mask being painted from
+    // scratch, or the anatomy masks merged on load. It has no entry in
+    // m_maskLayers because there is no list row to pin.
+    MaskLayer m_unsavedMaskStyle;
+
+    // One mask resolved for drawing: where its voxels are and how they colour.
+    struct MaskRenderItem
+    {
+        const std::vector<int> *data = nullptr;
+        unsigned int dimX = 0;
+        unsigned int dimY = 0;
+        unsigned int dimZ = 0;
+        const MaskLayer *style = nullptr;
+        bool active = false; // the label-visibility filter applies to this one
+    };
+    // Masks to draw, in paint order; the active mask comes last, on top.
+    std::vector<MaskRenderItem> visibleMaskRenderItems() const;
+    // Blend those masks onto one slice's RGB buffer.
+    void blendMaskOverlays(std::vector<unsigned char> &rgb, SlicePlane plane, int sliceIndex) const;
+
+    MaskLayer *findMaskLayer(const QString &absolutePath);
+    const MaskLayer *findMaskLayer(const QString &absolutePath) const;
+    // Style record for whatever is in the editable buffer: the loaded mask's
+    // layer, or m_unsavedMaskStyle when the buffer came from no file. Kept in
+    // step with the labels the buffer contains.
+    MaskLayer *activeMaskStyle();
+    const MaskLayer *activeMaskStyle() const;
+    void adoptActiveMaskLayer(const QString &absolutePath);
+    // Hand the editable buffer to the outgoing layer if that mask is drawn, and
+    // drop the entry otherwise. Called before another mask takes the buffer.
+    void releaseActiveMaskLayer();
+    // Eye click: read this mask and draw it, or take it off screen again.
+    void toggleMaskVisible(const QString &absolutePath);
+    // Draw a mask that was loaded on the program's initiative rather than by a
+    // click — a segmentation result, a CLI argument — so it is not silently
+    // invisible. Returns false when it could not be shown.
+    bool setActiveMaskVisible();
+    // Forget a mask entirely, freeing whatever voxels it held.
+    void dropMaskLayer(const QString &absolutePath);
+    void clearMaskLayers();
+    // True when a mask can share the grid the window already draws on. The
+    // overlay maps depth only, so X/Y have to agree.
+    bool maskVolumeCoregisters(const MaskVolume &volume, QString *reason = nullptr) const;
+    // What the eye on this row should show.
+    MaskVisibility maskVisibilityForPath(const QString &absolutePath) const;
+    // Lowest palette slot no drawn mask is using.
+    int nextFreeMaskColorSlot() const;
+    // Ask before a pin pushes the drawn masks past a sane memory footprint.
+    bool confirmMaskLayerMemory(std::size_t additionalVoxels);
+    // Add a label to the active layer's label list as soon as it is painted, so
+    // its colour rule (Auto) reacts to the mask becoming multi-label.
+    void noteActiveMaskLabel(int label);
+    // Mask-list context menu additions: pin, colour mode, colour override.
+    // The two halves bracket the menu's exec(): one adds the entries, the other
+    // applies whichever was chosen.
+    struct MaskMenuActions
+    {
+        QAction *pin = nullptr;
+        QAction *colorAuto = nullptr;
+        QAction *colorPerMask = nullptr;
+        QAction *colorPerLabel = nullptr;
+        QAction *pickColor = nullptr;
+    };
+    MaskMenuActions appendMaskLayerMenuActions(QMenu &menu, const QString &absolutePath);
+    bool applyMaskLayerMenuAction(const MaskMenuActions &actions, QAction *selected, const QString &absolutePath);
+
     // Mask-label filter helpers (see m_maskLabelVisibility).
     void rebuildMaskLabelFilter();                 // resync checkboxes with present labels
     void setAllMaskLabelsVisible(bool visible);    // "All"/"None" buttons
     bool maskLabelVisible(int label) const;        // background (0) is always hidden
     bool maskHasHiddenLabels() const;
-    std::vector<int> applyMaskLabelFilter(const std::vector<int> &data) const;
     QString formatRulerDistance(double millimeters) const;
     const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
     void updateHoverStatus(SlicePlane plane, int x, int y, int z);
