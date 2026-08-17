@@ -61,6 +61,7 @@
 #include <QToolButton>
 #include <QSplitter>
 #include <QListWidget>
+#include <QScrollBar>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QTreeWidget>
@@ -6424,8 +6425,62 @@ QColor ManualSeedSelector::getColorForImageIndex(int index)
     return colors[index % 8];
 }
 
+namespace
+{
+// Where a list was scrolled to, kept across a rebuild. Clearing a QListWidget
+// throws the scroll offset away, so without this a long mask list snaps back to
+// its first rows every time one row changes state — an eye toggled two hundred
+// rows down would take the view with it.
+struct ListScrollAnchor
+{
+    QString path;        ///< row at the top of the viewport; empty means don't restore
+    int row = -1;        ///< where that row sat, so an unchanged list restores exactly
+    int scrollValue = 0; ///< the scrollbar's own units, item or pixel
+};
+
+ListScrollAnchor captureScrollAnchor(QListWidget *list)
+{
+    ListScrollAnchor anchor;
+    if (!list)
+        return anchor;
+    anchor.scrollValue = list->verticalScrollBar()->value();
+    if (QListWidgetItem *top = list->itemAt(0, 0))
+    {
+        anchor.path = top->data(kPathRole).toString();
+        anchor.row = list->row(top);
+    }
+    return anchor;
+}
+
+void restoreScrollAnchor(QListWidget *list, const ListScrollAnchor &anchor)
+{
+    if (!list || anchor.path.isEmpty())
+        return;
+    for (int row = 0; row < list->count(); ++row)
+    {
+        QListWidgetItem *item = list->item(row);
+        if (item->data(kPathRole).toString() != anchor.path)
+            continue;
+        // scrollToItem() settles the layout the rebuild left pending, so the
+        // scrollbar range is real before the exact offset goes back on top of
+        // it. The offset only means the same thing if the row did not move.
+        list->scrollToItem(item, QAbstractItemView::PositionAtTop);
+        if (row == anchor.row)
+            list->verticalScrollBar()->setValue(anchor.scrollValue);
+        return;
+    }
+    // The anchor row is gone (another image, another mask set): top is right.
+}
+} // namespace
+
 void ManualSeedSelector::updateMaskSeedLists()
 {
+    // Rebuilding rows is not a scroll. Remember what each list was looking at
+    // so a redraw for a new state — an eye toggled, a row selected — leaves the
+    // view where the user put it.
+    const ListScrollAnchor maskAnchor = captureScrollAnchor(m_maskList);
+    const ListScrollAnchor seedAnchor = captureScrollAnchor(m_seedList);
+
     // Clear lists
     m_maskList->clear();
     m_seedList->clear();
@@ -6494,4 +6549,8 @@ void ManualSeedSelector::updateMaskSeedLists()
             m_statusLabel->setText(autoLoadSummary);
     }
 
+    // Last, so it outlives both the scroll that setCurrentRow() does to reveal
+    // the active mask and any rebuild the auto-merge above triggered.
+    restoreScrollAnchor(m_maskList, maskAnchor);
+    restoreScrollAnchor(m_seedList, seedAnchor);
 }
