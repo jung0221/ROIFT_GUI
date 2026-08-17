@@ -116,8 +116,12 @@
 - Heatmap intensity is normalized by the number of masks that were successfully loaded and matched to image dimensions.
 
 ## Right-Click Point Query
-- Right-click on any pixel in axial/sagittal/coronal viewer to open a context menu.
-- Select `Show masks lists on this point` to open a dialog listing all masks that contain that voxel.
+- Right-click any pixel in the axial/sagittal/coronal viewer to open a context menu on that voxel.
+- `Copy coordinates and value` puts `X: 12, Y: 34, Z: 56, HU: -812` on the clipboard, so a voxel
+  read off a slice can be pasted straight into a script or a note. The value is the image
+  intensity at that voxel, not the mask label, whichever plane you clicked in.
+- `Erase seeds near this point` appears only on the `Seeds` tab, and clears seeds within the
+  seed brush radius.
 
 ## Vessel Graph (Morse centreline)
 - Sidebar section `Vessel Graph`, or Ctrl+Shift+G.
