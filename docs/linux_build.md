@@ -12,7 +12,7 @@ the dependency set.
 | --- | --- |
 | Qt 6 (Widgets, optionally Svg) | `qt6-main` |
 | VTK 9 with Qt6 support | `vtk` |
-| ITK (NIfTI/DICOM I/O) | `itk` |
+| ITK (NIfTI/DICOM I/O) | `libitk-devel` — conda-forge's `itk` is the *Python* package |
 | zlib (`.nii.gz` in the ROIFT tools) | `zlib` |
 | Toolchain | `cmake`, `ninja`, `cxx-compiler`, `binutils` |
 | OpenGL headers | `libgl-devel` |

@@ -94,7 +94,10 @@ packaging/linux/build-deb.sh <appimage-file> [output-dir]
   candidate (with a warning) if none matches. `QMAKE=/path/to/qmake6` overrides.
 
 Each ROIFT CLI tool is passed to linuxdeploy with `--executable` so its
-dependencies get bundled too, not just the GUI's.
+dependencies get bundled too, not just the GUI's. `EXTRA_PLATFORM_PLUGINS` adds
+the offscreen and minimal Qt platform plugins: the plugin otherwise bundles only
+the one the build machine used (xcb), and anything headless — `--version` over
+SSH, a container — then dies with *"Available platform plugins are: xcb"*.
 
 `build-deb.sh` extracts that AppImage rather than re-running `cmake --install`,
 because the AppImage is the only tree that contains *every* runtime library. The
@@ -103,9 +106,10 @@ three-line `/usr/bin/roift_gui` launcher, so it has no apt dependency on Qt6 or
 VTK. The launcher `exec`s the real binary instead of copying it — that is what
 keeps `oiftrelax` next to `applicationDirPath()`.
 
-**Size.** ITK and VTK are large and both are bundled, so expect a few hundred MB
-uncompressed. Leaving them out is not an option: no distro ships an ITK the app
-could rely on.
+**Size.** ITK and VTK are both bundled — 79 and 57 shared libraries — which puts
+the AppImage around 120 MB and the `.deb` around 95 MB. Leaving them out is not
+an option: no distro ships an ITK the app could rely on, and Debian's VTK is the
+wrong Qt.
 
 **glibc floor.** An AppImage inherits the glibc of the machine that built it.
 CI builds on `ubuntu-22.04` (glibc 2.35), which sets the oldest distro the

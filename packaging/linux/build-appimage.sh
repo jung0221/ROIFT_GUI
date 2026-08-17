@@ -96,6 +96,11 @@ for cli in "$APPDIR"/usr/bin/oiftrelax* "$APPDIR"/usr/bin/exp_*; do
   [ -x "$cli" ] && EXECUTABLE_ARGS+=(--executable "$cli")
 done
 
+# linuxdeploy-plugin-qt bundles only the platform plugin the build machine used
+# (xcb). Without these, anything headless — `--version` over SSH, a container —
+# dies with "Available platform plugins are: xcb".
+export EXTRA_PLATFORM_PLUGINS="libqoffscreen.so;libqminimal.so"
+
 # Run nested AppImage tools without FUSE (containers, CI).
 export APPIMAGE_EXTRACT_AND_RUN=1
 export ARCH=x86_64
