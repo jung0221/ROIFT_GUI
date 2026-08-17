@@ -10,19 +10,11 @@ include(GNUInstallDirs)
 
 option(BUILD_ROIFT_GUI "Build the Qt/VTK/ITK GUI application" ON)
 
-# Include ROIFT (gft library + oiftrelax + experiments) — always built
-add_subdirectory(roift)
-
-if(BUILD_ROIFT_GUI)
-
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
-
-# build output folder. Set cmake -S . -B build -DROIFT_COPY_RUNTIME=OFF to avoid copying files on every --build.
-option(ROIFT_COPY_RUNTIME "Copy Qt plugins and vcpkg runtime DLLs to the build output folder" ON)
-
 # Windows instalation
+#
+# Must run before add_subdirectory(roift): roift/CMakeLists.txt calls
+# find_package(ZLIB REQUIRED), and without the prefix path set up first that
+# fails outright on a toolchain-less configure.
 if(WIN32)
     if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     set(_vcpkg_candidate_1 "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows")
@@ -57,6 +49,18 @@ if(WIN32)
     endif()
   endif()
 endif()
+
+# Include ROIFT (gft library + oiftrelax + experiments) — always built
+add_subdirectory(roift)
+
+if(BUILD_ROIFT_GUI)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+# build output folder. Set cmake -S . -B build -DROIFT_COPY_RUNTIME=OFF to avoid copying files on every --build.
+option(ROIFT_COPY_RUNTIME "Copy Qt plugins and vcpkg runtime DLLs to the build output folder" ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
