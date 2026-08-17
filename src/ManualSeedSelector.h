@@ -219,6 +219,8 @@ private:
     void saveUiState();
     void restoreUiState();
     void showViewContextMenu(SlicePlane plane, int planeX, int planeY, const QPoint &globalPos);
+    // "X: 12, Y: 34, Z: 56, HU: -812" for one voxel, as put on the clipboard.
+    QString voxelDescription(int x, int y, int z) const;
     void stopSegmentationWorker(bool waitForJoin);
     void refreshSegmentationProgressDisplay();
     int findImageIndexByPath(const QString &imagePath) const;

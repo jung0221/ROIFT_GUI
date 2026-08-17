@@ -4140,6 +4140,20 @@ void ManualSeedSelector::onCoronalClicked(int x, int y, Qt::MouseButton b)
     }
 }
 
+QString ManualSeedSelector::voxelDescription(int x, int y, int z) const
+{
+    // The image intensity, not the mask label: HU is a property of the volume.
+    const float value = m_image.getVoxelValue(static_cast<unsigned int>(x),
+                                              static_cast<unsigned int>(y),
+                                              static_cast<unsigned int>(z));
+    // 'g' so integral CT values stay integral instead of trailing zeros.
+    return QString("X: %1, Y: %2, Z: %3, HU: %4")
+        .arg(x)
+        .arg(y)
+        .arg(z)
+        .arg(QString::number(static_cast<double>(value), 'g', 6));
+}
+
 void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int planeY, const QPoint &globalPos)
 {
     if (!hasImage())
@@ -4176,15 +4190,26 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     }
 
     QMenu menu(this);
+    QAction *copyVoxelAction = menu.addAction("Copy coordinates and value");
     QAction *eraseSeedsAction = nullptr;
     if (isSeedsTabActive())
     {
+        menu.addSeparator();
         eraseSeedsAction = menu.addAction("Erase seeds near this point");
     }
 
     QAction *selected = menu.exec(globalPos);
     if (!selected)
         return;
+
+    if (selected == copyVoxelAction)
+    {
+        const QString text = voxelDescription(vx, vy, vz);
+        QApplication::clipboard()->setText(text);
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Copied: %1").arg(text));
+        return;
+    }
 
     if (eraseSeedsAction && selected == eraseSeedsAction)
     {
