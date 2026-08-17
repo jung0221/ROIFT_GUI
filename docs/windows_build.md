@@ -50,6 +50,14 @@ For a faster build, you can specify the number of parallel jobs:
 cmake --build build --config Release --parallel 4
 ```
 
+The dependency set is pinned by `builtin-baseline` in `vcpkg.json`. To build
+against the same ports CI uses, check your vcpkg clone out at that commit:
+
+```bat
+git -C <YOUR_VCPKG_PATH> checkout <the builtin-baseline value>
+<YOUR_VCPKG_PATH>\bootstrap-vcpkg.bat
+```
+
 ## Produced binaries and locations
 
 - GUI executable: `build\Release\roift_gui.exe`
@@ -68,3 +76,18 @@ cmake --build build --config Release --parallel 4
 ```bat
 .\build\Release\roift_gui.exe --input C:\path\to\image.nii.gz
 ```
+
+The exe is built for the GUI subsystem, so no console window opens behind it.
+Run it from a terminal to see `--version`/`--help` output and the diagnostics
+the app writes to stderr; launched from Explorer, `--version` and `--help` fall
+back to a message box.
+
+## Installer and portable ZIP
+
+```bat
+cd build
+cpack -C Release
+```
+
+produces `roift_gui-<version>-win64.exe` and `roift_gui-<version>-win64.zip`.
+See [packaging.md](packaging.md) for what goes into them.

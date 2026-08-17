@@ -1,0 +1,96 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: packaging/ci/env.yml
+          cache-environment: true
+
+      - name: Configure
+        shell: micromamba-shell {0}
+        run: |
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+            -DBUILD_ROIFT_TESTS=ON \
+            -DBUILD_GPU_OIFT=OFF
+
+      - name: Build
+        shell: micromamba-shell {0}
+        run: cmake --build build -j"$(nproc)"
+
+      # Every widget test forces QT_QPA_PLATFORM=offscreen from CMakeLists.txt,
+      # so no xvfb is needed.
+      - name: Test
+        shell: micromamba-shell {0}
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Check the install tree
+        shell: micromamba-shell {0}
+        run: |
+          cmake --install build --prefix "$PWD/stage"
+          test -x stage/bin/roift_gui
+          test -x stage/bin/oiftrelax
+          test -f stage/share/applications/roift_gui.desktop
+          test -f stage/share/icons/hicolor/256x256/apps/roift_gui.png
+
+  windows:
+    runs-on: windows-2022
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+      # Heavily-optimized VTK/ITK translation units exhaust RAM at full width.
+      VCPKG_MAX_CONCURRENCY: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # vcpkg reads the cache endpoint from the runner's own environment, which
+      # is not exported to job steps by default.
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            for (const key of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN'])
+              core.exportVariable(key, process.env[key] || '');
+
+      # The runner ships vcpkg at an arbitrary commit; the manifest baseline is
+      # what makes the dependency set — and therefore the binary cache — stable.
+      - name: Pin vcpkg to the manifest baseline
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --depth 1 origin $baseline
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout FETCH_HEAD
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat"
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DBUILD_ROIFT_TESTS=ON `
+            -DBUILD_GPU_OIFT=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        shell: pwsh
+        run: ctest --test-dir build -C Release --output-on-failure

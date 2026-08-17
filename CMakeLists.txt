@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-project(roift_gui LANGUAGES C CXX)
+# The release line is v1.1.x; v1.0.0/v1.0.1 are the prebuilt-vcpkg bundles.
+# .github/workflows/release.yml bumps the patch here on every merge to main.
+project(roift_gui VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(GNUInstallDirs)
 
 option(BUILD_ROIFT_GUI "Build the Qt/VTK/ITK GUI application" ON)
 
@@ -88,6 +92,10 @@ endif()
 find_package(ITK REQUIRED)
 add_compile_definitions(HAVE_ITK=1)
 
+# Directory scope so the test targets that reuse src/*.cpp see it too. src/Version.h
+# is the only place that reads it; nothing in src/ spells a version out.
+add_compile_definitions(ROIFT_GUI_VERSION="${PROJECT_VERSION}")
+
 message(STATUS "Selected Qt major version: 6 (Qt6 found and required)")
 
 # Include ITK
@@ -117,7 +125,20 @@ find_package(VTK REQUIRED COMPONENTS
   GUISupportQt
 )
 
-add_executable(roift_gui ${SRC_FILES})
+# resources/roift_gui.qrc carries the window/taskbar icon (AUTORCC compiles it in).
+add_executable(roift_gui ${SRC_FILES} resources/roift_gui.qrc)
+
+if(WIN32)
+  # Exe icon + version metadata, and the GUI subsystem so no console window
+  # opens behind the app. main.cpp routes --help/--version to a message box
+  # when there is no console to print to.
+  configure_file(packaging/windows/roift_gui.rc.in
+                 "${CMAKE_CURRENT_BINARY_DIR}/roift_gui.rc" @ONLY)
+  target_sources(roift_gui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/roift_gui.rc")
+  target_include_directories(roift_gui PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows")
+  set_target_properties(roift_gui PROPERTIES WIN32_EXECUTABLE ON)
+endif()
 
 target_include_directories(roift_gui PRIVATE src)
 target_link_libraries(roift_gui
@@ -222,6 +243,8 @@ if(WIN32 AND WINDEPLOYQT_EXECUTABLE AND ROIFT_COPY_RUNTIME)
     COMMENT "Running windeployqt to deploy Qt runtime files..."
   )
 endif()
+
+include(cmake/Packaging.cmake)
 
 else() # BUILD_ROIFT_GUI=OFF
   message(STATUS "BUILD_ROIFT_GUI=OFF: skipping Qt/VTK/ITK GUI build")
