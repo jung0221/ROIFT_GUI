@@ -1,0 +1,6 @@
+{
+  "$comment": "Overlay triplets applied on top of the vcpkg registry. ./triplets/x64-windows.cmake builds dependencies release-only (a debug Qt6/VTK/ITK does not fit on a CI runner's disk) and adds CMAKE_SUPPRESS_REGENERATION=ON to dodge a CMake 4.x Ninja regenerate-during-build loop that breaks some ports. vcpkg auto-loads this file in manifest mode, so no extra flags are needed.",
+  "overlay-triplets": [
+    "./triplets"
+  ]
+}
