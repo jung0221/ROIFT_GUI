@@ -159,6 +159,13 @@ QString resolveProjectScriptPath(const QString &relativePath);
 bool revealPathInFileManager(const QString &path, QString *openedPath = nullptr, QString *errorMessage = nullptr);
 
 // ---------------------------------------------------------------------------
+// About
+// ---------------------------------------------------------------------------
+
+/// Modal box naming the build's version, what the app is, and its license.
+void showAboutDialog(QWidget *parent);
+
+// ---------------------------------------------------------------------------
 // Progress / display helpers
 // ---------------------------------------------------------------------------
 

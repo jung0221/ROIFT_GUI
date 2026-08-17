@@ -1,20 +1,45 @@
 #include <QApplication>
 #include <QCoreApplication>
+#include <QIcon>
+#include <QMessageBox>
 #include <QScreen>
 #include <QStringList>
 #include "ManualSeedSelector.h"
 #include "Theme.h"
+#include "Version.h"
 #include <iostream>
 #include <string>
 #include <vector>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
+// The Windows build is a GUI-subsystem binary, so a launch from Explorer or the
+// Start menu has no console and --help/--version would print into the void.
+// Fall back to a dialog only then: a console launch, and every other platform,
+// still gets plain stderr.
+static void report_cli_message(const QString &title, const QString &text)
+{
+    std::cerr << text.toStdString() << "\n";
+#ifdef Q_OS_WIN
+    if (GetConsoleWindow() == nullptr)
+        QMessageBox::information(nullptr, title, text);
+#else
+    Q_UNUSED(title);
+#endif
+}
+
 static void print_help()
 {
-    std::cerr << "roift_gui [--input <image_path> [more_paths...]]\n";
-    std::cerr << "You can pass multiple paths after --input/-i or as positional arguments.\n";
-    std::cerr << "Accepted: .nii, .nii.gz, DICOM (file or directory), .npz and .npy.\n";
-    std::cerr << "A .npz/.npy carries no spacing: it is taken from a matching .nii.gz next to it,\n";
-    std::cerr << "or from a <name>.json sidecar, otherwise 1 mm isotropic is assumed.\n";
+    report_cli_message(
+        QStringLiteral("ROIFT GUI"),
+        QStringLiteral(
+            "roift_gui [--version] [--input <image_path> [more_paths...]]\n"
+            "You can pass multiple paths after --input/-i or as positional arguments.\n"
+            "Accepted: .nii, .nii.gz, DICOM (file or directory), .npz and .npy.\n"
+            "A .npz/.npy carries no spacing: it is taken from a matching .nii.gz next to it,\n"
+            "or from a <name>.json sidecar, otherwise 1 mm isotropic is assumed."));
 }
 
 int main(int argc, char **argv)
@@ -27,10 +52,12 @@ int main(int argc, char **argv)
     // dialogs, menus and message boxes are the same product as the window that
     // opened them.
     app.setStyleSheet(Theme::styleSheet());
+    app.setWindowIcon(QIcon(QStringLiteral(":/icons/roift_gui.png")));
     // Identify the app so QSettings has a stable backing store for persisted
     // window geometry, splitter sizes and collapsible-section state.
     QCoreApplication::setOrganizationName("ROIFT");
     QCoreApplication::setApplicationName("roift_gui");
+    QCoreApplication::setApplicationVersion(Version::string());
     std::vector<std::string> inputPaths;
     std::string seedsPath;
     bool startFullscreen = false;
@@ -40,6 +67,12 @@ int main(int argc, char **argv)
         if (a == "--help" || a == "-h")
         {
             print_help();
+            return 0;
+        }
+        if (a == "--version")
+        {
+            report_cli_message(QStringLiteral("ROIFT GUI"),
+                               QStringLiteral("roift_gui %1").arg(Version::string()));
             return 0;
         }
         if (a == "--input" || a == "-i")

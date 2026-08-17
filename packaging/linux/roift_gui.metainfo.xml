@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jung0221.roift_gui</id>
+  <name>ROIFT GUI</name>
+  <summary>Seed-based ROIFT segmentation for 3D medical images</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      ROIFT GUI is a Qt6/VTK/ITK desktop application for segmenting 3D medical
+      volumes. It opens NIfTI, DICOM series and NumPy arrays, shows axial,
+      sagittal and coronal slices alongside a 3D mask render, and lets the user
+      place object and background seeds by hand. The bundled ROIFT command-line
+      tools turn those seeds into per-label segmentations, which are merged back
+      into an editable multi-label mask.
+    </p>
+  </description>
+  <developer id="io.github.jung0221">
+    <name>Jungeui Choi</name>
+  </developer>
+  <launchable type="desktop-id">roift_gui.desktop</launchable>
+  <provides>
+    <binary>roift_gui</binary>
+  </provides>
+  <url type="homepage">https://github.com/jung0221/ROIFT_GUI</url>
+  <url type="bugtracker">https://github.com/jung0221/ROIFT_GUI/issues</url>
+  <categories>
+    <category>Science</category>
+    <category>MedicalSoftware</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

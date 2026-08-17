@@ -3,3 +3,7 @@ vcpkg/
 vcpkg_installed/
 .vscode/
 prebuilt/
+# Packaging output: build-appimage.sh / build-deb.sh / cmake --install
+dist/
+stage/
+__pycache__/

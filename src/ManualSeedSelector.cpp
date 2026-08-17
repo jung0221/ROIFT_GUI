@@ -617,6 +617,16 @@ void ManualSeedSelector::setupUi()
         m_sagittalView->resetView();
         m_coronalView->resetView(); });
 
+    // Pushes About to the far end so it never sits among the tools.
+    QWidget *toolBarSpacer = new QWidget(this);
+    toolBarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    mainToolBar->addWidget(toolBarSpacer);
+
+    QAction *actAbout = mainToolBar->addAction("About");
+    actAbout->setToolTip("Version and licence");
+    connect(actAbout, &QAction::triggered, this, [this]()
+            { UiUtils::showAboutDialog(this); });
+
     // =====================================================
     // LEFT TOOL SIDEBAR: scrollable column of collapsible sections.
     // Replaces the fixed-height ribbon so variable-height content (label

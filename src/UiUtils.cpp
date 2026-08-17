@@ -7,6 +7,7 @@
 #include "UiUtils.h"
 #include "RangeSlider.h"
 #include "Theme.h"
+#include "Version.h"
 
 #include <QColor>
 #include <QCoreApplication>
@@ -15,6 +16,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
@@ -910,6 +912,25 @@ float sliderTickToWindowValue(int tick, float gmin, float gmax)
     const double t = std::clamp(static_cast<double>(tick) / static_cast<double>(kWindowSliderTicks), 0.0, 1.0);
     return static_cast<float>(static_cast<double>(gmin) +
                               t * (static_cast<double>(gmax) - static_cast<double>(gmin)));
+}
+
+// ============================================================================
+// About
+// ============================================================================
+
+void showAboutDialog(QWidget *parent)
+{
+    QMessageBox box(parent);
+    box.setWindowTitle(QStringLiteral("About ROIFT GUI"));
+    box.setIconPixmap(QIcon(QStringLiteral(":/icons/roift_gui.png")).pixmap(64, 64));
+    box.setTextFormat(Qt::RichText);
+    box.setText(QStringLiteral("<b>ROIFT GUI</b> %1").arg(Version::string()));
+    box.setInformativeText(QStringLiteral(
+        "Seed-based ROIFT segmentation for 3D medical images.<br><br>"
+        "Qt %1 &middot; MIT licence &middot; "
+        "<a href=\"https://github.com/jung0221/ROIFT_GUI\">github.com/jung0221/ROIFT_GUI</a>")
+                               .arg(QStringLiteral(QT_VERSION_STR)));
+    box.exec();
 }
 
 } // namespace UiUtils
