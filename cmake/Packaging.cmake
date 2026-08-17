@@ -51,6 +51,25 @@ if(WIN32)
   if(NOT ROIFT_COPY_RUNTIME)
     message(WARNING "ROIFT_COPY_RUNTIME=OFF: packages will be missing Qt/VTK/ITK DLLs")
   endif()
+
+  # Configured without a toolchain file, CMakeLists.txt falls back to a local
+  # vcpkg_installed tree (the layout scripts/restore_prebuilt.cmd unpacks). That
+  # path gets no app-local deployment — windeployqt covers Qt and nothing covers
+  # VTK or ITK — so take the DLLs and Qt plugins from the prefix itself. Release
+  # only; packaging a debug build is not supported.
+  if(DEFINED _vcpkg_root AND _vcpkg_root)
+    install(DIRECTORY "${_vcpkg_root}/bin/"
+      DESTINATION ${CMAKE_INSTALL_BINDIR}
+      FILES_MATCHING PATTERN "*.dll")
+
+    foreach(_qt_plugin_dir platforms styles imageformats iconengines tls)
+      if(EXISTS "${_vcpkg_root}/Qt6/plugins/${_qt_plugin_dir}")
+        install(DIRECTORY "${_vcpkg_root}/Qt6/plugins/${_qt_plugin_dir}"
+          DESTINATION ${CMAKE_INSTALL_BINDIR}
+          FILES_MATCHING PATTERN "*.dll")
+      endif()
+    endforeach()
+  endif()
   # The excludes only bite under a single-config generator, where the target
   # directory is the build root: without them the whole vcpkg tree (debug DLLs
   # included) would be swept in. Under Visual Studio the target dir is
