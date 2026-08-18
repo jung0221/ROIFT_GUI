@@ -53,7 +53,9 @@ jobs:
   windows:
     runs-on: windows-2022
     env:
-      VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+      # vcpkg removed its x-gha backend, so binary caching goes through a plain
+      # directory that actions/cache carries between runs.
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite'
       # Heavily-optimized VTK/ITK translation units exhaust RAM at full width.
       VCPKG_MAX_CONCURRENCY: '4'
     steps:
@@ -61,13 +63,19 @@ jobs:
         with:
           submodules: recursive
 
-      # vcpkg reads the cache endpoint from the runner's own environment, which
-      # is not exported to job steps by default.
-      - uses: actions/github-script@v7
+      # Building Qt6, VTK and ITK from source takes most of a GitHub job's 6h
+      # ceiling, so a cold run is one bad roll of the dice away from being
+      # killed mid-build. The restore key is prefix-matched and the save key is
+      # unique per run, so every attempt banks whatever it managed to build —
+      # a timed-out run still leaves the next one less to do.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache/restore@v4
         with:
-          script: |
-            for (const key of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN'])
-              core.exportVariable(key, process.env[key] || '');
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-
+            vcpkg-${{ runner.os }}-
 
       # The runner ships vcpkg at an arbitrary commit; the manifest baseline is
       # what makes the dependency set — and therefore the binary cache — stable.
@@ -79,7 +87,11 @@ jobs:
           git -C "$env:VCPKG_INSTALLATION_ROOT" checkout FETCH_HEAD
           & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat"
 
+      # Below GitHub's 6h job ceiling on purpose: a step that times out still
+      # lets the always() cache-save run, so the next attempt resumes. A job
+      # killed at the ceiling banks nothing.
       - name: Configure
+        timeout-minutes: 300
         shell: pwsh
         run: |
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
@@ -104,6 +116,16 @@ jobs:
         shell: pwsh
         working-directory: build
         run: cpack -C Release
+
+      # always(): the dependency build is the expensive part and it completes
+      # long before the steps that tend to fail, so it must be banked even when
+      # they do.
+      - name: Save vcpkg binary cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         with:
