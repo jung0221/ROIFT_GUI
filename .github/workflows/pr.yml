@@ -106,7 +106,11 @@ jobs:
 
       - name: Test
         shell: pwsh
-        run: ctest --test-dir build -C Release --output-on-failure
+        timeout-minutes: 20
+        # --timeout: a hung test used to consume the entire 6h job. wheel_guard
+        # sat on a Windows error dialog for 2h48m before the ceiling killed the
+        # run, taking the Package step with it.
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
 
       # Windows is the half that cannot be checked on a Linux dev machine, and
       # the v1.0.0 prebuilt bundle carries no VTK, so it cannot be checked on a
