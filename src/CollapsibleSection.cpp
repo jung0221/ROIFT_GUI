@@ -25,7 +25,10 @@ QIcon makeChevronIcon(bool pointingDown)
     p.setRenderHint(QPainter::Antialiasing, true);
     p.scale(2.0, 2.0);
 
-    QPen pen(QColor(Theme::kInk3));
+    // Braces, not parens: MSVC reads QPen pen(QColor(Theme::kInk3)) as a
+    // function declaration whose parameter is named Theme::kInk3, and a
+    // parameter name cannot be qualified.
+    QPen pen{QColor(Theme::kInk3)};
     pen.setWidthF(1.4);
     pen.setCapStyle(Qt::RoundCap);
     pen.setJoinStyle(Qt::RoundJoin);
