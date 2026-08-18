@@ -179,7 +179,7 @@ jobs:
             -DBUILD_ROIFT_TESTS=ON `
             -DBUILD_GPU_OIFT=OFF
           cmake --build build --config Release --parallel 4
-          ctest --test-dir build -C Release --output-on-failure
+          ctest --test-dir build -C Release --output-on-failure --timeout 300
 
       - name: Package
         shell: pwsh

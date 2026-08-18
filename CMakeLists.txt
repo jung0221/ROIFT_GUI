@@ -226,6 +226,24 @@ if(BUILD_ROIFT_TESTS)
   else()
     message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
   endif()
+
+  # wheel_guard and mask_overlay run with QT_QPA_PLATFORM=offscreen. Qt aborts
+  # at startup if the requested platform plugin is absent, and windeployqt
+  # stages only the native one — so on Windows the offscreen plugin has to be
+  # put beside the test binaries. Without it the tests do not fail, they hang:
+  # the aborting process sits on a Windows error dialog until CI's job limit
+  # kills the whole run.
+  if(WIN32 AND TARGET Qt6::QOffscreenIntegrationPlugin)
+    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test)
+      add_custom_command(TARGET ${_offscreen_consumer} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:${_offscreen_consumer}>/platforms"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "$<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>"
+          "$<TARGET_FILE_DIR:${_offscreen_consumer}>/platforms/"
+      )
+    endforeach()
+  endif()
 endif()
 
 if(DEFINED _vcpkg_root AND _vcpkg_root)
