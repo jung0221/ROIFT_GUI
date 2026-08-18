@@ -80,13 +80,18 @@ if(WIN32)
   get_target_property(_qt_qmake_exe Qt6::qmake IMPORTED_LOCATION)
   get_filename_component(_qt_bin_dir "${_qt_qmake_exe}" DIRECTORY)
   find_program(WINDEPLOYQT_EXECUTABLE
-    NAMES windeployqt
+    NAMES windeployqt windeployqt6
     HINTS "${_qt_bin_dir}"
     NO_DEFAULT_PATH
   )
 
+  # Not fatal. vcpkg only builds the tool when qtbase's opt-in "windeployqt"
+  # feature is requested (see vcpkg.json), and a prefix without it can still
+  # produce a working build — the vcpkg toolchain deploys dependent DLLs itself,
+  # and cmake/Packaging.cmake takes Qt's plugins from the prefix either way.
   if(NOT WINDEPLOYQT_EXECUTABLE)
-    message(FATAL_ERROR "windeployqt not found (Qt bin dir: ${_qt_bin_dir})")
+    message(WARNING "windeployqt not found (Qt bin dir: ${_qt_bin_dir}); "
+                    "the build tree will not get a Qt runtime copied beside the exe")
   else()
     message(STATUS "Found windeployqt: ${WINDEPLOYQT_EXECUTABLE}")
   endif()

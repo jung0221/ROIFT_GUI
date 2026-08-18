@@ -55,16 +55,26 @@ if(WIN32)
   # Configured without a toolchain file, CMakeLists.txt falls back to a local
   # vcpkg_installed tree (the layout scripts/restore_prebuilt.cmd unpacks). That
   # path gets no app-local deployment — windeployqt covers Qt and nothing covers
-  # VTK or ITK — so take the DLLs and Qt plugins from the prefix itself. Release
-  # only; packaging a debug build is not supported.
+  # VTK or ITK — so take the DLLs from the prefix itself. Release only;
+  # packaging a debug build is not supported.
   if(DEFINED _vcpkg_root AND _vcpkg_root)
+    set(_roift_vcpkg_prefix "${_vcpkg_root}")
     install(DIRECTORY "${_vcpkg_root}/bin/"
       DESTINATION ${CMAKE_INSTALL_BINDIR}
       FILES_MATCHING PATTERN "*.dll")
+  elseif(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(_roift_vcpkg_prefix "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+  endif()
 
+  # Qt plugins from the prefix in both configurations. An app missing
+  # platforms/qwindows.dll dies at startup with "could not find or load the Qt
+  # platform plugin", and whether anything else staged them depends on
+  # windeployqt having been built at all — it is an opt-in vcpkg feature.
+  # They are small, and install(DIRECTORY) overwrites identical files harmlessly.
+  if(_roift_vcpkg_prefix)
     foreach(_qt_plugin_dir platforms styles imageformats iconengines tls)
-      if(EXISTS "${_vcpkg_root}/Qt6/plugins/${_qt_plugin_dir}")
-        install(DIRECTORY "${_vcpkg_root}/Qt6/plugins/${_qt_plugin_dir}"
+      if(EXISTS "${_roift_vcpkg_prefix}/Qt6/plugins/${_qt_plugin_dir}")
+        install(DIRECTORY "${_roift_vcpkg_prefix}/Qt6/plugins/${_qt_plugin_dir}"
           DESTINATION ${CMAKE_INSTALL_BINDIR}
           FILES_MATCHING PATTERN "*.dll")
       endif()
