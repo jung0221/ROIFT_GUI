@@ -1,0 +1,140 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: packaging/ci/env.yml
+          cache-environment: true
+
+      - name: Configure
+        shell: micromamba-shell {0}
+        run: |
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+            -DBUILD_ROIFT_TESTS=ON \
+            -DBUILD_GPU_OIFT=OFF
+
+      - name: Build
+        shell: micromamba-shell {0}
+        run: cmake --build build -j"$(nproc)"
+
+      # Every widget test forces QT_QPA_PLATFORM=offscreen from CMakeLists.txt,
+      # so no xvfb is needed.
+      - name: Test
+        shell: micromamba-shell {0}
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Check the install tree
+        shell: micromamba-shell {0}
+        run: |
+          cmake --install build --prefix "$PWD/stage"
+          test -x stage/bin/roift_gui
+          test -x stage/bin/oiftrelax
+          test -f stage/share/applications/roift_gui.desktop
+          test -f stage/share/icons/hicolor/256x256/apps/roift_gui.png
+
+  windows:
+    runs-on: windows-2022
+    env:
+      # vcpkg removed its x-gha backend, so binary caching goes through a plain
+      # directory that actions/cache carries between runs.
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite'
+      # Heavily-optimized VTK/ITK translation units exhaust RAM at full width.
+      VCPKG_MAX_CONCURRENCY: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Building Qt6, VTK and ITK from source takes most of a GitHub job's 6h
+      # ceiling, so a cold run is one bad roll of the dice away from being
+      # killed mid-build. The restore key is prefix-matched and the save key is
+      # unique per run, so every attempt banks whatever it managed to build —
+      # a timed-out run still leaves the next one less to do.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-
+            vcpkg-${{ runner.os }}-
+
+      # The runner ships vcpkg at an arbitrary commit; the manifest baseline is
+      # what makes the dependency set — and therefore the binary cache — stable.
+      - name: Pin vcpkg to the manifest baseline
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --depth 1 origin $baseline
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout FETCH_HEAD
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat"
+
+      # Below GitHub's 6h job ceiling on purpose: a step that times out still
+      # lets the always() cache-save run, so the next attempt resumes. A job
+      # killed at the ceiling banks nothing.
+      - name: Configure
+        timeout-minutes: 300
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_INSTALL_OPTIONS=--clean-after-build `
+            -DBUILD_ROIFT_TESTS=ON `
+            -DBUILD_GPU_OIFT=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        shell: pwsh
+        timeout-minutes: 20
+        # --timeout: a hung test used to consume the entire 6h job. wheel_guard
+        # sat on a Windows error dialog for 2h48m before the ceiling killed the
+        # run, taking the Package step with it.
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
+
+      # Windows is the half that cannot be checked on a Linux dev machine, and
+      # the v1.0.0 prebuilt bundle carries no VTK, so it cannot be checked on a
+      # Windows one without a from-source vcpkg build either. Attaching the real
+      # installer and ZIP to the PR is what makes them testable at all.
+      - name: Package
+        shell: pwsh
+        working-directory: build
+        run: cpack -C Release
+
+      # always(): the dependency build is the expensive part and it completes
+      # long before the steps that tend to fail, so it must be banked even when
+      # they do.
+      - name: Save vcpkg binary cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            build/roift_gui-*-win64.exe
+            build/roift_gui-*-win64.zip
+          if-no-files-found: error

@@ -1,24 +1,20 @@
 cmake_minimum_required(VERSION 3.16)
-project(roift_gui LANGUAGES C CXX)
+# The release line is v1.1.x; v1.0.0/v1.0.1 are the prebuilt-vcpkg bundles.
+# .github/workflows/release.yml bumps the patch here on every merge to main.
+project(roift_gui VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(GNUInstallDirs)
+
 option(BUILD_ROIFT_GUI "Build the Qt/VTK/ITK GUI application" ON)
 
-# Include ROIFT (gft library + oiftrelax + experiments) — always built
-add_subdirectory(roift)
-
-if(BUILD_ROIFT_GUI)
-
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
-
-# build output folder. Set cmake -S . -B build -DROIFT_COPY_RUNTIME=OFF to avoid copying files on every --build.
-option(ROIFT_COPY_RUNTIME "Copy Qt plugins and vcpkg runtime DLLs to the build output folder" ON)
-
 # Windows instalation
+#
+# Must run before add_subdirectory(roift): roift/CMakeLists.txt calls
+# find_package(ZLIB REQUIRED), and without the prefix path set up first that
+# fails outright on a toolchain-less configure.
 if(WIN32)
     if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     set(_vcpkg_candidate_1 "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-windows")
@@ -54,6 +50,18 @@ if(WIN32)
   endif()
 endif()
 
+# Include ROIFT (gft library + oiftrelax + experiments) — always built
+add_subdirectory(roift)
+
+if(BUILD_ROIFT_GUI)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+# build output folder. Set cmake -S . -B build -DROIFT_COPY_RUNTIME=OFF to avoid copying files on every --build.
+option(ROIFT_COPY_RUNTIME "Copy Qt plugins and vcpkg runtime DLLs to the build output folder" ON)
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 # Try enabling Qt SVG only when it is available in the same Qt installation
@@ -72,13 +80,18 @@ if(WIN32)
   get_target_property(_qt_qmake_exe Qt6::qmake IMPORTED_LOCATION)
   get_filename_component(_qt_bin_dir "${_qt_qmake_exe}" DIRECTORY)
   find_program(WINDEPLOYQT_EXECUTABLE
-    NAMES windeployqt
+    NAMES windeployqt windeployqt6
     HINTS "${_qt_bin_dir}"
     NO_DEFAULT_PATH
   )
 
+  # Not fatal. vcpkg only builds the tool when qtbase's opt-in "windeployqt"
+  # feature is requested (see vcpkg.json), and a prefix without it can still
+  # produce a working build — the vcpkg toolchain deploys dependent DLLs itself,
+  # and cmake/Packaging.cmake takes Qt's plugins from the prefix either way.
   if(NOT WINDEPLOYQT_EXECUTABLE)
-    message(FATAL_ERROR "windeployqt not found (Qt bin dir: ${_qt_bin_dir})")
+    message(WARNING "windeployqt not found (Qt bin dir: ${_qt_bin_dir}); "
+                    "the build tree will not get a Qt runtime copied beside the exe")
   else()
     message(STATUS "Found windeployqt: ${WINDEPLOYQT_EXECUTABLE}")
   endif()
@@ -87,6 +100,10 @@ endif()
 # Find ITK
 find_package(ITK REQUIRED)
 add_compile_definitions(HAVE_ITK=1)
+
+# Directory scope so the test targets that reuse src/*.cpp see it too. src/Version.h
+# is the only place that reads it; nothing in src/ spells a version out.
+add_compile_definitions(ROIFT_GUI_VERSION="${PROJECT_VERSION}")
 
 message(STATUS "Selected Qt major version: 6 (Qt6 found and required)")
 
@@ -117,7 +134,20 @@ find_package(VTK REQUIRED COMPONENTS
   GUISupportQt
 )
 
-add_executable(roift_gui ${SRC_FILES})
+# resources/roift_gui.qrc carries the window/taskbar icon (AUTORCC compiles it in).
+add_executable(roift_gui ${SRC_FILES} resources/roift_gui.qrc)
+
+if(WIN32)
+  # Exe icon + version metadata, and the GUI subsystem so no console window
+  # opens behind the app. main.cpp routes --help/--version to a message box
+  # when there is no console to print to.
+  configure_file(packaging/windows/roift_gui.rc.in
+                 "${CMAKE_CURRENT_BINARY_DIR}/roift_gui.rc" @ONLY)
+  target_sources(roift_gui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/roift_gui.rc")
+  target_include_directories(roift_gui PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows")
+  set_target_properties(roift_gui PROPERTIES WIN32_EXECUTABLE ON)
+endif()
 
 target_include_directories(roift_gui PRIVATE src)
 target_link_libraries(roift_gui
@@ -196,6 +226,24 @@ if(BUILD_ROIFT_TESTS)
   else()
     message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
   endif()
+
+  # wheel_guard and mask_overlay run with QT_QPA_PLATFORM=offscreen. Qt aborts
+  # at startup if the requested platform plugin is absent, and windeployqt
+  # stages only the native one — so on Windows the offscreen plugin has to be
+  # put beside the test binaries. Without it the tests do not fail, they hang:
+  # the aborting process sits on a Windows error dialog until CI's job limit
+  # kills the whole run.
+  if(WIN32 AND TARGET Qt6::QOffscreenIntegrationPlugin)
+    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test)
+      add_custom_command(TARGET ${_offscreen_consumer} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_FILE_DIR:${_offscreen_consumer}>/platforms"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "$<TARGET_FILE:Qt6::QOffscreenIntegrationPlugin>"
+          "$<TARGET_FILE_DIR:${_offscreen_consumer}>/platforms/"
+      )
+    endforeach()
+  endif()
 endif()
 
 if(DEFINED _vcpkg_root AND _vcpkg_root)
@@ -222,6 +270,8 @@ if(WIN32 AND WINDEPLOYQT_EXECUTABLE AND ROIFT_COPY_RUNTIME)
     COMMENT "Running windeployqt to deploy Qt runtime files..."
   )
 endif()
+
+include(cmake/Packaging.cmake)
 
 else() # BUILD_ROIFT_GUI=OFF
   message(STATUS "BUILD_ROIFT_GUI=OFF: skipping Qt/VTK/ITK GUI build")
