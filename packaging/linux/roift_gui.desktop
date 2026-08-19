@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ROIFT GUI
+GenericName=CT Segmentation
+Comment=Seed-based ROIFT segmentation for 3D medical images
+Exec=roift_gui %F
+Icon=roift_gui
+Terminal=false
+Categories=Science;MedicalSoftware;Qt;
+StartupWMClass=roift_gui

@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="roift_gui.png">icons/roift_gui-256.png</file>
+  </qresource>
+</RCC>

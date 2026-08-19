@@ -1,0 +1,254 @@
+name: Release
+
+# A merge to main cuts a release: the `version` job bumps the patch, pushes the
+# bump commit and the tag, and the jobs below build that tag in the same run.
+#
+# The tag is pushed with GITHUB_TOKEN, which by design does not start new
+# workflow runs — that is why the build jobs hang off `version` here instead of
+# living in a separate tag-triggered workflow. Pushing a tag by hand still works
+# as an independent entry point (see the `push.tags` trigger): `version` passes
+# it straight through and the same build/release path runs.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    # The bump commit carries a [release] marker so a token that *does* retrigger
+    # workflows (a PAT swapped in later) still cannot loop. Tag pushes are exempt:
+    # the tag sits on the bump commit, so the marker would veto every re-release.
+    if: github.ref_type == 'tag' || !contains(github.event.head_commit.message, '[release]')
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve or cut the tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # main can move while this job queues, so re-sync, recompute and retry
+          # whenever the push is rejected as non-fast-forward.
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin main
+            git checkout -q -B main origin/main
+            CUR=$(grep -oE 'project\(roift_gui VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt \
+                  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+$')
+            MAJ=${CUR%%.*}; REST=${CUR#*.}; MIN=${REST%%.*}; PAT=${REST#*.}
+
+            # An unreleased version in CMakeLists ships as-is; this is how the
+            # v1.1.x line opened at 1.1.0 and how a hand-edited minor bump
+            # (1.2.0) reaches the world without an extra patch first.
+            if git ls-remote --tags origin "refs/tags/v${CUR}" | grep -q .; then
+              NEW="${MAJ}.${MIN}.$((PAT + 1))"
+            else
+              NEW="${CUR}"
+            fi
+            TAG="v${NEW}"
+            echo "Attempt ${attempt}: ${CUR} -> ${NEW} (${TAG})"
+
+            if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
+              echo "::error::${TAG} already exists — another run beat us to it"
+              exit 1
+            fi
+
+            if [ "$NEW" != "$CUR" ]; then
+              sed -i -E "s/(project\(roift_gui VERSION )[0-9]+\.[0-9]+\.[0-9]+/\1${NEW}/" CMakeLists.txt
+              git commit -q -am "release: ${TAG} [release]"
+              if ! git push origin HEAD:main; then
+                echo "Push rejected (main moved) — re-syncing and retrying..."
+                continue
+              fi
+            fi
+            git tag "$TAG"
+            git push origin "refs/tags/${TAG}"
+            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+            exit 0
+          done
+          echo "::error::gave up after 5 attempts (main kept moving)"
+          exit 1
+
+  # The runner image sets the AppImage's glibc floor; bump it only when you are
+  # willing to drop the distros it currently supports.
+  linux:
+    needs: version
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          submodules: recursive
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: packaging/ci/env.yml
+          cache-environment: true
+
+      - name: Build
+        shell: micromamba-shell {0}
+        run: |
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+            -DBUILD_ROIFT_TESTS=ON \
+            -DBUILD_GPU_OIFT=OFF
+          cmake --build build -j"$(nproc)"
+          ctest --test-dir build --output-on-failure
+
+      - name: Package
+        shell: micromamba-shell {0}
+        run: |
+          packaging/linux/build-appimage.sh build dist
+          # Repackages the same bundle under /opt; dpkg-deb comes from the
+          # runner image, outside the conda env.
+          packaging/linux/build-deb.sh dist/*.AppImage dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    if: needs.version.outputs.tag != ''
+    runs-on: windows-2022
+    env:
+      # vcpkg removed its x-gha backend, so binary caching goes through a plain
+      # directory that actions/cache carries between runs.
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite'
+      VCPKG_MAX_CONCURRENCY: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          submodules: recursive
+
+      # Qt6/VTK/ITK from source eats most of a job's 6h ceiling; see pr.yml for
+      # why the save key is unique per run.
+      - name: Restore vcpkg binary cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-
+            vcpkg-${{ runner.os }}-
+
+      # The runner ships vcpkg at an arbitrary commit; the manifest baseline is
+      # what makes the dependency set — and therefore the binary cache — stable.
+      - name: Pin vcpkg to the manifest baseline
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          git -C "$env:VCPKG_INSTALLATION_ROOT" fetch --depth 1 origin $baseline
+          git -C "$env:VCPKG_INSTALLATION_ROOT" checkout FETCH_HEAD
+          & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat"
+
+      # See pr.yml: under the 6h job ceiling so the always() cache-save survives.
+      - name: Build
+        timeout-minutes: 300
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_INSTALL_OPTIONS=--clean-after-build `
+            -DBUILD_ROIFT_TESTS=ON `
+            -DBUILD_GPU_OIFT=OFF
+          cmake --build build --config Release --parallel 4
+          ctest --test-dir build -C Release --output-on-failure --timeout 300
+
+      - name: Package
+        shell: pwsh
+        working-directory: build
+        run: cpack -C Release
+
+      - name: Save vcpkg binary cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            build/roift_gui-*-win64.exe
+            build/roift_gui-*-win64.zip
+          if-no-files-found: error
+
+  release:
+    needs: [version, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # CPack and the AppImage script name their output after PROJECT_VERSION
+      # (no leading "v"). Rename to the tag so all four assets read alike.
+      - name: Collect assets
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          mv artifacts/linux-packages/*.AppImage   "dist/roift_gui-${TAG}-x86_64.AppImage"
+          mv artifacts/linux-packages/*.deb        "dist/roift_gui-${TAG}-amd64.deb"
+          mv artifacts/windows-packages/*win64.exe "dist/roift_gui-${TAG}-win64.exe"
+          mv artifacts/windows-packages/*win64.zip "dist/roift_gui-${TAG}-win64.zip"
+          ls -la dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          cat > notes.md <<EOF
+          ## ROIFT GUI ${TAG}
+
+          Seed-based ROIFT segmentation for 3D medical images. No vcpkg, CMake or
+          Visual Studio needed — Qt6, VTK, ITK and the \`oiftrelax\` command-line
+          tools are all bundled in the downloads below.
+
+          ### Windows
+          - **roift_gui-${TAG}-win64.exe** — installer (Start-menu + desktop
+            shortcuts, uninstaller). SmartScreen warns about an unrecognized
+            publisher (the binary is unsigned) → *More info → Run anyway*.
+          - **roift_gui-${TAG}-win64.zip** — portable; unzip anywhere and run
+            \`bin\\roift_gui.exe\`.
+
+          ### Linux
+          - **roift_gui-${TAG}-x86_64.AppImage** — \`chmod +x\` and run.
+          - **roift_gui-${TAG}-amd64.deb** — \`sudo apt install ./roift_gui-${TAG}-amd64.deb\`.
+            Self-contained (bundles Qt6/VTK/ITK under \`/opt/roift_gui\`) and adds a
+            menu entry.
+          EOF
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "ROIFT GUI $TAG" \
+            --notes-file notes.md

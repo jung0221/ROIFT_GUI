@@ -9,12 +9,20 @@
 - Launch an external segmentation tool (ROIFT / `oiftrelax`) for per-label segmentation and merge results.
 - Save/load seeds and save/load masks.
 
+## Install
+
+Every release ships ready-to-run packages on the
+[Releases page](https://github.com/jung0221/ROIFT_GUI/releases) — a Windows
+installer and portable ZIP, a Linux AppImage and a `.deb`. Qt6, VTK, ITK and the
+`oiftrelax` tools are bundled, so nothing else has to be installed.
+
 ## Build
 
 For platform-specific build instructions and troubleshooting, see the documentation in the `docs/` directory:
 
-- `docs/linux_build.md` — Linux (Debian/Ubuntu) build instructions and troubleshooting.
-- `docs/windows_build.md` — Windows (Visual Studio / MSVC) build instructions and troubleshooting.
+- `docs/linux_build.md` — Linux build via conda-forge (this is a Qt6 app; apt's VTK is Qt5-only).
+- `docs/windows_build.md` — Windows (Visual Studio / MSVC + vcpkg) build instructions and troubleshooting.
+- `docs/packaging.md` — how the packages and releases are produced.
 
 Each guide contains step‑by‑step commands and common fixes for that platform.
 
@@ -44,3 +52,9 @@ Additional project documentation is available in the `docs/` directory:
 
 - `docs/usage.md` — keyboard/mouse shortcuts and quick usage notes for the GUI.
 - `docs/architecture.md` — high-level architecture and descriptions of the main modules (`ManualSeedSelector`, `SegmentationRunner`, `NiftiImage`, etc.).
+- `docs/design-language.md` — the tokens and rules behind the interface.
+- `docs/packaging.md` — install rules, icons, packages, and the release pipeline.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
