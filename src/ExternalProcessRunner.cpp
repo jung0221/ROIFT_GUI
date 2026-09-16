@@ -456,7 +456,10 @@ void ManualSeedSelector::runSuperResolution()
          << "--input"
          << inputPath
          << "--output"
-         << tmpOutDir.path();
+         << tmpOutDir.path()
+         // keep the enhanced volume on the input grid instead of doubling it
+         << "--outscale"
+         << "1";
 
     QProgressDialog progress("Running super resolution. This may take a few minutes...", "Cancel", 0, 0, this);
     progress.setWindowModality(Qt::ApplicationModal);
