@@ -50,6 +50,12 @@ if(WIN32)
   endif()
 endif()
 
+# Before add_subdirectory(roift): roift/CMakeLists.txt decides whether gft gets
+# zlib by testing for ZLIB::ZLIB, and only calls find_package(ZLIB) afterwards.
+# Without this, a standalone build (CI, every release package) compiles gft with
+# ZLIB_NOT_FOUND and oiftrelax segfaults on any .nii.gz.
+find_package(ZLIB REQUIRED)
+
 # Include ROIFT (gft library + oiftrelax + experiments) — always built
 add_subdirectory(roift)
 
@@ -223,6 +229,14 @@ if(BUILD_ROIFT_TESTS)
     )
     # The script exits 77 when numpy/SimpleITK are missing rather than failing.
     set_tests_properties(npz_import PROPERTIES SKIP_RETURN_CODE 77)
+
+    if(TARGET oiftrelax)
+      add_test(NAME oiftrelax_nifti_gz
+        COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/oiftrelax_nifti_gz_test.py
+          $<TARGET_FILE:oiftrelax>
+      )
+    endif()
   else()
     message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
   endif()
