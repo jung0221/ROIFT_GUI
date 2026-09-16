@@ -99,6 +99,7 @@ jobs:
       # lets the always() cache-save run, so the next attempt resumes. A job
       # killed at the ceiling banks nothing.
       - name: Configure
+        id: configure
         timeout-minutes: 300
         shell: pwsh
         run: |
@@ -129,11 +130,12 @@ jobs:
         working-directory: build
         run: cpack -C Release
 
-      # always(): the dependency build is the expensive part and it completes
-      # long before the steps that tend to fail, so it must be banked even when
-      # they do.
+      # Saved once dependencies are fully installed, even if a later step fails.
+      # A partial save is kept to main: a run searches its own branch's caches
+      # before main's, so a partial entry left on a pull request by a cancelled
+      # run would shadow main's complete one for every later run on it.
       - name: Save vcpkg binary cache
-        if: always()
+        if: always() && (github.ref == 'refs/heads/main' || steps.configure.outcome == 'success')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/vcpkg-bincache
