@@ -170,6 +170,7 @@ jobs:
 
       # See pr.yml: under the 6h job ceiling so the always() cache-save survives.
       - name: Build
+        id: build
         timeout-minutes: 300
         shell: pwsh
         run: |
@@ -186,8 +187,9 @@ jobs:
         working-directory: build
         run: cpack -C Release
 
+      # See pr.yml for why a partial save is kept to main.
       - name: Save vcpkg binary cache
-        if: always()
+        if: always() && (github.ref == 'refs/heads/main' || steps.build.outcome == 'success')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/vcpkg-bincache

@@ -272,8 +272,9 @@ GitHub job limit of six. Three measures keep that affordable:
   `actions/cache` carries between runs; a warm run restores all dependencies in
   under a minute. vcpkg's own `x-gha` backend was removed and silently caches
   nothing, which is why it is not used. The save key is unique per run and the
-  restore key is prefix-matched, and the save step runs with `if: always()`, so
-  a run that fails still banks whatever it built.
+  restore key is prefix-matched. On `main` the save runs whatever the outcome,
+  so a run that fails still banks whatever it built; elsewhere it runs only once
+  the dependencies are fully installed (see the scoping rule below).
 - **Step timeout.** The long step has `timeout-minutes: 300`. A step that times
   out still lets the cache save run; a job killed at the six-hour limit saves
   nothing.
@@ -286,5 +287,10 @@ GitHub job limit of six. Three measures keep that affordable:
   repository activity; re-enable it from the Actions tab if that happens.
 
 Caches are scoped: a run can restore entries saved by its own branch or by
-`main`, but not by another branch or pull request. The cache that serves
-releases and new pull requests is therefore the one saved by runs on `main`.
+`main`, but not by another branch or pull request, and it searches its own
+branch first. The cache that serves releases and new pull requests is therefore
+the one saved by runs on `main`. It is also why a pull request never saves a
+partial cache: an entry left by a cancelled run would be found before `main`'s
+complete one, and every later run on that pull request would rebuild what it
+lacks. A pull request whose cold build times out consequently banks nothing, a
+case that arises only when `main` itself has no cache.
