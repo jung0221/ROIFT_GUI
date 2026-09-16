@@ -39,16 +39,24 @@ jobs:
       # so no xvfb is needed.
       - name: Test
         shell: micromamba-shell {0}
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 300
 
-      - name: Check the install tree
+      # The same packaging release.yml runs. Leaving it out is how v1.1.0 and
+      # v1.1.1 were tagged with no Release: the AppImage step had never run in
+      # CI, so a green pull request said nothing about it.
+      - name: Package
         shell: micromamba-shell {0}
         run: |
-          cmake --install build --prefix "$PWD/stage"
-          test -x stage/bin/roift_gui
-          test -x stage/bin/oiftrelax
-          test -f stage/share/applications/roift_gui.desktop
-          test -f stage/share/icons/hicolor/256x256/apps/roift_gui.png
+          packaging/linux/build-appimage.sh build dist
+          packaging/linux/build-deb.sh dist/*.AppImage dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
 
   windows:
     runs-on: windows-2022
