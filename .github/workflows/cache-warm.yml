@@ -1,0 +1,24 @@
+name: Keep the vcpkg cache warm
+
+# GitHub deletes a cache entry that has not been restored for 7 days, and a cold
+# Windows build of Qt6, VTK and ITK takes about three hours, close to the build
+# step's timeout. Restoring the newest entry weekly keeps it alive through quiet
+# periods. Runs on main, whose caches every branch and pull request can read.
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  restore:
+    # runner.os is part of the key, so this must run where the builds run.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-warm
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'triplets/*.cmake') }}-
