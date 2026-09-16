@@ -45,23 +45,32 @@ fetch "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/co
       "$TOOLS_DIR/linuxdeploy-plugin-qt-x86_64.AppImage"
 
 # ── Library search path for linuxdeploy ────────────────────────────────────
-# linuxdeploy must resolve the same libs the binary was linked against. Only
-# pull in the conda prefix when the staged binary has unresolved deps (CI:
-# Qt/VTK/ITK live in the conda env, which is not on the loader path). Adding it
-# unconditionally would shadow the system Qt for qmake/ldd on dev machines.
+# linuxdeploy must resolve the same libs the binary was linked against.
 APP_BIN="$APPDIR/usr/bin/roift_gui"
 export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-if ldd "$APP_BIN" | grep -q "not found" && [ -n "${CONDA_PREFIX:-}" ]; then
-  export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$CONDA_PREFIX/lib"
-  echo "Added $CONDA_PREFIX/lib to LD_LIBRARY_PATH (binary had unresolved deps)"
+qt_core_dir() {
+  ldd "$APP_BIN" | awk '/libQt6Core\.so/ {print $3}' | xargs -r dirname | xargs -r readlink -f || true
+}
+QT_CORE_DIR="$(qt_core_dir)"
+
+# Pull in the conda prefix when the Qt being deployed lives in it. Checking the
+# binary for unresolved deps is not enough: conda's linker bakes the prefix into
+# its RUNPATH, so it always resolves, while the Qt plugins linuxdeploy copies
+# need libGL/libEGL from the prefix's libglvnd and do not. Adding it for a
+# system Qt would shadow that Qt on a dev machine with conda active.
+if [ -n "${CONDA_PREFIX:-}" ]; then
+  CONDA_LIB="$(readlink -f "$CONDA_PREFIX/lib")"
+  if [ "$QT_CORE_DIR" = "$CONDA_LIB" ] || ldd "$APP_BIN" | grep -q "not found"; then
+    export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$CONDA_LIB"
+    echo "Added $CONDA_LIB to LD_LIBRARY_PATH"
+    QT_CORE_DIR="$(qt_core_dir)"
+  fi
 fi
 
 # ── Locate qmake for the Qt deploy plugin ───────────────────────────────────
 # Several Qt installs may coexist (system, conda base, conda env). Pick the
 # qmake belonging to the Qt the binary actually links, by comparing its lib dir
 # against the libQt6Core.so.6 that ldd resolves for the installed binary.
-QT_CORE_DIR="$(ldd "$APP_BIN" | awk '/libQt6Core\.so/ {print $3}' | xargs -r dirname | xargs -r readlink -f || true)"
-
 if [ -z "${QMAKE:-}" ]; then
   first_cand=""
   for cand in "$(command -v qmake6 || true)" \
