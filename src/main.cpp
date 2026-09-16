@@ -4,6 +4,8 @@
 #include <QMessageBox>
 #include <QScreen>
 #include <QStringList>
+#include <QSurfaceFormat>
+#include <QVTKOpenGLNativeWidget.h>
 #include "ManualSeedSelector.h"
 #include "Theme.h"
 #include "Version.h"
@@ -46,6 +48,10 @@ int main(int argc, char **argv)
 {
     // QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     // QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+
+    // Must precede QApplication: without it Qt on Wayland hands the 3D view an
+    // OpenGL ES context, VTK's GLSL 150 shaders fail and the first render segfaults.
+    QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 
     QApplication app(argc, argv);
     // Install the design language on the application, not the main window, so
