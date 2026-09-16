@@ -35,6 +35,7 @@ chmod +x "$APPIMAGE"
 ( cd "$WORK" && APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGE" --appimage-extract >/dev/null )
 APPDIR="$WORK/squashfs-root"
 [ -x "$APPDIR/usr/bin/roift_gui" ] || { echo "error: extracted tree has no usr/bin/roift_gui" >&2; exit 1; }
+[ -f "$APPDIR/usr/lib/cxxrt/select.sh" ] || { echo "error: extracted tree has no usr/lib/cxxrt/select.sh" >&2; exit 1; }
 
 # ── Stage the package root ──────────────────────────────────────────────────
 PKG="$WORK/pkgroot"
@@ -45,17 +46,21 @@ INSTALL_ROOT="/opt/roift_gui"
 install -d "$PKG$INSTALL_ROOT"
 cp -a "$APPDIR/usr/." "$PKG$INSTALL_ROOT/"
 
-# Launcher on PATH: exec the real binary. The bundle is self-resolving — the
-# binary's RUNPATH is $ORIGIN/../lib, every bundled lib's is $ORIGIN, and Qt
-# plugins resolve via the adjacent qt.conf. SegmentationRunner finds oiftrelax
-# next to the real binary, so exec'ing it (not a copy) is what makes that work.
+# Launcher on PATH: choose the C++ runtime, then exec the real binary. The bundle
+# is otherwise self-resolving: the binary's RUNPATH is $ORIGIN/../lib, every
+# bundled lib's is $ORIGIN, and Qt plugins resolve via the adjacent qt.conf.
+# SegmentationRunner finds oiftrelax next to the real binary, so exec'ing it (not
+# a copy) is what makes that work.
 #
-# Do not export LD_LIBRARY_PATH here. Child processes inherit it, so the
-# `xdg-open` that revealPathInFileManager spawns would load our bundled glib
-# against the host's helpers.
+# Never put lib/ itself on LD_LIBRARY_PATH: child processes inherit it, and the
+# `xdg-open` that revealPathInFileManager spawns would load the bundled glib.
+# select.sh adds only lib/cxxrt, and only when it is newer than the host's, which
+# a child can always use.
 install -d "$PKG/usr/bin"
 cat > "$PKG/usr/bin/roift_gui" <<EOF
 #!/bin/sh
+ROIFT_CXXRT_DIR="$INSTALL_ROOT/lib/cxxrt"
+. "\$ROIFT_CXXRT_DIR/select.sh"
 exec "$INSTALL_ROOT/bin/roift_gui" "\$@"
 EOF
 chmod 0755 "$PKG/usr/bin/roift_gui"
@@ -79,6 +84,9 @@ for asset in \
 done
 
 # ── Control metadata ────────────────────────────────────────────────────────
+# Depends is linuxdeploy's excludelist as it applies to this bundle: the libs
+# it declines to bundle ("Skipping deployment of blacklisted library" in its
+# log) and so leaves to the host. Re-derive it when the dependency set changes.
 INSTALLED_KB="$(du -sk "$PKG$INSTALL_ROOT" "$PKG/usr" | awk '{s+=$1} END {print s}')"
 install -d "$PKG/DEBIAN"
 cat > "$PKG/DEBIAN/control" <<EOF
@@ -90,7 +98,10 @@ Homepage: $HOMEPAGE
 Section: science
 Priority: optional
 Installed-Size: $INSTALLED_KB
-Depends: libc6, libgl1, libglib2.0-0, libfontconfig1
+Depends: libc6, libgcc-s1, libstdc++6, zlib1g, libuuid1, libexpat1,
+ libgl1, libegl1, libglx0, libopengl0, libglvnd0,
+ libfontconfig1, libfreetype6, libharfbuzz0b,
+ libx11-6, libx11-xcb1, libxcb1, libice6, libsm6
 Description: Seed-based ROIFT segmentation for 3D medical images
  ROIFT GUI opens NIfTI, DICOM series and NumPy volumes, shows axial, sagittal
  and coronal slices beside a 3D mask render, and turns hand-placed object and

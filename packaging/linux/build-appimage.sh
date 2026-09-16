@@ -105,6 +105,18 @@ for cli in "$APPDIR"/usr/bin/oiftrelax* "$APPDIR"/usr/bin/exp_*; do
   [ -x "$cli" ] && EXECUTABLE_ARGS+=(--executable "$cli")
 done
 
+# The C++ runtime the binary links, kept out of usr/lib so RUNPATH does not force
+# it; AppRun and the .deb launcher source select.sh, which uses it only when it
+# is newer than the host's. linuxdeploy never bundles libstdc++ itself.
+CXXRT="$APPDIR/usr/lib/cxxrt"
+mkdir -p "$CXXRT"
+for lib in libstdc++.so.6 libgcc_s.so.1; do
+  src="$(ldd "$APP_BIN" | awk -v l="$lib" '$1 == l {print $3}')"
+  [ -n "$src" ] || { echo "error: $APP_BIN does not resolve $lib" >&2; exit 1; }
+  cp -L "$src" "$CXXRT/$lib"
+done
+install -m0644 "$REPO_ROOT/packaging/linux/cxxrt-select.sh" "$CXXRT/select.sh"
+
 # linuxdeploy-plugin-qt bundles only the platform plugin the build machine used
 # (xcb). Without these, anything headless — `--version` over SSH, a container —
 # dies with "Available platform plugins are: xcb".
@@ -122,6 +134,7 @@ PATH="$TOOLS_DIR:$PATH" "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" \
   --appdir "$APPDIR" \
   --desktop-file "$APPDIR/usr/share/applications/roift_gui.desktop" \
   --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/roift_gui.png" \
+  --custom-apprun "$REPO_ROOT/packaging/linux/AppRun" \
   "${EXECUTABLE_ARGS[@]}" \
   --plugin qt \
   --output appimage
