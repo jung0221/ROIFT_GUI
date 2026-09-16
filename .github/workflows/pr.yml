@@ -39,16 +39,24 @@ jobs:
       # so no xvfb is needed.
       - name: Test
         shell: micromamba-shell {0}
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --timeout 300
 
-      - name: Check the install tree
+      # The same packaging release.yml runs. Leaving it out is how v1.1.0 and
+      # v1.1.1 were tagged with no Release: the AppImage step had never run in
+      # CI, so a green pull request said nothing about it.
+      - name: Package
         shell: micromamba-shell {0}
         run: |
-          cmake --install build --prefix "$PWD/stage"
-          test -x stage/bin/roift_gui
-          test -x stage/bin/oiftrelax
-          test -f stage/share/applications/roift_gui.desktop
-          test -f stage/share/icons/hicolor/256x256/apps/roift_gui.png
+          packaging/linux/build-appimage.sh build dist
+          packaging/linux/build-deb.sh dist/*.AppImage dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
 
   windows:
     runs-on: windows-2022
@@ -91,6 +99,7 @@ jobs:
       # lets the always() cache-save run, so the next attempt resumes. A job
       # killed at the ceiling banks nothing.
       - name: Configure
+        id: configure
         timeout-minutes: 300
         shell: pwsh
         run: |
@@ -121,11 +130,12 @@ jobs:
         working-directory: build
         run: cpack -C Release
 
-      # always(): the dependency build is the expensive part and it completes
-      # long before the steps that tend to fail, so it must be banked even when
-      # they do.
+      # Saved once dependencies are fully installed, even if a later step fails.
+      # A partial save is kept to main: a run searches its own branch's caches
+      # before main's, so a partial entry left on a pull request by a cancelled
+      # run would shadow main's complete one for every later run on it.
       - name: Save vcpkg binary cache
-        if: always()
+        if: always() && (github.ref == 'refs/heads/main' || steps.configure.outcome == 'success')
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/vcpkg-bincache
