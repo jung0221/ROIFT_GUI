@@ -279,3 +279,12 @@ GitHub job limit of six. Three measures keep that affordable:
   nothing.
 - **Test timeout.** `ctest --timeout 300` bounds each test. A GUI test that
   aborts on Windows can wait on an error dialog indefinitely rather than fail.
+- **Keeping the cache.** GitHub deletes a cache entry not restored for 7 days,
+  after which the next Windows build is cold again. `cache-warm.yml` restores
+  the newest entry every Monday so that a quiet period does not cost a
+  three-hour rebuild. Scheduled workflows are disabled after 60 days without
+  repository activity; re-enable it from the Actions tab if that happens.
+
+Caches are scoped: a run can restore entries saved by its own branch or by
+`main`, but not by another branch or pull request. The cache that serves
+releases and new pull requests is therefore the one saved by runs on `main`.
