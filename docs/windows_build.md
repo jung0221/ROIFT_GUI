@@ -58,6 +58,28 @@ git -C <YOUR_VCPKG_PATH> checkout <the builtin-baseline value>
 <YOUR_VCPKG_PATH>\bootstrap-vcpkg.bat
 ```
 
+### What vcpkg builds, and how long it takes
+
+The first configure builds Qt6, VTK and ITK from source, which takes several
+hours. Two repository files change what is built:
+
+- `vcpkg-configuration.json` loads `triplets/x64-windows.cmake`, which builds
+  every dependency **release-only**. A Debug configuration of the application
+  therefore finds no debug libraries to link against. To build the application
+  in Debug, comment out `VCPKG_BUILD_TYPE` in that triplet and reconfigure; the
+  dependencies are then built twice and need correspondingly more time and disk.
+- `vcpkg.json` requests qtbase's `windeployqt` feature. As of qtbase 6.11.1 the
+  tool is opt-in; without it the build tree gets no Qt runtime beside the exe.
+
+### The prebuilt bundles do not build this version
+
+`scripts/restore_prebuilt.cmd` unpacks a `vcpkg_installed/` tree so that a
+configure without `-DCMAKE_TOOLCHAIN_FILE` can skip vcpkg entirely. The archives
+attached to the `v1.0.0` and `v1.0.1` releases predate VTK becoming a
+dependency: `v1.0.0` holds Qt6, ITK and zlib, and `v1.0.1` holds runtime DLLs
+only. Configuring against either fails at `find_package(VTK)`. Use the vcpkg
+toolchain as described above.
+
 ## Produced binaries and locations
 
 - GUI executable: `build\Release\roift_gui.exe`
