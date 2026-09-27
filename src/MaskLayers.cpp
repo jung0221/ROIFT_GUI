@@ -161,7 +161,7 @@ bool MaskLayer::usesLabelPalette() const
 QColor MaskLayer::colorForLabelValue(int label) const
 {
     if (usesLabelPalette())
-        return colorForLabel(std::max(0, std::min(255, label)));
+        return colorForLabel(label);
     return color.isValid() ? color : maskSlotColor(colorSlot);
 }
 
@@ -178,7 +178,7 @@ std::vector<QColor> MaskLayer::swatchColors(int maxColors) const
     {
         if (static_cast<int>(colors.size()) >= wanted)
             break;
-        colors.push_back(colorForLabel(std::max(0, std::min(255, label))));
+        colors.push_back(colorForLabel(label));
     }
     if (colors.empty())
         colors.push_back(color.isValid() ? color : maskSlotColor(colorSlot));

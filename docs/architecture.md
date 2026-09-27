@@ -39,6 +39,12 @@
     of these live in `Mask3DView`'s overlay renderer (layer 1, same camera), which draws after
     the translucent surface. 3D hover is a ray cast against a `vtkStaticCellLocator` built once
     per surface, throttled to one every 40 ms and skipped while a button is down.
+  - `Mask3DView::setMaskData()` contours one surface per label while a mask has up to 32
+    labels, so touching labels keep their shared wall. Past that it contours the union once
+    and colours each vertex by the label of the voxel under it (`paintSurfaceLabels()`):
+    discrete flying edges passes over the whole volume once per label, and a 1153-segment map
+    took 25 s against 0.35 s now. `colorForLabel()` cycles its 252 distinct colours past label
+    255 instead of clamping, which had painted every higher label one colour.
 
 - `NiftiImage` (src/NiftiImage.*)
   - A small wrapper for reading NIfTI images (ITK-backed when available). Provides helper functions to get axial/sagittal/coronal slices as RGB buffers used by `OrthogonalView`.

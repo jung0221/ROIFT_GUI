@@ -38,6 +38,7 @@
 #include <vtkRenderer.h>
 #include <vtkSphereSource.h>
 #include <vtkCellArray.h>
+#include <vtkIntArray.h>
 #include <vtkStaticCellLocator.h>
 #include <vtkUnsignedCharArray.h>
 #include <vtkWindowedSincPolyDataFilter.h>
@@ -46,6 +47,7 @@
 #include <set>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 Mask3DView::Mask3DView(QWidget *parent)
     : QWidget(parent)
@@ -324,10 +326,28 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
             m_labelColors[lbl] = colorForLabel(lbl);
     }
 
+    // Discrete flying edges passes over the whole volume once per label: 1153 labels
+    // took 25 s. Past a few dozen, contour the union once and colour it per point.
+    const bool manyLabels = m_activeLabels.size() > kSurfacePerLabelLimit;
+    if (manyLabels)
+    {
+        const size_t count = size_t(padX) * size_t(padY) * size_t(padZ);
+        for (size_t i = 0; i < count; ++i)
+            dst[i] = dst[i] > 0 ? 1 : 0;
+        image->Modified();
+    }
     m_flyingEdges->SetInputData(image);
-    m_flyingEdges->SetNumberOfContours(static_cast<int>(m_activeLabels.size()));
-    for (int i = 0; i < static_cast<int>(m_activeLabels.size()); ++i)
-        m_flyingEdges->SetValue(i, m_activeLabels[static_cast<size_t>(i)]);
+    if (manyLabels)
+    {
+        m_flyingEdges->SetNumberOfContours(1);
+        m_flyingEdges->SetValue(0, 1);
+    }
+    else
+    {
+        m_flyingEdges->SetNumberOfContours(static_cast<int>(m_activeLabels.size()));
+        for (int i = 0; i < static_cast<int>(m_activeLabels.size()); ++i)
+            m_flyingEdges->SetValue(i, m_activeLabels[static_cast<size_t>(i)]);
+    }
 
     m_flyingEdges->Modified();
     m_actor->SetVisibility(m_maskVisible && !m_activeLabels.empty());
@@ -336,6 +356,8 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
     // Depending on VTK build/filter behavior, scalars may come as point or cell data.
     m_smoother->Update();
     vtkPolyData *poly = m_smoother->GetOutput();
+    if (manyLabels && poly)
+        paintSurfaceLabels(poly, mask, sizeX, sizeY, sizeZ);
     if (poly && poly->GetNumberOfCells() > 0)
     {
         m_surfaceLocator->SetDataSet(poly);
@@ -396,6 +418,54 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
     m_seedCameraFramed = true;
     if (m_renderWindow)
         m_renderWindow->Render();
+}
+
+void Mask3DView::paintSurfaceLabels(vtkPolyData *poly, const std::vector<int> &mask, unsigned int sizeX,
+                                    unsigned int sizeY, unsigned int sizeZ)
+{
+    // A vertex of the union's surface lies between a labelled voxel and background:
+    // take the voxel it rounds to, else the nearest labelled one around it.
+    vtkPoints *points = poly->GetPoints();
+    const vtkIdType n = points ? points->GetNumberOfPoints() : 0;
+    auto labels = vtkSmartPointer<vtkIntArray>::New();
+    labels->SetName("Scalars");
+    labels->SetNumberOfTuples(n);
+    auto at = [&](int x, int y, int z) -> int
+    {
+        if (x < 0 || y < 0 || z < 0 || x >= int(sizeX) || y >= int(sizeY) || z >= int(sizeZ))
+            return 0;
+        return mask[(size_t(z) * sizeY + size_t(y)) * sizeX + size_t(x)];
+    };
+    for (vtkIdType i = 0; i < n; ++i)
+    {
+        double p[3];
+        points->GetPoint(i, p);
+        const double v[3] = {p[0] / m_spacingX, p[1] / m_spacingY, p[2] / m_spacingZ};
+        const int cx = int(std::lround(v[0])), cy = int(std::lround(v[1])), cz = int(std::lround(v[2]));
+        int label = at(cx, cy, cz);
+        double best = std::numeric_limits<double>::max();
+        for (int dz = -1; dz <= 1 && label <= 0; ++dz)
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                {
+                    const int value = at(cx + dx, cy + dy, cz + dz);
+                    if (value <= 0)
+                        continue;
+                    const double d = std::pow(cx + dx - v[0], 2) + std::pow(cy + dy - v[1], 2) + std::pow(cz + dz - v[2], 2);
+                    if (d < best)
+                    {
+                        best = d;
+                        labels->SetValue(i, value);
+                    }
+                }
+        if (label > 0)
+            labels->SetValue(i, label);
+        else if (best == std::numeric_limits<double>::max())
+            labels->SetValue(i, 0);
+    }
+    poly->GetPointData()->SetScalars(labels);
+    if (poly->GetCellData())
+        poly->GetCellData()->SetScalars(nullptr);
 }
 
 void Mask3DView::setAnnotations(const std::vector<Annotation3D> &annotations)

@@ -4364,8 +4364,7 @@ void ManualSeedSelector::setSeedTypeFilter(SeedTypeFilter filter)
 
 void ManualSeedSelector::updateLabelColor(int label)
 {
-    int l = std::max(0, std::min(255, label));
-    QColor c = colorForLabel(l);
+    QColor c = colorForLabel(label);
     QPixmap pm(m_labelColorIndicator->width(), m_labelColorIndicator->height());
     pm.fill(c);
     m_labelColorIndicator->setPixmap(pm);
@@ -5843,8 +5842,7 @@ void ManualSeedSelector::rebuildMaskLabelFilter()
 
     for (int label : presentLabels)
     {
-        const int clamped = std::max(0, std::min(255, label));
-        const QColor color = colorForLabel(clamped);
+        const QColor color = colorForLabel(label);
 
         // One row: [color swatch] [checkbox "Label N"]. A row widget keeps
         // teardown simple (takeAt(0)->widget()).

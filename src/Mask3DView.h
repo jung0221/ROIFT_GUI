@@ -198,6 +198,11 @@ private:
     NetworkGraph3D::Point m_selectedNode{};
     NetworkGraph3D::Point m_hoveredNode{};
     void rebuildNetworkActors();
+    // Above this many labels the surface is the union contoured once and coloured per
+    // vertex; below it, one contour per label (touching labels keep their shared wall).
+    static constexpr size_t kSurfacePerLabelLimit = 32;
+    void paintSurfaceLabels(vtkPolyData *poly, const std::vector<int> &mask, unsigned int sizeX,
+                            unsigned int sizeY, unsigned int sizeZ);
     void rebuildHighlightActors();
     NetworkGraph3D::Point toWorld(const NetworkGraph3D::Point &voxel) const;
 
