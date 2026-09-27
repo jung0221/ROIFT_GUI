@@ -20,6 +20,7 @@
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
 #include "RangeSlider.h"
+#include "SolverNetwork.h"
 
 class QDoubleSpinBox;
 class QCheckBox;
@@ -29,6 +30,7 @@ class QListWidget;
 class QListWidgetItem;
 class QMenu;
 class QTabWidget;
+class QTableWidget;
 class QGroupBox;
 class QVBoxLayout;
 class QProgressBar;
@@ -74,6 +76,13 @@ public:
     const std::vector<Seed> &getSeeds() const { return m_seeds; }
     // expose image path
     std::string getImagePath() const { return m_path; }
+    // Read a 1D solver network (YAML) and, when it sits beside the YAML, its
+    // segment map, which is drawn as a mask. False with @p error on failure.
+    bool loadSolverNetworkFromPath(const QString &yamlPath, QString *error = nullptr);
+    const SolverNetwork &solverNetwork() const { return m_solverNetwork; }
+    // 0-based segment shown in the Solver Network section, or -1.
+    int selectedSolverSegment() const { return m_selectedSolverSegment; }
+    void selectSolverSegment(int index, bool jump);
     // Path of the mask in the editable buffer — the one a row click selects.
     // Empty when the buffer belongs to no file. Which masks are *drawn* is a
     // separate question; see MaskVisibility.
@@ -134,6 +143,7 @@ private slots:
     void runSuperResolution();
     void runMaskPostProcessing();
     void runVesselGraph();
+    void loadSolverNetwork();
     void filterActiveMaskByThreshold();
     void saveSeeds();
     void loadSeeds();
@@ -275,6 +285,7 @@ private:
         int x = 0;
         int y = 0;
         int z = 0;
+        QString text; // drawn beside the X when set, e.g. a segment name
     };
     LocatedPoint m_locatedPoint;
     void drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const;
@@ -374,6 +385,24 @@ private:
     void eraseNear(int x, int y, int z, int r);
     // Move the three slice views onto one voxel; out-of-range is ignored.
     void jumpToVoxel(int x, int y, int z);
+
+    // -- Solver network (1D haemodynamic YAML + its segment map) -------------
+    QVBoxLayout *buildSolverNetworkSection();
+    // 1-based segment at or within @p radius voxels of a voxel, or 0.
+    int solverSegmentAtVoxel(int x, int y, int z, int radius = 0) const;
+    // Name for a label of the segment map, or empty when @p path is not it.
+    QString solverSegmentName(const QString &path, int label) const;
+    void refreshSolverNetworkTable();
+    void updateSolverAnnotations();
+    SolverNetwork m_solverNetwork;
+    QString m_solverSegmentMapPath; // empty when the YAML has no map beside it
+    std::string m_solverImagePath;  // the image the map was placed on; another image shares no voxel
+    SegmentVoxelIndex m_solverSegmentIndex;
+    int m_selectedSolverSegment = -1;
+    QTableWidget *m_solverTable = nullptr;
+    QLabel *m_solverSummary = nullptr;
+    QLabel *m_solverDetails = nullptr;
+    QCheckBox *m_solverAllNamesBox = nullptr;
     void update3DMaskView();
 
     void updateLabelColor(int label);

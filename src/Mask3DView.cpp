@@ -16,6 +16,8 @@
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkActor.h>
+#include <vtkBillboardTextActor3D.h>
+#include <vtkTextProperty.h>
 #include <vtkCamera.h>
 #include <vtkCellPicker.h>
 #include <vtkDiscreteFlyingEdges3D.h>
@@ -352,6 +354,43 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
         m_renderWindow->Render();
 }
 
+void Mask3DView::setAnnotations(const std::vector<Annotation3D> &annotations)
+{
+    m_annotations = annotations;
+    rebuildAnnotationActors();
+    if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+void Mask3DView::rebuildAnnotationActors()
+{
+    if (!m_renderer)
+        return;
+    for (const auto &actor : m_annotationActors)
+        m_renderer->RemoveActor(actor);
+    m_annotationActors.clear();
+    for (const Annotation3D &a : m_annotations)
+    {
+        auto actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+        actor->SetInput(a.text.toUtf8().constData());
+        actor->SetPosition(a.x * m_spacingX, a.y * m_spacingY, a.z * m_spacingZ);
+        vtkTextProperty *prop = actor->GetTextProperty();
+        prop->SetFontSize(a.emphasised ? 18 : 12);
+        prop->SetBold(a.emphasised);
+        prop->SetColor(a.color.redF(), a.color.greenF(), a.color.blueF());
+        prop->SetFrame(a.emphasised);
+        prop->SetFrameColor(a.color.redF(), a.color.greenF(), a.color.blueF());
+        prop->SetBackgroundColor(0.0, 0.0, 0.0);
+        prop->SetBackgroundOpacity(0.6);
+        prop->SetJustificationToCentered();
+        prop->SetVerticalJustificationToCentered();
+        // Opaque pass, so the translucent surface blends over a name inside a vessel.
+        actor->SetForceOpaque(true);
+        m_renderer->AddActor(actor);
+        m_annotationActors.push_back(actor);
+    }
+}
+
 void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacingZ)
 {
     const double newSpacingX = (std::isfinite(spacingX) && spacingX > 0.0) ? spacingX : 1.0;
@@ -365,6 +404,8 @@ void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacin
 
     if (changed && !m_seedRenderData.empty())
         setSeedData(m_seedRenderData);
+    if (changed && !m_annotations.empty())
+        rebuildAnnotationActors();
 }
 
 void Mask3DView::clearMask()

@@ -56,8 +56,9 @@ extra setup. `ROIFT_EXECUTABLE` overrides the search with an explicit path.
 ctest --test-dir build --output-on-failure
 ```
 
-The five tests are `ui_paths`, `wheel_guard`, `mask_overlay`, `npz_import` and
-`oiftrelax_nifti_gz`. The last one segments a gzipped NIfTI phantom with the
+The six tests are `ui_paths`, `solver_network`, `wheel_guard`, `mask_overlay`,
+`npz_import` and `oiftrelax_nifti_gz`. `solver_network` pins the YAML reader and the
+voxel-to-segment lookup; `mask_overlay` also loads a network into the real window. The last one segments a gzipped NIfTI phantom with the
 built `oiftrelax`; see [packaging.md](packaging.md#regression-test).
 No display is needed: the two that build widgets set `QT_QPA_PLATFORM=offscreen`
 themselves, so there is no `xvfb-run` in the loop. `npz_import` reports as

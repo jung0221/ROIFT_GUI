@@ -25,6 +25,14 @@
     generation, super-resolution, mask post-processing, and `runVesselGraph()` (Morse
     centreline of the current mask, rooted at the last seed — see `docs/usage.md`).
 
+- `SolverNetwork` (src/SolverNetwork.*) and `SolverNetworkUi` (src/SolverNetworkUi.cpp)
+  - `SolverNetwork` is free of widgets: `parseSolverNetwork()` reads the YAML subset the solver
+    files use, and `SegmentVoxelIndex` maps a voxel of the segment map to its segment, storing
+    only the vessel's voxels (a sorted index, not a second full volume). `SolverNetworkUi.cpp`
+    holds the `ManualSeedSelector` members of the `Solver Network` section. The segment map is
+    loaded as an ordinary mask layer, so drawing, colours and the 3D surface need nothing new;
+    `Mask3DView::setAnnotations()` adds the names.
+
 - `NiftiImage` (src/NiftiImage.*)
   - A small wrapper for reading NIfTI images (ITK-backed when available). Provides helper functions to get axial/sagittal/coronal slices as RGB buffers used by `OrthogonalView`.
 

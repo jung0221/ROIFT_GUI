@@ -1268,6 +1268,13 @@ void ManualSeedSelector::setupUi()
         m_toolSections.push_back(sec);
     }
 
+    {
+        CollapsibleSection *sec = new CollapsibleSection("Solver Network", "solverNetwork");
+        sec->setContentLayout(buildSolverNetworkSection());
+        toolSidebarLayout->addWidget(sec);
+        m_toolSections.push_back(sec);
+    }
+
     toolSidebarLayout->addStretch();
 
     // Wrap the section column in a scroll area so the whole tool panel scrolls
@@ -2655,7 +2662,11 @@ void ManualSeedSelector::setupUi()
 
     // Shift+click on the 3D surface drives all three slice views to that voxel.
     connect(m_mask3DView, &Mask3DView::surfacePointPicked, this, [this](int x, int y, int z)
-            { jumpToVoxel(x, y, z); });
+            {
+        jumpToVoxel(x, y, z);
+        // The surface is smoothed, so the picked voxel can sit just outside the vessel.
+        if (const int segment = solverSegmentAtVoxel(x, y, z, 2))
+            selectSolverSegment(segment - 1, false); });
 
     if (m_mask3DView)
         m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
@@ -4087,6 +4098,15 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
         hoverText += QString(" | Seed: label %1 (%2)").arg(seed->label).arg(seedType);
     }
 
+    if (const int segment = solverSegmentAtVoxel(x, y, z))
+    {
+        const SolverSegment &s = m_solverNetwork.segments[static_cast<size_t>(segment - 1)];
+        hoverText += QString(" | Segment: %1 (L %2 mm, Ø %3 mm)")
+                         .arg(s.label)
+                         .arg(s.lengthM * 1000.0, 0, 'f', 1)
+                         .arg(s.radiusM * 2000.0, 0, 'f', 1);
+    }
+
     m_statusLabel->setText(hoverText);
 }
 
@@ -4202,6 +4222,12 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
 
     QMenu menu(this);
     QAction *copyVoxelAction = menu.addAction("Copy coordinates and value");
+    QAction *segmentAction = nullptr;
+    // Two voxels of slack: the click lands on the vessel wall as often as inside it.
+    const int segment = solverSegmentAtVoxel(vx, vy, vz, 2);
+    if (segment > 0)
+        segmentAction = menu.addAction(QString("Select network segment %1")
+                                           .arg(m_solverNetwork.segments[static_cast<size_t>(segment - 1)].label));
     QAction *eraseSeedsAction = nullptr;
     if (isSeedsTabActive())
     {
@@ -4212,6 +4238,12 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     QAction *selected = menu.exec(globalPos);
     if (!selected)
         return;
+
+    if (segmentAction && selected == segmentAction)
+    {
+        selectSolverSegment(segment - 1, false);
+        return;
+    }
 
     if (selected == copyVoxelAction)
     {
@@ -4483,6 +4515,17 @@ void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, floa
         p.drawLine(center + QPointF(gap, gap), center + QPointF(arm, arm));
         p.drawLine(center + QPointF(-arm, arm), center + QPointF(-gap, gap));
         p.drawLine(center + QPointF(gap, -gap), center + QPointF(arm, -arm));
+    }
+    if (!m_locatedPoint.text.isEmpty())
+    {
+        QFont font = p.font();
+        font.setBold(true);
+        p.setFont(font);
+        const QPointF at = center + QPointF(arm + 4.0, -arm);
+        p.setPen(QColor(0, 0, 0, 200));
+        p.drawText(at + QPointF(1.0, 1.0), m_locatedPoint.text);
+        p.setPen(QColor(0, 229, 255));
+        p.drawText(at, m_locatedPoint.text);
     }
     p.restore();
 }
@@ -5528,8 +5571,18 @@ void ManualSeedSelector::update3DMaskView()
 
         if (passThrough)
         {
+            // The segment map's label values are segment indices: name them.
+            std::map<int, QString> segmentNames;
+            if (first.style)
+                for (int label : first.style->labels)
+                {
+                    const QString name = solverSegmentName(first.style->path, label);
+                    if (!name.isEmpty())
+                        segmentNames[label] = name;
+                }
             m_mask3DView->setMaskData(*first.data, targetX, targetY, targetZ,
-                                      targetSpacingX, targetSpacingY, targetSpacingZ);
+                                      targetSpacingX, targetSpacingY, targetSpacingZ,
+                                      nullptr, segmentNames.empty() ? nullptr : &segmentNames);
         }
         else
         {
@@ -5553,7 +5606,10 @@ void ManualSeedSelector::update3DMaskView()
                     {
                         const int id = ids.idFor(label);
                         mergedColors[id] = item.style->colorForLabelValue(label);
-                        mergedNames[id] = manyLabels ? QString("%1: %2").arg(name).arg(label) : name;
+                        const QString segment = solverSegmentName(item.style->path, label);
+                        mergedNames[id] = !segment.isEmpty() ? QString("%1: %2").arg(name, segment)
+                                          : manyLabels     ? QString("%1: %2").arg(name).arg(label)
+                                                           : name;
                     }
                 }
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QColor>
+#include <QString>
 #include <QWidget>
 #include <QPoint>
 #include <QRect>
@@ -16,6 +18,7 @@ QT_FORWARD_DECLARE_CLASS(QSlider)
 
 class QVTKOpenGLNativeWidget;
 class vtkActor;
+class vtkBillboardTextActor3D;
 class vtkCellPicker;
 class vtkDiscreteFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
@@ -34,6 +37,17 @@ struct SeedRenderData
     int z = 0;
     int label = 1;
     int seedIndex = -1;
+};
+
+/// A name drawn at a voxel, facing the camera; the surface does not hide it.
+struct Annotation3D
+{
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    QString text;
+    QColor color = Qt::white;
+    bool emphasised = false;
 };
 
 class Mask3DView : public QWidget
@@ -68,6 +82,8 @@ public:
                      const std::map<int, QString> *labelNames = nullptr);
     void setVoxelSpacing(double spacingX, double spacingY, double spacingZ);
     void setSeedData(const std::vector<SeedRenderData> &seeds);
+    /// Replace every text label; an empty list removes them. Renders immediately.
+    void setAnnotations(const std::vector<Annotation3D> &annotations);
     void setMaskVisible(bool visible);
     void setSeedsVisible(bool visible);
     // Set the 3D mask surface opacity, in [0, 1] (clamped). Renders immediately.
@@ -121,6 +137,9 @@ private:
 
     float m_opacity = 0.4f;
     std::vector<SeedRenderData> m_seedRenderData;
+    std::vector<Annotation3D> m_annotations;
+    std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> m_annotationActors;
+    void rebuildAnnotationActors();
     std::vector<int> m_activeLabels;
     std::map<int, QColor> m_labelColors;
     // Names for the label picker when the ids are merged-mask ids and "Label 7"

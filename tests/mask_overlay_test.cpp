@@ -10,6 +10,9 @@
 //
 // The two test masks occupy opposite quadrants, so a coloured pixel in one
 // quadrant can only have come from one of them.
+//
+// It also loads a solver network with its segment map, the other feature that
+// puts a mask on screen on the program's initiative.
 #include "ManualSeedSelector.h"
 #include "MaskLayers.h"
 #include "MaskListDelegate.h"
@@ -21,6 +24,8 @@
 #include <QFileInfo>
 #include <QListWidget>
 #include <QMouseEvent>
+#include <QFile>
+#include <QTableWidget>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -285,6 +290,35 @@ int main(int argc, char **argv)
     layer.colorMode = MaskColorMode::PerLabel;
     layer.labels = {1};
     check(layer.usesLabelPalette(), "per-label: overrides the label count too");
+
+    // Solver network: segment 1 fills x < 12, segment 2 the rest, segment 3 has no voxel.
+    const QString yamlPath = dir.filePath("case_artery_solver.yaml");
+    const QString segmentsPath = dir.filePath("case_artery_solver_segments.nii.gz");
+    {
+        QFile yaml(yamlPath);
+        const bool opened = yaml.open(QIODevice::WriteOnly | QIODevice::Text);
+        if (opened)
+            yaml.write("project_name: case\nnetwork:\n"
+                       "  - label: PulmonaryTrunk\n    sn: 1\n    tn: 2\n    L: 1.0e-02\n    R0: 7.0e-03\n"
+                       "  - label: LPA_01\n    sn: 2\n    tn: 3\n    L: 2.0e-02\n    R0: 4.0e-03\n    R1: 1.5e+08\n"
+                       "  - label: RPA_01\n    sn: 2\n    tn: 4\n    L: 2.0e-02\n    R0: 4.0e-03\n    R1: 1.5e+08\n");
+        check(opened && writeVolume(segmentsPath, [](unsigned int x, unsigned int, unsigned int)
+                                    { return x < kDimX / 2 ? 1 : 2; }),
+              "solver network written");
+    }
+    QString networkError;
+    check(window.loadSolverNetworkFromPath(yamlPath, &networkError), "solver network loads");
+    check(window.solverNetwork().segments.size() == 3, "three segments read");
+    check(visibilityOf(QFileInfo(segmentsPath).fileName()) == MaskVisibility::Visible,
+          "its segment map is drawn");
+    QTableWidget *table = window.findChild<QTableWidget *>();
+    check(table && table->rowCount() == 3, "one table row per segment");
+    if (table)
+        table->setCurrentCell(2, 0);
+    check(window.selectedSolverSegment() == 2, "a row click selects its segment");
+    window.selectSolverSegment(1, true);
+    check(window.selectedSolverSegment() == 1 && table && table->currentRow() == 1,
+          "selecting from code moves the row too");
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

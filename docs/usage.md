@@ -122,6 +122,8 @@
   intensity at that voxel, not the mask label, whichever plane you clicked in.
 - `Erase seeds near this point` appears only on the `Seeds` tab, and clears seeds within the
   seed brush radius.
+- `Select network segment <name>` appears when a solver network with a segment map is loaded
+  and the voxel is within two voxels of one of its segments; see below.
 
 ## Vessel Graph (Morse centreline)
 - Sidebar section `Vessel Graph`, or Ctrl+Shift+G.
@@ -137,6 +139,27 @@
 - Writes `<image>_vessel_graph.nii.gz` next to the image, adds it to the mask list and loads it
   as the overlay; voxels not connected to the root stay 0 and the count is logged.
 - Runs `src/vessels/cli/vessel_graph.py`, so it needs the project Python (`ROIFT_PYTHON`).
+
+## Solver Network (1D haemodynamic YAML)
+- Sidebar section `Solver Network`, `Load Network (YAML)...`. Reads the openBF-style network
+  that `vessels.cli.analyze_vessels --solver-yaml` writes (`<case>_artery_solver.yaml`), or any
+  file of that layout: top-level scalars, one level of blocks, and a `network:` list of flat
+  entries. An entry without `label`, `sn`, `tn`, `L` or `R0` refuses the whole file, by name.
+- The table lists every segment in file order: length and diameter in mm, `●` for an outlet
+  (an entry with `R1`). Below it, the selected segment in full: nodes, L, R0, diameter, E, the
+  segment it leaves (`from`) and those that leave it (`to`), then every other key as written.
+- **Placing segments needs the segment map**, `<stem>_segments.nii.gz` beside `<stem>.yaml`,
+  whose voxel value k is the k-th entry of the YAML. It is added to the mask list and drawn.
+  Then a row click moves the three slices to the segment (the segment voxel nearest its
+  centroid) and names it beside the marker; hovering a vessel adds `Segment: <name>` to the
+  status bar; right-click and Shift+click in 3D select the segment under the cursor; the 3D
+  label picker names the map's labels by segment. `Name every segment in 3D` labels all of
+  them at once, which is legible only zoomed in.
+- Without the map, or with one on another grid than the image, the table and details still
+  work and nothing is placed; the summary line says which. A YAML from elsewhere (for
+  instance a hand-built `virtualPatient_*.yaml`) has no map.
+- A segment the map does not carry has nothing to go to: the export's 1 mm connectors, which
+  split a node of more than two daughters into bifurcations, own no voxels by construction.
 
 ## Example workflows
 - Place seeds for two labels, open the Segmentation dialog, choose "Segment all", and select an output directory; the per-label outputs will be merged into a multilabel NIfTI and loaded automatically.
