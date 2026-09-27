@@ -122,8 +122,8 @@
   intensity at that voxel, not the mask label, whichever plane you clicked in.
 - `Erase seeds near this point` appears only on the `Seeds` tab, and clears seeds within the
   seed brush radius.
-- `Select network segment <name>` appears when a solver network with a segment map is loaded
-  and the voxel is within two voxels of one of its segments; see below.
+- `Select network node <id>` and `Select network segment <name>` appear when a solver network is
+  placed on the image and the voxel is near one; see below.
 
 ## Vessel Graph (Morse centreline)
 - Sidebar section `Vessel Graph`, or Ctrl+Shift+G.
@@ -145,21 +145,40 @@
   that `vessels.cli.analyze_vessels --solver-yaml` writes (`<case>_artery_solver.yaml`), or any
   file of that layout: top-level scalars, one level of blocks, and a `network:` list of flat
   entries. An entry without `label`, `sn`, `tn`, `L` or `R0` refuses the whole file, by name.
-- The table lists every segment in file order: length and diameter in mm, `●` for an outlet
-  (an entry with `R1`). Below it, the selected segment in full: nodes, L, R0, diameter, E, the
-  segment it leaves (`from`) and those that leave it (`to`), then every other key as written.
-- **Placing segments needs the segment map**, `<stem>_segments.nii.gz` beside `<stem>.yaml`,
-  whose voxel value k is the k-th entry of the YAML. It is added to the mask list and drawn.
-  Then a row click moves the three slices to the segment (the segment voxel nearest its
-  centroid) and names it beside the marker; hovering a vessel adds `Segment: <name>` to the
-  status bar; right-click and Shift+click in 3D select the segment under the cursor; the 3D
-  label picker names the map's labels by segment. `Name every segment in 3D` labels all of
-  them at once, which is legible only zoomed in.
-- Without the map, or with one on another grid than the image, the table and details still
-  work and nothing is placed; the summary line says which. A YAML from elsewhere (for
-  instance a hand-built `virtualPatient_*.yaml`) has no map.
-- A segment the map does not carry has nothing to go to: the export's 1 mm connectors, which
-  split a node of more than two daughters into bifurcations, own no voxels by construction.
+- **Placing it on the image** takes the three files the export writes beside the YAML, all on
+  the image's grid: `<stem>_geometry.json` (node positions, one ordered centreline per segment),
+  `<stem>_segments.nii.gz` (every vessel voxel, labelled with its segment's position in the YAML;
+  a branch the network cut carries the segment it hangs from) and `<stem>_lumen.nii.gz` (the
+  modelled vessels only). Open the image first. The geometry is checked before anything is
+  drawn: the YAML text must hash to its `yaml_sha256`, every segment must have the same label and
+  nodes, every node a position, and the grid the image's size. **Any disagreement refuses the
+  geometry and both maps**, and the summary line says why; the tree and details still work.
+  An older export without the geometry is placed by its segment map alone, without nodes.
+- **Colour** chooses which map is drawn: `Territory` (default; matches the artery file) or
+  `Modelled lumen`. Both are added to the mask list.
+- **The tree** is the topology: the trunk at the root, a segment's wider daughter on the same
+  level after it, each narrower daughter nested under it, so a long chain does not indent off
+  the panel. `L` and `Ø` in mm, `●` for an outlet. **Find** filters by name (`LB_0`, `RPA`);
+  Enter on `n27` or `27` selects node 27.
+- **Details** of the selected segment: size, E, its start and end nodes, its parent and
+  daughters, its lumen and territory volumes, then every other key as written. Of a node: its
+  kind (inlet, junction, outlet), voxel, and the segments into and out of it. Every node and
+  segment named there is a link that selects it.
+- **Selecting** a segment moves the three slices to half-way along its centreline and names it
+  beside the marker; a node, to its position. A connector the export inserted has no lumen of
+  its own, and says so.
+- **Hover**, on a slice or on the 3D surface, names what is under the pointer: a node within
+  2.5 mm (on the surface, within its vessel's radius), else the segment whose territory it is,
+  with `fed, not modelled` when the voxel is outside that segment's lumen. The status bar says
+  the same. Nothing is recomputed on hover: slices repaint their overlay; the 3D view re-renders
+  once per change of the hovered item, at most every 60 ms, and never while the camera is
+  dragged.
+- **Graph on slices** draws every centreline within 3 mm of the slice, in its segment's colour,
+  and the nodes there (green inlet, white junction, orange outlet); the selection bold in cyan,
+  with its course off the slice dashed. **Graph in 3D** draws the same over the surface, in a
+  layer the surface cannot hide. Only the selection and the hovered item are named in 3D.
+- Right-click on a slice offers `Select network node` and `Select network segment` for what is
+  under the cursor; Shift+click on the 3D surface selects it.
 
 ## Example workflows
 - Place seeds for two labels, open the Segmentation dialog, choose "Segment all", and select an output directory; the per-label outputs will be merged into a multilabel NIfTI and loaded automatically.

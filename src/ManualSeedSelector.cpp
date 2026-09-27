@@ -2665,8 +2665,30 @@ void ManualSeedSelector::setupUi()
             {
         jumpToVoxel(x, y, z);
         // The surface is smoothed, so the picked voxel can sit just outside the vessel.
-        if (const int segment = solverSegmentAtVoxel(x, y, z, 2))
+        if (const int node = solverNodeNear(x, y, z, 1.5, true); node >= 0)
+            selectSolverNode(node, false);
+        else if (const int segment = solverSegmentAtVoxel(x, y, z, 2))
             selectSolverSegment(segment - 1, false); });
+    connect(m_mask3DView, &Mask3DView::surfacePointHovered, this, [this](int x, int y, int z)
+            {
+        if (!solverNetworkPlaced())
+            return;
+        const int node = solverNodeNear(x, y, z, 1.5, true);
+        const int segment = node >= 0 ? 0 : solverSegmentAtVoxel(x, y, z, 2);
+        setSolverHover(segment, node, x, y, z, -1);
+        if (m_statusLabel)
+        {
+            QString text = QString("3D | x:%1 y:%2 z:%3").arg(x).arg(y).arg(z);
+            if (node >= 0)
+                text += QString(" | Node %1 (%2)").arg(node).arg(solverNodeKindName(solverNodeKind(m_solverNetwork, node)));
+            else if (segment > 0)
+                text += QString(" | Segment: %1").arg(m_solverNetwork.segments[static_cast<size_t>(segment - 1)].label);
+            m_statusLabel->setText(text);
+        } });
+    connect(m_mask3DView, &Mask3DView::surfaceHoverLeft, this, [this]()
+            {
+        if (m_hoverSolverPlane < 0)
+            setSolverHover(0, -1, 0, 0, 0, -1); });
 
     if (m_mask3DView)
         m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
@@ -4098,13 +4120,16 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
         hoverText += QString(" | Seed: label %1 (%2)").arg(seed->label).arg(seedType);
     }
 
-    if (const int segment = solverSegmentAtVoxel(x, y, z))
+    if (solverNetworkPlaced())
     {
-        const SolverSegment &s = m_solverNetwork.segments[static_cast<size_t>(segment - 1)];
-        hoverText += QString(" | Segment: %1 (L %2 mm, Ø %3 mm)")
-                         .arg(s.label)
-                         .arg(s.lengthM * 1000.0, 0, 'f', 1)
-                         .arg(s.radiusM * 2000.0, 0, 'f', 1);
+        // A node wins within 2.5 mm of it; otherwise whatever segment's territory this is.
+        const int node = solverNodeNear(x, y, z, 2.5, false);
+        const int segment = node >= 0 ? 0 : solverSegmentAtVoxel(x, y, z);
+        setSolverHover(segment, node, x, y, z, static_cast<int>(plane));
+        if (node >= 0)
+            hoverText += QString(" | Node %1 (%2)").arg(node).arg(solverNodeKindName(solverNodeKind(m_solverNetwork, node)));
+        else if (segment > 0)
+            hoverText += QString(" | Segment: %1").arg(m_solverNetwork.segments[static_cast<size_t>(segment - 1)].label);
     }
 
     m_statusLabel->setText(hoverText);
@@ -4223,8 +4248,16 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     QMenu menu(this);
     QAction *copyVoxelAction = menu.addAction("Copy coordinates and value");
     QAction *segmentAction = nullptr;
+    QAction *nodeAction = nullptr;
     // Two voxels of slack: the click lands on the vessel wall as often as inside it.
     const int segment = solverSegmentAtVoxel(vx, vy, vz, 2);
+    const int node = solverNodeNear(vx, vy, vz, 3.0, false);
+    if (node >= 0 || segment > 0)
+        menu.addSeparator();
+    if (node >= 0)
+        nodeAction = menu.addAction(QString("Select network node %1 (%2)")
+                                        .arg(node)
+                                        .arg(solverNodeKindName(solverNodeKind(m_solverNetwork, node))));
     if (segment > 0)
         segmentAction = menu.addAction(QString("Select network segment %1")
                                            .arg(m_solverNetwork.segments[static_cast<size_t>(segment - 1)].label));
@@ -4242,6 +4275,11 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     if (segmentAction && selected == segmentAction)
     {
         selectSolverSegment(segment - 1, false);
+        return;
+    }
+    if (nodeAction && selected == nodeAction)
+    {
+        selectSolverNode(node, true);
         return;
     }
 
@@ -4687,7 +4725,8 @@ void ManualSeedSelector::updateViews()
             }
         }
         drawRulerOverlay(p, scaleX, scaleY, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY());
-        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Axial); });
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Axial);
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Axial); });
 
     m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                    {
@@ -4719,7 +4758,8 @@ void ManualSeedSelector::updateViews()
             }
         }
         drawRulerOverlay(p, scaleX, scaleY, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ());
-        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Sagittal); });
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Sagittal);
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Sagittal); });
 
     m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                   {
@@ -4751,7 +4791,8 @@ void ManualSeedSelector::updateViews()
             }
         }
         drawRulerOverlay(p, scaleX, scaleY, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ());
-        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Coronal); });
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Coronal);
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Coronal); });
 }
 
 void ManualSeedSelector::jumpToVoxel(int x, int y, int z)

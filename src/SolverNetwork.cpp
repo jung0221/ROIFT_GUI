@@ -2,11 +2,14 @@
 
 #include "MaskLayers.h"
 
+#include <QCryptographicHash>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QDir>
 #include <QFileInfo>
 #include <QStringList>
-#include <QTextStream>
 
 #include <algorithm>
 #include <cmath>
@@ -245,32 +248,257 @@ bool parseSolverNetwork(const QString &text, SolverNetwork &out, QString *error)
 bool readSolverNetwork(const QString &path, SolverNetwork &out, QString *error)
 {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    if (!file.open(QIODevice::ReadOnly))
     {
         if (error)
             *error = QString("cannot read %1: %2").arg(path, file.errorString());
         return false;
     }
-    QTextStream stream(&file);
-    if (!parseSolverNetwork(stream.readAll(), out, error))
+    const QByteArray bytes = file.readAll();
+    if (!parseSolverNetwork(QString::fromUtf8(bytes), out, error))
         return false;
+    out.rawText = bytes;
     out.path = QFileInfo(path).absoluteFilePath();
     return true;
 }
 
-QString solverSegmentMapPath(const QString &yamlPath)
+std::vector<int> SolverNetwork::segmentsInto(int id) const
+{
+    std::vector<int> out;
+    for (int j = 0; j < static_cast<int>(segments.size()); ++j)
+        if (segments[static_cast<size_t>(j)].tn == id)
+            out.push_back(j);
+    return out;
+}
+
+std::vector<int> SolverNetwork::segmentsOutOf(int id) const
+{
+    std::vector<int> out;
+    for (int j = 0; j < static_cast<int>(segments.size()); ++j)
+        if (segments[static_cast<size_t>(j)].sn == id)
+            out.push_back(j);
+    return out;
+}
+
+std::vector<int> SolverNetwork::nodeIds() const
+{
+    std::vector<int> ids;
+    for (const SolverSegment &s : segments)
+    {
+        ids.push_back(s.sn);
+        ids.push_back(s.tn);
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
+}
+
+QString SolverNetwork::textSha256() const
+{
+    QByteArray text = rawText;
+    text.replace("\r\n", "\n"); // the exporter hashed the string, not the Windows file
+    return QString::fromLatin1(QCryptographicHash::hash(text, QCryptographicHash::Sha256).toHex());
+}
+
+const SolverGeometry::Point *SolverGeometry::node(int id) const
+{
+    const auto it = nodes.find(id);
+    return it == nodes.end() ? nullptr : &it->second;
+}
+
+namespace
+{
+constexpr const char *kGeometryFormat = "ctsegmentation.solver_geometry";
+constexpr int kGeometryVersion = 1;
+
+bool readPoint(const QJsonValue &value, SolverGeometry::Point &p)
+{
+    const QJsonArray a = value.toArray();
+    if (a.size() != 3 || !a[0].isDouble() || !a[1].isDouble() || !a[2].isDouble())
+        return false;
+    p.x = a[0].toDouble();
+    p.y = a[1].toDouble();
+    p.z = a[2].toDouble();
+    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+}
+} // namespace
+
+bool parseSolverGeometry(const QByteArray &json, SolverGeometry &out, QString *error)
+{
+    out = SolverGeometry{};
+    auto fail = [error](const QString &why)
+    {
+        if (error)
+            *error = why;
+        return false;
+    };
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
+    if (doc.isNull() || !doc.isObject())
+        return fail(QString("not JSON: %1").arg(parseError.errorString()));
+    const QJsonObject root = doc.object();
+    if (root.value("format").toString() != kGeometryFormat)
+        return fail(QString("not a solver geometry (format is '%1')").arg(root.value("format").toString()));
+    const int version = root.value("version").toInt(-1);
+    if (version < 1 || version > kGeometryVersion)
+        return fail(QString("geometry version %1; this viewer reads up to %2").arg(version).arg(kGeometryVersion));
+
+    out.yamlSha256 = root.value("yaml_sha256").toString();
+    const QJsonObject files = root.value("files").toObject();
+    for (auto it = files.begin(); it != files.end(); ++it)
+        out.files.insert(it.key(), it.value().toString());
+
+    const QJsonObject grid = root.value("grid").toObject();
+    const QJsonArray shape = grid.value("shape").toArray();
+    const QJsonArray spacing = grid.value("spacing_mm").toArray();
+    if (shape.size() != 3)
+        return fail("grid.shape is not three numbers");
+    for (int k = 0; k < 3; ++k)
+    {
+        const int n = shape[k].toInt(-1);
+        if (n <= 0)
+            return fail("grid.shape has a non-positive size");
+        out.shape[k] = static_cast<unsigned int>(n);
+        if (spacing.size() == 3 && spacing[k].toDouble() > 0.0)
+            out.spacing[k] = spacing[k].toDouble();
+    }
+
+    for (const QJsonValue &v : root.value("nodes").toArray())
+    {
+        const QJsonObject n = v.toObject();
+        SolverGeometry::Point p;
+        if (!n.value("id").isDouble() || !readPoint(n.value("voxel"), p))
+            return fail("a node lacks an id or a voxel position");
+        out.nodes[n.value("id").toInt()] = p;
+    }
+    for (const QJsonValue &v : root.value("segments").toArray())
+    {
+        const QJsonObject o = v.toObject();
+        SolverGeometry::Segment seg;
+        seg.index = o.value("index").toInt();
+        seg.label = o.value("label").toString();
+        seg.sn = o.value("sn").toInt();
+        seg.tn = o.value("tn").toInt();
+        seg.lumenVoxels = static_cast<long long>(o.value("lumen_voxels").toDouble());
+        seg.territoryVoxels = static_cast<long long>(o.value("territory_voxels").toDouble());
+        for (const QJsonValue &pv : o.value("centerline").toArray())
+        {
+            SolverGeometry::Point p;
+            if (!readPoint(pv, p))
+                return fail(QString("segment %1 has a malformed centreline point").arg(seg.label));
+            seg.centerline.push_back(p);
+        }
+        if (seg.index != static_cast<int>(out.segments.size()) + 1)
+            return fail(QString("segment %1 is listed at position %2 with index %3")
+                            .arg(seg.label).arg(out.segments.size() + 1).arg(seg.index));
+        out.segments.push_back(seg);
+    }
+    if (out.segments.empty())
+        return fail("no segments");
+    out.valid = true;
+    return true;
+}
+
+bool readSolverGeometry(const QString &path, SolverGeometry &out, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        if (error)
+            *error = QString("cannot read %1: %2").arg(path, file.errorString());
+        return false;
+    }
+    return parseSolverGeometry(file.readAll(), out, error);
+}
+
+QStringList solverGeometryProblems(const SolverNetwork &network, const SolverGeometry &geometry,
+                                   const unsigned int imageDims[3])
+{
+    QStringList problems;
+    if (!geometry.valid)
+        return {QStringLiteral("no geometry")};
+    if (!geometry.yamlSha256.isEmpty() && geometry.yamlSha256 != network.textSha256())
+        problems << "it was written for a different YAML text (edited or replaced since the export)";
+    if (geometry.segments.size() != network.segments.size())
+        problems << QString("it has %1 segments, the YAML %2")
+                        .arg(geometry.segments.size())
+                        .arg(network.segments.size());
+    const size_t n = std::min(geometry.segments.size(), network.segments.size());
+    int mismatched = 0;
+    for (size_t i = 0; i < n; ++i)
+    {
+        const SolverGeometry::Segment &g = geometry.segments[i];
+        const SolverSegment &y = network.segments[i];
+        if (g.label != y.label || g.sn != y.sn || g.tn != y.tn)
+        {
+            if (mismatched++ == 0)
+                problems << QString("segment %1 is %2 (%3 -> %4) there and %5 (%6 -> %7) in the YAML")
+                                .arg(i + 1).arg(g.label).arg(g.sn).arg(g.tn)
+                                .arg(y.label).arg(y.sn).arg(y.tn);
+        }
+    }
+    if (mismatched > 1)
+        problems << QString("%1 segments disagree in all").arg(mismatched);
+    for (int id : network.nodeIds())
+        if (!geometry.node(id))
+        {
+            problems << QString("node %1 has no position").arg(id);
+            break;
+        }
+    if (imageDims && imageDims[0] && imageDims[1] && imageDims[2] &&
+        (geometry.shape[0] != imageDims[0] || geometry.shape[1] != imageDims[1] ||
+         geometry.shape[2] != imageDims[2]))
+        problems << QString("its grid is %1x%2x%3, the image %4x%5x%6")
+                        .arg(geometry.shape[0]).arg(geometry.shape[1]).arg(geometry.shape[2])
+                        .arg(imageDims[0]).arg(imageDims[1]).arg(imageDims[2]);
+    return problems;
+}
+
+SolverNodeKind solverNodeKind(const SolverNetwork &network, int id)
+{
+    const bool in = !network.segmentsInto(id).empty();
+    const bool out = !network.segmentsOutOf(id).empty();
+    if (!in && !out)
+        return SolverNodeKind::Unknown;
+    if (!in)
+        return SolverNodeKind::Inlet;
+    return out ? SolverNodeKind::Junction : SolverNodeKind::Outlet;
+}
+
+QString solverNodeKindName(SolverNodeKind kind)
+{
+    switch (kind)
+    {
+    case SolverNodeKind::Inlet:
+        return QStringLiteral("inlet");
+    case SolverNodeKind::Junction:
+        return QStringLiteral("junction");
+    case SolverNodeKind::Outlet:
+        return QStringLiteral("outlet");
+    case SolverNodeKind::Unknown:
+        break;
+    }
+    return QStringLiteral("not in the network");
+}
+
+QString solverSiblingPath(const QString &yamlPath, const QString &suffix)
 {
     const QFileInfo info(yamlPath);
     QString name = info.fileName();
-    for (const QString &suffix : {QStringLiteral(".yaml"), QStringLiteral(".yml")})
+    for (const QString &ext : {QStringLiteral(".yaml"), QStringLiteral(".yml")})
     {
-        if (name.endsWith(suffix, Qt::CaseInsensitive))
+        if (name.endsWith(ext, Qt::CaseInsensitive))
         {
-            name.chop(suffix.size());
+            name.chop(ext.size());
             break;
         }
     }
-    return info.absoluteDir().filePath(name + "_segments.nii.gz");
+    return info.absoluteDir().filePath(name + suffix);
+}
+
+QString solverSegmentMapPath(const QString &yamlPath)
+{
+    return solverSiblingPath(yamlPath, QStringLiteral("_segments.nii.gz"));
 }
 
 void SegmentVoxelIndex::clear()

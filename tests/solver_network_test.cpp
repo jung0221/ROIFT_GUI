@@ -6,6 +6,7 @@
 #include "SolverNetwork.h"
 
 #include <QCoreApplication>
+#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -106,6 +107,66 @@ int main(int argc, char **argv)
     const SegmentAnchor &a = index.anchors()[0];
     check(a.valid && a.x == 1 && a.y == 0 && a.z == 0 && a.voxels == 3, "anchor is the member nearest the centroid");
     check(!index.anchors()[2].valid, "a segment with no voxels has no anchor");
+
+    // Geometry: the file analyze_vessels writes beside the YAML.
+    const QByteArray yamlBytes = QByteArray(kYaml);
+    SolverNetwork hashed;
+    parseSolverNetwork(QString::fromUtf8(yamlBytes), hashed);
+    hashed.rawText = yamlBytes;
+    const QString sha = hashed.textSha256();
+    QByteArray crlf = yamlBytes;
+    crlf.replace("\n", "\r\n");
+    SolverNetwork windows = hashed;
+    windows.rawText = crlf;
+    check(windows.textSha256() == sha, "hash ignores CRLF, as the exporter hashed the string");
+
+    auto geometry = [&](const QString &shaText, const char *thirdLabel, int shapeX)
+    {
+        return QString(R"({"format": "ctsegmentation.solver_geometry", "version": 1, "yaml_sha256": "%1",
+          "files": {"segment_map": "s.nii.gz"}, "grid": {"shape": [%3, 3, 2], "spacing_mm": [0.5, 0.5, 1.5]},
+          "nodes": [{"id": 1, "voxel": [0, 0, 0]}, {"id": 2, "voxel": [1, 0, 0]},
+                    {"id": 3, "voxel": [2, 0, 0.5]}, {"id": 4, "voxel": [3, 1, 1]}],
+          "segments": [
+            {"index": 1, "label": "PulmonaryTrunk", "sn": 1, "tn": 2, "lumen_voxels": 4, "territory_voxels": 9,
+             "centerline": [[0, 0, 0], [0.5, 0, 0], [1, 0, 0]]},
+            {"index": 2, "label": "LPA_01", "sn": 2, "tn": 3, "centerline": [[1, 0, 0], [2, 0, 0.5]]},
+            {"index": 3, "label": "%2", "sn": 2, "tn": 4, "centerline": [[1, 0, 0], [3, 1, 1]]}]})")
+            .arg(shaText, QString::fromLatin1(thirdLabel))
+            .arg(shapeX)
+            .toUtf8();
+    };
+    const unsigned int dims[3] = {4, 3, 2};
+    SolverGeometry geo;
+    check(parseSolverGeometry(geometry(sha, "RPA_01", 4), geo, &error), "geometry parses");
+    check(geo.valid && geo.nodes.size() == 4 && geo.segments.size() == 3, "nodes and segments read");
+    check(geo.node(3) && std::fabs(geo.node(3)->z - 0.5) < 1e-9, "fractional node position kept");
+    check(geo.segments[0].centerline.size() == 3 && geo.segments[0].territoryVoxels == 9, "centreline and counts");
+    check(geo.files.value("segment_map") == "s.nii.gz" && std::fabs(geo.spacing[2] - 1.5) < 1e-9, "files and spacing");
+    check(solverGeometryProblems(hashed, geo, dims).isEmpty(), "consistent geometry has no problems");
+    check(!solverGeometryProblems(hashed, geo, std::array<unsigned int, 3>{5, 3, 2}.data()).isEmpty(),
+          "another grid is a problem");
+
+    SolverGeometry stale;
+    parseSolverGeometry(geometry(QString(64, '0'), "RPA_01", 4), stale);
+    check(solverGeometryProblems(hashed, stale, dims).join(" ").contains("different YAML"), "edited YAML is caught");
+    SolverGeometry renamed;
+    parseSolverGeometry(geometry(QString(), "RB_01", 4), renamed);
+    check(solverGeometryProblems(hashed, renamed, dims).join(" ").contains("RB_01"),
+          "a segment named differently is caught, even without a hash");
+    SolverGeometry other;
+    check(!parseSolverGeometry(R"({"format": "something.else", "version": 1})", other, &error) &&
+              error.contains("not a solver geometry"),
+          "another JSON is refused");
+    check(!parseSolverGeometry(R"({"format": "ctsegmentation.solver_geometry", "version": 99})", other, &error) &&
+              error.contains("99"),
+          "a newer version is refused");
+
+    check(solverNodeKind(net, 1) == SolverNodeKind::Inlet && solverNodeKind(net, 2) == SolverNodeKind::Junction &&
+              solverNodeKind(net, 3) == SolverNodeKind::Outlet && solverNodeKind(net, 99) == SolverNodeKind::Unknown,
+          "node kinds from topology");
+    check(net.segmentsInto(2) == std::vector<int>({0}) && net.segmentsOutOf(2) == std::vector<int>({1, 2}),
+          "segments in and out of a node");
+    check(net.nodeIds() == std::vector<int>({1, 2, 3, 4}), "node ids");
 
     std::printf("\n%s\n", failures ? "FAILURES" : "all solver-network checks passed");
     return failures ? 1 : 0;

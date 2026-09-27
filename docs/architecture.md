@@ -27,11 +27,18 @@
 
 - `SolverNetwork` (src/SolverNetwork.*) and `SolverNetworkUi` (src/SolverNetworkUi.cpp)
   - `SolverNetwork` is free of widgets: `parseSolverNetwork()` reads the YAML subset the solver
-    files use, and `SegmentVoxelIndex` maps a voxel of the segment map to its segment, storing
-    only the vessel's voxels (a sorted index, not a second full volume). `SolverNetworkUi.cpp`
-    holds the `ManualSeedSelector` members of the `Solver Network` section. The segment map is
-    loaded as an ordinary mask layer, so drawing, colours and the 3D surface need nothing new;
-    `Mask3DView::setAnnotations()` adds the names.
+    files use; `parseSolverGeometry()` the geometry JSON; `solverGeometryProblems()` lists every
+    way a geometry fails to describe a YAML on an image (hash, labels, nodes, grid), and a
+    non-empty list means nothing is placed. `SegmentVoxelIndex` maps a voxel of a segment map to
+    its segment, storing only the vessel's voxels.
+  - `SolverNetworkUi.cpp` holds the `ManualSeedSelector` members of the section. Both maps are
+    ordinary mask layers, so drawing and colours need nothing new. Selection and hover never
+    re-contour the surface: the graph is two actors built once per load
+    (`Mask3DView::setNetworkGraph()`), the selection and hover swap small highlight actors
+    (`setNetworkHighlight()`), and names are at most two text actors (`setAnnotations()`). All
+    of these live in `Mask3DView`'s overlay renderer (layer 1, same camera), which draws after
+    the translucent surface. 3D hover is a ray cast against a `vtkStaticCellLocator` built once
+    per surface, throttled to one every 40 ms and skipped while a button is down.
 
 - `NiftiImage` (src/NiftiImage.*)
   - A small wrapper for reading NIfTI images (ITK-backed when available). Provides helper functions to get axial/sagittal/coronal slices as RGB buffers used by `OrthogonalView`.

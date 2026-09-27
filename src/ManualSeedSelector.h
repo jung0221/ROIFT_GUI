@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QColor>
 #include <QStringList>
+#include <array>
 #include <functional>
 #include <deque>
 #include <cstdint>
@@ -30,7 +31,9 @@ class QListWidget;
 class QListWidgetItem;
 class QMenu;
 class QTabWidget;
-class QTableWidget;
+class QLineEdit;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QGroupBox;
 class QVBoxLayout;
 class QProgressBar;
@@ -82,7 +85,12 @@ public:
     const SolverNetwork &solverNetwork() const { return m_solverNetwork; }
     // 0-based segment shown in the Solver Network section, or -1.
     int selectedSolverSegment() const { return m_selectedSolverSegment; }
+    // Node id shown in the Solver Network section, or -1.
+    int selectedSolverNode() const { return m_selectedSolverNode; }
     void selectSolverSegment(int index, bool jump);
+    void selectSolverNode(int id, bool jump);
+    // True when the network's segments and nodes are placed on the current image.
+    bool solverNetworkPlaced() const;
     // Path of the mask in the editable buffer — the one a row click selects.
     // Empty when the buffer belongs to no file. Which masks are *drawn* is a
     // separate question; see MaskVisibility.
@@ -386,23 +394,58 @@ private:
     // Move the three slice views onto one voxel; out-of-range is ignored.
     void jumpToVoxel(int x, int y, int z);
 
-    // -- Solver network (1D haemodynamic YAML + its segment map) -------------
+    // -- Solver network (1D haemodynamic YAML, its maps and geometry) --------
+    // See SolverNetworkUi.cpp. Hover state is separate from the selection: it
+    // costs one overlay repaint, never a slice recomposition or a re-contour.
     QVBoxLayout *buildSolverNetworkSection();
-    // 1-based segment at or within @p radius voxels of a voxel, or 0.
+    // 1-based segment whose territory holds the voxel (within @p radius voxels), or 0.
     int solverSegmentAtVoxel(int x, int y, int z, int radius = 0) const;
-    // Name for a label of the segment map, or empty when @p path is not it.
+    // 1-based segment whose modelled lumen holds the voxel, or 0.
+    int solverLumenSegmentAtVoxel(int x, int y, int z) const;
+    // Nearest node within @p slackMm of a voxel, or -1. @p fromSurface adds the node's
+    // vessel radius: a pick on the 3D surface lands on the wall, not on the axis.
+    int solverNodeNear(int x, int y, int z, double slackMm, bool fromSurface) const;
+    // Name for a label of either map, or empty when @p path is neither.
     QString solverSegmentName(const QString &path, int label) const;
-    void refreshSolverNetworkTable();
-    void updateSolverAnnotations();
+    void rebuildSolverTree();
+    void filterSolverTree(const QString &text);
+    void onSolverLinkActivated(const QString &link);
+    void refreshSolverDetails();
+    void applySolverMapChoice();
+    void rebuildSolverGraph3D();
+    void scheduleSolverHighlight3D();
+    void updateSolverHighlight3D();
+    // Hover from a slice (@p plane >= 0) or from 3D (-1); 0 / -1 clear. Repaints only on change.
+    void setSolverHover(int segment, int node, int x, int y, int z, int plane);
+    void drawSolverNetworkOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const;
+    // Where a segment is shown: its centreline's midpoint, else its map anchor.
+    bool solverSegmentFocus(int index, int &x, int &y, int &z) const;
+    QColor solverSegmentColor(int label) const;
+    std::vector<std::array<double, 3>> solverCenterlineVoxels(int index) const;
+
     SolverNetwork m_solverNetwork;
-    QString m_solverSegmentMapPath; // empty when the YAML has no map beside it
-    std::string m_solverImagePath;  // the image the map was placed on; another image shares no voxel
+    SolverGeometry m_solverGeometry;
+    bool m_solverGeometryPlaced = false; // geometry present and consistent with YAML and image
+    QString m_solverSegmentMapPath;      // whole-vessel (territory) map; empty when not placed
+    QString m_solverLumenMapPath;        // modelled-lumen map; empty when absent
+    std::string m_solverImagePath;       // the image the maps were placed on
     SegmentVoxelIndex m_solverSegmentIndex;
+    SegmentVoxelIndex m_solverLumenIndex;
     int m_selectedSolverSegment = -1;
-    QTableWidget *m_solverTable = nullptr;
+    int m_selectedSolverNode = -1;
+    int m_hoverSolverSegment = 0; // 1-based
+    int m_hoverSolverNode = -1;
+    int m_hoverSolverPlane = -1; // SlicePlane as int, or -1 for 3D / none
+    int m_hoverSolverVoxel[3] = {0, 0, 0};
+    QTreeWidget *m_solverTree = nullptr;
+    std::vector<QTreeWidgetItem *> m_solverTreeItems; // [segment index 0-based]
+    QLineEdit *m_solverSearch = nullptr;
+    QComboBox *m_solverMapCombo = nullptr;
+    QCheckBox *m_solverGraph2DBox = nullptr;
+    QCheckBox *m_solverGraph3DBox = nullptr;
     QLabel *m_solverSummary = nullptr;
     QLabel *m_solverDetails = nullptr;
-    QCheckBox *m_solverAllNamesBox = nullptr;
+    QTimer *m_solver3DTimer = nullptr;
     void update3DMaskView();
 
     void updateLabelColor(int label);

@@ -12,11 +12,13 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QColorDialog>
+#include <QTimer>
 
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkActor.h>
-#include <vtkBillboardTextActor3D.h>
+#include <vtkCoordinate.h>
+#include <vtkTextActor.h>
 #include <vtkTextProperty.h>
 #include <vtkCamera.h>
 #include <vtkCellPicker.h>
@@ -35,6 +37,8 @@
 #include <vtkProperty.h>
 #include <vtkRenderer.h>
 #include <vtkSphereSource.h>
+#include <vtkCellArray.h>
+#include <vtkStaticCellLocator.h>
 #include <vtkUnsignedCharArray.h>
 #include <vtkWindowedSincPolyDataFilter.h>
 #include <vtkSmartPointer.h>
@@ -111,6 +115,12 @@ void Mask3DView::buildPipeline()
 
     m_renderWindow->SetMultiSamples(0);
     m_renderWindow->AddRenderer(m_renderer);
+    m_renderWindow->SetNumberOfLayers(2);
+    m_overlayRenderer = vtkSmartPointer<vtkRenderer>::New();
+    m_overlayRenderer->SetLayer(1);
+    m_overlayRenderer->SetActiveCamera(m_renderer->GetActiveCamera());
+    m_overlayRenderer->InteractiveOff();
+    m_renderWindow->AddRenderer(m_overlayRenderer);
 
     m_actor = vtkSmartPointer<vtkActor>::New();
     m_actor->GetProperty()->SetInterpolationToPhong();
@@ -185,6 +195,35 @@ void Mask3DView::buildPipeline()
     m_surfacePicker->SetTolerance(0.0005);
     m_surfacePicker->PickFromListOn();
     m_surfacePicker->AddPickList(m_actor);
+    m_surfaceLocator = vtkSmartPointer<vtkStaticCellLocator>::New();
+    m_surfacePicker->AddLocator(m_surfaceLocator);
+
+    auto lineActor = [this](double width, double opacity)
+    {
+        auto actor = vtkSmartPointer<vtkActor>::New();
+        auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+        actor->SetMapper(mapper);
+        actor->GetProperty()->SetLineWidth(width);
+        actor->GetProperty()->SetOpacity(opacity);
+        actor->GetProperty()->LightingOff();
+        actor->PickableOff();
+        actor->VisibilityOff();
+        m_overlayRenderer->AddActor(actor);
+        return actor;
+    };
+    m_graphLineActor = lineActor(1.5, 1.0);
+    m_graphNodeActor = lineActor(1.0, 1.0);
+    m_graphNodeActor->GetProperty()->LightingOn();
+    m_hoveredLineActor = lineActor(3.5, 0.9);
+    m_hoveredNodeActor = lineActor(1.0, 0.9);
+    m_selectedLineActor = lineActor(5.0, 1.0);
+    m_selectedNodeActor = lineActor(1.0, 1.0);
+
+    m_hoverTimer = new QTimer(this);
+    m_hoverTimer->setSingleShot(true);
+    m_hoverTimer->setInterval(40);
+    connect(m_hoverTimer, &QTimer::timeout, this, &Mask3DView::resolveHover);
+    m_vtkWidget->setMouseTracking(true);
 }
 
 void Mask3DView::setMaskData(const std::vector<int> &mask,
@@ -297,6 +336,11 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
     // Depending on VTK build/filter behavior, scalars may come as point or cell data.
     m_smoother->Update();
     vtkPolyData *poly = m_smoother->GetOutput();
+    if (poly && poly->GetNumberOfCells() > 0)
+    {
+        m_surfaceLocator->SetDataSet(poly);
+        m_surfaceLocator->BuildLocator();
+    }
     if (poly && m_mapper)
     {
         vtkDataArray *pointScalars = poly->GetPointData() ? poly->GetPointData()->GetScalars() : nullptr;
@@ -364,31 +408,255 @@ void Mask3DView::setAnnotations(const std::vector<Annotation3D> &annotations)
 
 void Mask3DView::rebuildAnnotationActors()
 {
-    if (!m_renderer)
+    if (!m_overlayRenderer)
         return;
     for (const auto &actor : m_annotationActors)
-        m_renderer->RemoveActor(actor);
+        m_overlayRenderer->RemoveViewProp(actor);
     m_annotationActors.clear();
     for (const Annotation3D &a : m_annotations)
     {
-        auto actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+        auto actor = vtkSmartPointer<vtkTextActor>::New();
         actor->SetInput(a.text.toUtf8().constData());
-        actor->SetPosition(a.x * m_spacingX, a.y * m_spacingY, a.z * m_spacingZ);
+        actor->SetTextScaleModeToNone();
+        actor->GetPositionCoordinate()->SetCoordinateSystemToWorld();
+        actor->GetPositionCoordinate()->SetValue(a.x * m_spacingX, a.y * m_spacingY, a.z * m_spacingZ);
         vtkTextProperty *prop = actor->GetTextProperty();
-        prop->SetFontSize(a.emphasised ? 18 : 12);
+        prop->SetFontSize(a.emphasised ? 16 : 14);
         prop->SetBold(a.emphasised);
-        prop->SetColor(a.color.redF(), a.color.greenF(), a.color.blueF());
-        prop->SetFrame(a.emphasised);
+        prop->SetColor(1.0, 1.0, 1.0);
+        prop->SetFrame(true);
+        prop->SetFrameWidth(2);
         prop->SetFrameColor(a.color.redF(), a.color.greenF(), a.color.blueF());
-        prop->SetBackgroundColor(0.0, 0.0, 0.0);
-        prop->SetBackgroundOpacity(0.6);
-        prop->SetJustificationToCentered();
-        prop->SetVerticalJustificationToCentered();
-        // Opaque pass, so the translucent surface blends over a name inside a vessel.
-        actor->SetForceOpaque(true);
-        m_renderer->AddActor(actor);
+        prop->SetBackgroundColor(0.08, 0.08, 0.1);
+        prop->SetBackgroundOpacity(0.85);
+        // Opposite corners of their points, so a hover label near the selection does not cover it.
+        if (a.emphasised)
+        {
+            prop->SetJustificationToRight();
+            prop->SetVerticalJustificationToTop();
+        }
+        else
+        {
+            prop->SetJustificationToLeft();
+            prop->SetVerticalJustificationToBottom();
+        }
+        m_overlayRenderer->AddViewProp(actor);
         m_annotationActors.push_back(actor);
     }
+}
+
+NetworkGraph3D::Point Mask3DView::toWorld(const NetworkGraph3D::Point &voxel) const
+{
+    return {voxel[0] * m_spacingX, voxel[1] * m_spacingY, voxel[2] * m_spacingZ};
+}
+
+namespace
+{
+// Polylines into one polydata; one colour per line when @p colors is given.
+vtkSmartPointer<vtkPolyData> polylineData(const std::vector<std::vector<NetworkGraph3D::Point>> &lines,
+                                          const std::vector<QColor> *colors)
+{
+    auto points = vtkSmartPointer<vtkPoints>::New();
+    auto cells = vtkSmartPointer<vtkCellArray>::New();
+    auto rgb = vtkSmartPointer<vtkUnsignedCharArray>::New();
+    rgb->SetNumberOfComponents(3);
+    rgb->SetName("Colors");
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        const auto &line = lines[i];
+        if (line.size() < 2)
+            continue;
+        cells->InsertNextCell(static_cast<vtkIdType>(line.size()));
+        for (const auto &p : line)
+            cells->InsertCellPoint(points->InsertNextPoint(p[0], p[1], p[2]));
+        if (colors)
+        {
+            const QColor &c = (*colors)[i];
+            const unsigned char v[3] = {static_cast<unsigned char>(c.red()), static_cast<unsigned char>(c.green()),
+                                        static_cast<unsigned char>(c.blue())};
+            rgb->InsertNextTypedTuple(v);
+        }
+    }
+    auto poly = vtkSmartPointer<vtkPolyData>::New();
+    poly->SetPoints(points);
+    poly->SetLines(cells);
+    if (colors)
+        poly->GetCellData()->SetScalars(rgb);
+    return poly;
+}
+
+// Spheres at points, one colour each when @p colors is given.
+void setSpheres(vtkActor *actor, const std::vector<NetworkGraph3D::Point> &centres,
+                const std::vector<QColor> *colors, double radius)
+{
+    auto points = vtkSmartPointer<vtkPoints>::New();
+    auto rgb = vtkSmartPointer<vtkUnsignedCharArray>::New();
+    rgb->SetNumberOfComponents(3);
+    rgb->SetName("Colors");
+    for (size_t i = 0; i < centres.size(); ++i)
+    {
+        points->InsertNextPoint(centres[i][0], centres[i][1], centres[i][2]);
+        if (colors)
+        {
+            const QColor &c = (*colors)[i];
+            const unsigned char v[3] = {static_cast<unsigned char>(c.red()), static_cast<unsigned char>(c.green()),
+                                        static_cast<unsigned char>(c.blue())};
+            rgb->InsertNextTypedTuple(v);
+        }
+    }
+    auto poly = vtkSmartPointer<vtkPolyData>::New();
+    poly->SetPoints(points);
+    if (colors)
+        poly->GetPointData()->SetScalars(rgb);
+    auto sphere = vtkSmartPointer<vtkSphereSource>::New();
+    sphere->SetRadius(radius);
+    sphere->SetThetaResolution(10);
+    sphere->SetPhiResolution(8);
+    auto mapper = vtkSmartPointer<vtkGlyph3DMapper>::New();
+    mapper->SetInputData(poly);
+    mapper->SetSourceConnection(sphere->GetOutputPort());
+    mapper->ScalingOff();
+    mapper->SetScalarVisibility(colors != nullptr);
+    mapper->SetColorModeToDirectScalars();
+    actor->SetMapper(mapper);
+    actor->SetVisibility(!centres.empty());
+}
+
+void setLines(vtkActor *actor, const std::vector<std::vector<NetworkGraph3D::Point>> &lines,
+              const std::vector<QColor> *colors)
+{
+    auto mapper = vtkPolyDataMapper::SafeDownCast(actor->GetMapper());
+    if (!mapper)
+        return;
+    vtkSmartPointer<vtkPolyData> poly = polylineData(lines, colors);
+    mapper->SetInputData(poly);
+    mapper->SetScalarVisibility(colors != nullptr);
+    mapper->SetScalarModeToUseCellData();
+    mapper->SetColorModeToDirectScalars();
+    actor->SetVisibility(poly->GetNumberOfCells() > 0);
+}
+} // namespace
+
+void Mask3DView::setNetworkGraph(const NetworkGraph3D &graph)
+{
+    m_graph = graph;
+    m_selectedLine.clear();
+    m_hoveredLine.clear();
+    m_hasSelectedNode = m_hasHoveredNode = false;
+    rebuildNetworkActors();
+    rebuildHighlightActors();
+    if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+void Mask3DView::setNetworkHighlight(const std::vector<NetworkGraph3D::Point> &selectedLine,
+                                     const NetworkGraph3D::Point *selectedNode,
+                                     const std::vector<NetworkGraph3D::Point> &hoveredLine,
+                                     const NetworkGraph3D::Point *hoveredNode)
+{
+    m_selectedLine = selectedLine;
+    m_hoveredLine = hoveredLine;
+    m_hasSelectedNode = selectedNode != nullptr;
+    m_hasHoveredNode = hoveredNode != nullptr;
+    if (selectedNode)
+        m_selectedNode = *selectedNode;
+    if (hoveredNode)
+        m_hoveredNode = *hoveredNode;
+    rebuildHighlightActors();
+    if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+void Mask3DView::setNetworkVisible(bool visible)
+{
+    m_graphVisible = visible;
+    rebuildNetworkActors();
+    rebuildHighlightActors();
+    if (m_renderWindow)
+        m_renderWindow->Render();
+}
+
+void Mask3DView::rebuildNetworkActors()
+{
+    if (!m_graphLineActor)
+        return;
+    std::vector<std::vector<NetworkGraph3D::Point>> lines;
+    std::vector<QColor> lineColors;
+    std::vector<NetworkGraph3D::Point> nodes;
+    std::vector<QColor> nodeColors;
+    if (m_graphVisible)
+    {
+        for (const auto &line : m_graph.lines)
+        {
+            std::vector<NetworkGraph3D::Point> world;
+            world.reserve(line.points.size());
+            for (const auto &p : line.points)
+                world.push_back(toWorld(p));
+            lines.push_back(std::move(world));
+            lineColors.push_back(line.color);
+        }
+        for (const auto &node : m_graph.nodes)
+        {
+            nodes.push_back(toWorld(node.position));
+            nodeColors.push_back(node.color);
+        }
+    }
+    const double spacing = std::min({m_spacingX, m_spacingY, m_spacingZ});
+    setLines(m_graphLineActor, lines, &lineColors);
+    setSpheres(m_graphNodeActor, nodes, &nodeColors, 1.6 * spacing);
+}
+
+void Mask3DView::rebuildHighlightActors()
+{
+    if (!m_selectedLineActor)
+        return;
+    const double spacing = std::min({m_spacingX, m_spacingY, m_spacingZ});
+    auto world = [this](const std::vector<NetworkGraph3D::Point> &line)
+    {
+        std::vector<NetworkGraph3D::Point> out;
+        for (const auto &p : line)
+            out.push_back(toWorld(p));
+        return out;
+    };
+    const bool on = m_graphVisible;
+    const std::vector<QColor> cyan = {QColor(0, 229, 255)};
+    const std::vector<QColor> white = {QColor(255, 255, 255)};
+    setLines(m_selectedLineActor, on ? std::vector<std::vector<NetworkGraph3D::Point>>{world(m_selectedLine)}
+                                     : std::vector<std::vector<NetworkGraph3D::Point>>{},
+             &cyan);
+    setLines(m_hoveredLineActor, on ? std::vector<std::vector<NetworkGraph3D::Point>>{world(m_hoveredLine)}
+                                    : std::vector<std::vector<NetworkGraph3D::Point>>{},
+             &white);
+    const std::vector<NetworkGraph3D::Point> sel = (on && m_hasSelectedNode)
+                                                       ? std::vector<NetworkGraph3D::Point>{toWorld(m_selectedNode)}
+                                                       : std::vector<NetworkGraph3D::Point>{};
+    const std::vector<NetworkGraph3D::Point> hov = (on && m_hasHoveredNode)
+                                                       ? std::vector<NetworkGraph3D::Point>{toWorld(m_hoveredNode)}
+                                                       : std::vector<NetworkGraph3D::Point>{};
+    setSpheres(m_selectedNodeActor, sel, &cyan, 3.0 * spacing);
+    setSpheres(m_hoveredNodeActor, hov, &white, 2.4 * spacing);
+}
+
+void Mask3DView::resolveHover()
+{
+    if (!m_hoverInside)
+        return;
+    int vx = 0, vy = 0, vz = 0;
+    if (!pickSurfaceVoxel(m_hoverPos, vx, vy, vz))
+    {
+        if (m_lastHover[0] >= 0)
+        {
+            m_lastHover[0] = m_lastHover[1] = m_lastHover[2] = -1;
+            emit surfaceHoverLeft();
+        }
+        return;
+    }
+    if (vx == m_lastHover[0] && vy == m_lastHover[1] && vz == m_lastHover[2])
+        return;
+    m_lastHover[0] = vx;
+    m_lastHover[1] = vy;
+    m_lastHover[2] = vz;
+    emit surfacePointHovered(vx, vy, vz);
 }
 
 void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacingZ)
@@ -406,6 +674,11 @@ void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacin
         setSeedData(m_seedRenderData);
     if (changed && !m_annotations.empty())
         rebuildAnnotationActors();
+    if (changed && !m_graph.empty())
+    {
+        rebuildNetworkActors();
+        rebuildHighlightActors();
+    }
 }
 
 void Mask3DView::clearMask()
@@ -553,6 +826,33 @@ bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched != m_vtkWidget || !m_vtkWidget)
         return QWidget::eventFilter(watched, event);
+
+    // Hover is observed, never consumed: the camera still gets every event.
+    if (event->type() == QEvent::MouseMove)
+    {
+        const QMouseEvent *move = static_cast<QMouseEvent *>(event);
+        if (move->buttons() == Qt::NoButton)
+        {
+            m_hoverInside = true;
+            m_hoverPos = move->pos();
+            if (!m_hoverTimer->isActive())
+                m_hoverTimer->start();
+        }
+        else
+        {
+            m_hoverTimer->stop(); // rotating: a pick per frame would stall the drag
+        }
+    }
+    else if (event->type() == QEvent::Leave)
+    {
+        m_hoverInside = false;
+        m_hoverTimer->stop();
+        if (m_lastHover[0] >= 0)
+        {
+            m_lastHover[0] = m_lastHover[1] = m_lastHover[2] = -1;
+            emit surfaceHoverLeft();
+        }
+    }
 
     // Shift+left-click locates the surface point; the whole press/move/release
     // triple is swallowed so VTK does not read it as a camera pan.
