@@ -147,11 +147,14 @@ void ManualSeedSelector::runLunasSeedGeneration()
 
     if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
     {
+        // one file per oiftrelax run; which lung file exists depends on LUNG_SEGMENTATION_MODE
         const QString patientOutDir = QDir(outDir).filePath(patientName);
         const QStringList generatedSeeds = {
+            QDir(patientOutDir).filePath(QString("trachea_%1.txt").arg(patientName)),
+            QDir(patientOutDir).filePath(QString("lungs_%1.txt").arg(patientName)),
+            QDir(patientOutDir).filePath(QString("whole_lung_%1.txt").arg(patientName)),
             QDir(patientOutDir).filePath(QString("left_lung_%1.txt").arg(patientName)),
             QDir(patientOutDir).filePath(QString("right_lung_%1.txt").arg(patientName)),
-            QDir(patientOutDir).filePath(QString("trachea_%1.txt").arg(patientName)),
         };
 
         for (const QString &seedPath : generatedSeeds)
@@ -209,28 +212,20 @@ void ManualSeedSelector::runRibsSeedGeneration()
     const QString patientName = stripImageSuffix(inputInfo.fileName());
     const QString segmentedDir = inputInfo.absolutePath();
 
+    // LUNAS's lungs_<case> labelmap, or merge_lung_masks' lung_<case>: 1 left, 2 right, 3 airway
     const QDir segDir(segmentedDir);
-    const QStringList leftCandidates = segDir.entryList(
-        QStringList() << QString("left_lung_%1.nii*").arg(patientName) << "left_lung_*.nii*",
-        QDir::Files,
-        QDir::Name);
-    const QStringList rightCandidates = segDir.entryList(
-        QStringList() << QString("right_lung_%1.nii*").arg(patientName) << "right_lung_*.nii*",
+    const QStringList labelmapCandidates = segDir.entryList(
+        QStringList() << QString("lungs_%1.nii*").arg(patientName) << QString("lung_%1.nii*").arg(patientName),
         QDir::Files,
         QDir::Name);
 
-    if (leftCandidates.isEmpty() || rightCandidates.isEmpty())
+    if (labelmapCandidates.isEmpty())
     {
-        QString missing;
-        if (leftCandidates.isEmpty())
-            missing += "left_lung_* ";
-        if (rightCandidates.isEmpty())
-            missing += "right_lung_*";
         QMessageBox::warning(
             this,
             "Generate Seeds",
-            QString("Segmented lungs not found in the image folder.\nMissing pattern(s): %1\nFolder:\n%2")
-                .arg(missing.trimmed())
+            QString("Lung labelmap not found in the image folder.\nExpected: lungs_%1.nii.gz (LUNAS) or lung_%1.nii.gz\nFolder:\n%2")
+                .arg(patientName)
                 .arg(segmentedDir));
         return;
     }
