@@ -31,7 +31,10 @@
     way a geometry fails to describe a YAML on an image (hash, labels, nodes, grid), and a
     non-empty list means nothing is placed. `SegmentVoxelIndex` maps a voxel of a segment map to
     its segment, storing only the vessel's voxels.
-  - `SolverNetworkUi.cpp` holds the `ManualSeedSelector` members of the section. Both maps are
+  - `SolverNetworkUi.cpp` holds the `ManualSeedSelector` members of the `Tools > Solver Network...`
+    window. The window is built once, hidden, when the main window is, so the network's state
+    outlives closing it; `unloadSolverNetwork()` removes its maps through `forgetMaskPath()`, the
+    same path the mask list's remove button takes. Both maps are
     ordinary mask layers, so drawing and colours need nothing new. Selection and hover never
     re-contour the surface: the graph is two actors built once per load
     (`Mask3DView::setNetworkGraph()`), the selection and hover swap small highlight actors

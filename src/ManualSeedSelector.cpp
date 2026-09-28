@@ -618,6 +618,25 @@ void ManualSeedSelector::setupUi()
         m_sagittalView->resetView();
         m_coronalView->resetView(); });
 
+    mainToolBar->addSeparator();
+
+    // Tools: features too specific for the sidebar, each in its own window.
+    QToolButton *toolsButton = new QToolButton(this);
+    toolsButton->setText("Tools");
+    toolsButton->setToolTip("Specialised tools, each in its own window");
+    toolsButton->setPopupMode(QToolButton::InstantPopup);
+    QMenu *toolsMenu = new QMenu(toolsButton);
+    QAction *actSolver = toolsMenu->addAction("Solver Network...");
+    actSolver->setToolTip("Load a 1D solver network (YAML) and place it on the image");
+    connect(actSolver, &QAction::triggered, this, &ManualSeedSelector::showSolverNetworkDialog);
+    m_actUnloadSolver = toolsMenu->addAction("Unload Solver Network");
+    m_actUnloadSolver->setToolTip("Remove the loaded network, its maps and its overlays from the viewer");
+    connect(m_actUnloadSolver, &QAction::triggered, this, &ManualSeedSelector::unloadSolverNetwork);
+    connect(toolsMenu, &QMenu::aboutToShow, this, [this]()
+            { m_actUnloadSolver->setEnabled(solverNetworkLoaded()); });
+    toolsButton->setMenu(toolsMenu);
+    mainToolBar->addWidget(toolsButton);
+
     // Pushes About to the far end so it never sits among the tools.
     QWidget *toolBarSpacer = new QWidget(this);
     toolBarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -1268,12 +1287,13 @@ void ManualSeedSelector::setupUi()
         m_toolSections.push_back(sec);
     }
 
-    {
-        CollapsibleSection *sec = new CollapsibleSection("Solver Network", "solverNetwork");
-        sec->setContentLayout(buildSolverNetworkSection());
-        toolSidebarLayout->addWidget(sec);
-        m_toolSections.push_back(sec);
-    }
+    // Tools > Solver Network. Built now and kept hidden, so its state lives as long as the window.
+    m_solverDialog = new QDialog(this);
+    m_solverDialog->setWindowTitle("Solver Network");
+    m_solverDialog->setModal(false);
+    m_solverDialog->setLayout(buildSolverNetworkSection());
+    m_solverDialog->layout()->setContentsMargins(12, 12, 12, 12);
+    m_solverDialog->resize(460, 780);
 
     toolSidebarLayout->addStretch();
 
@@ -1876,46 +1896,12 @@ void ManualSeedSelector::setupUi()
 
         QListWidgetItem *item = m_maskList->currentItem();
         const QString path = QDir::cleanPath(QFileInfo(item->data(kPathRole).toString()).absoluteFilePath());
-        const std::string key = path.toStdString();
         const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
         const bool removingActiveMask = (!activeMaskPath.isEmpty() && path == activeMaskPath);
-        const int sourceImageIndex = item->data(kMaskSourceImageRole).toInt();
-        bool removed = false;
-        if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size())) {
-            auto &maskPaths = m_images[static_cast<size_t>(sourceImageIndex)].maskPaths;
-            auto it = std::find(maskPaths.begin(), maskPaths.end(), key);
-            if (it != maskPaths.end()) {
-                maskPaths.erase(it);
-                removed = true;
-            }
-        } else {
-            auto it = std::find(m_unassignedMaskPaths.begin(), m_unassignedMaskPaths.end(), key);
-            if (it != m_unassignedMaskPaths.end()) {
-                m_unassignedMaskPaths.erase(it);
-                removed = true;
-            }
-        }
-
-        if (!removed) {
+        if (!forgetMaskPath(path, item->data(kMaskSourceImageRole).toInt())) {
             QMessageBox::warning(this, "Remove Mask", "Selected mask is not present in the internal list.");
             return;
         }
-
-        // A removed row has no eye left to close, so it must not stay drawn.
-        dropMaskLayer(path);
-
-        if (removingActiveMask)
-        {
-            m_loadedMaskPath.clear();
-            m_pendingActiveMaskPath.clear();
-            m_maskData.clear();
-            m_maskDimX = 0;
-            m_maskDimY = 0;
-            m_maskDimZ = 0;
-        }
-
-        m_mask3DDirty = true;
-        updateMaskSeedLists();
         updateViews();
         if (m_statusLabel)
             m_statusLabel->setText(removingActiveMask
@@ -4510,6 +4496,42 @@ void ManualSeedSelector::drawRulerOverlay(QPainter &p,
     p.setPen(Qt::white);
     p.drawText(bubble.adjusted(7.0, 4.0, -7.0, -4.0), Qt::AlignLeft | Qt::AlignVCenter, label);
     p.restore();
+}
+
+bool ManualSeedSelector::forgetMaskPath(const QString &absolutePath, int imageIndex)
+{
+    const QString path = QDir::cleanPath(QFileInfo(absolutePath).absoluteFilePath());
+    const std::string key = path.toStdString();
+    bool removed = false;
+    auto erase = [&key, &removed](std::vector<std::string> &paths)
+    {
+        auto it = std::find(paths.begin(), paths.end(), key);
+        if (it != paths.end())
+        {
+            paths.erase(it);
+            removed = true;
+        }
+    };
+    for (int i = 0; i < static_cast<int>(m_images.size()); ++i)
+        if (imageIndex == kEveryMaskList || imageIndex == i)
+            erase(m_images[static_cast<size_t>(i)].maskPaths);
+    if (imageIndex == kEveryMaskList || imageIndex < 0 || imageIndex >= static_cast<int>(m_images.size()))
+        erase(m_unassignedMaskPaths);
+    // A removed row has no eye left to close, so it must not stay drawn.
+    dropMaskLayer(path);
+    const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
+    if (!m_loadedMaskPath.empty() && path == activeMaskPath)
+    {
+        m_loadedMaskPath.clear();
+        m_pendingActiveMaskPath.clear();
+        m_maskData.clear();
+        m_maskDimX = 0;
+        m_maskDimY = 0;
+        m_maskDimZ = 0;
+    }
+    m_mask3DDirty = true;
+    updateMaskSeedLists();
+    return removed;
 }
 
 void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const

@@ -31,6 +31,7 @@ class QListWidget;
 class QListWidgetItem;
 class QMenu;
 class QTabWidget;
+class QDialog;
 class QLineEdit;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -89,6 +90,9 @@ public:
     int selectedSolverNode() const { return m_selectedSolverNode; }
     void selectSolverSegment(int index, bool jump);
     void selectSolverNode(int id, bool jump);
+    // Take the network and both of its maps out of the viewer; a no-op when none is loaded.
+    void unloadSolverNetwork();
+    bool solverNetworkLoaded() const { return !m_solverNetwork.empty(); }
     // True when the network's segments and nodes are placed on the current image.
     bool solverNetworkPlaced() const;
     // Path of the mask in the editable buffer — the one a row click selects.
@@ -152,6 +156,7 @@ private slots:
     void runMaskPostProcessing();
     void runVesselGraph();
     void loadSolverNetwork();
+    void showSolverNetworkDialog();
     void filterActiveMaskByThreshold();
     void saveSeeds();
     void loadSeeds();
@@ -398,6 +403,10 @@ private:
     // See SolverNetworkUi.cpp. Hover state is separate from the selection: it
     // costs one overlay repaint, never a slice recomposition or a re-contour.
     QVBoxLayout *buildSolverNetworkSection();
+    // Remove a mask from one image's list (@p imageIndex), the unassigned list (-1), or
+    // every list (kEveryMaskList), and from the screen. False when no list held it.
+    static constexpr int kEveryMaskList = -2;
+    bool forgetMaskPath(const QString &absolutePath, int imageIndex);
     // 1-based segment whose territory holds the voxel (within @p radius voxels), or 0.
     int solverSegmentAtVoxel(int x, int y, int z, int radius = 0) const;
     // 1-based segment whose modelled lumen holds the voxel, or 0.
@@ -446,6 +455,9 @@ private:
     QLabel *m_solverSummary = nullptr;
     QLabel *m_solverDetails = nullptr;
     QTimer *m_solver3DTimer = nullptr;
+    QDialog *m_solverDialog = nullptr;     // Tools > Solver Network: built once, shown on demand
+    QPushButton *m_solverUnloadButton = nullptr;
+    QAction *m_actUnloadSolver = nullptr;
     void update3DMaskView();
 
     void updateLabelColor(int label);

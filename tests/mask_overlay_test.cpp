@@ -358,6 +358,16 @@ int main(int argc, char **argv)
               tree->currentItem()->text(0) == "LPA_01",
           "selecting from code moves the tree too");
 
+    // Unloading takes the network and both maps out of the viewer, and leaves the files alone.
+    window.unloadSolverNetwork();
+    check(!window.solverNetworkLoaded() && !window.solverNetworkPlaced(), "unload forgets the network");
+    check(rowForFile(maskList, QFileInfo(segmentsPath).fileName()) < 0 &&
+              rowForFile(maskList, QFileInfo(lumenPath).fileName()) < 0,
+          "and both of its maps leave the mask list");
+    check(QFileInfo::exists(segmentsPath) && QFileInfo::exists(yamlPath), "but not the disk");
+    check(window.loadSolverNetworkFromPath(yamlPath, &networkError) && window.solverNetworkPlaced(),
+          "and it loads again");
+
     // A geometry for other YAML text is refused whole: nothing is placed from it.
     check(writeText(geometryPath, geometryJson(QByteArray(64, '0'))) &&
               window.loadSolverNetworkFromPath(yamlPath, &networkError),

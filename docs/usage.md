@@ -141,8 +141,10 @@
 - Runs `src/vessels/cli/vessel_graph.py`, so it needs the project Python (`ROIFT_PYTHON`).
 
 ## Solver Network (1D haemodynamic YAML)
-- Sidebar section `Solver Network`, `Load Network (YAML)...`. Reads the openBF-style network
-  that `vessels.cli.analyze_vessels --solver-yaml` writes (`<case>_artery_solver.yaml`), or any
+- `Tools > Solver Network...` in the top bar opens its window, which is separate rather than a
+  sidebar section because it serves one workflow only. `Load Network (YAML)...` reads the
+  openBF-style network that `vessels.cli.analyze_vessels --solver-yaml` writes
+  (`<case>_artery_solver.yaml`), or any
   file of that layout: top-level scalars, one level of blocks, and a `network:` list of flat
   entries. An entry without `label`, `sn`, `tn`, `L` or `R0` refuses the whole file, by name.
 - **Placing it on the image** takes the three files the export writes beside the YAML, all on
@@ -179,6 +181,9 @@
   layer the surface cannot hide. Only the selection and the hovered item are named in 3D.
 - Right-click on a slice offers `Select network node` and `Select network segment` for what is
   under the cursor; Shift+click on the 3D surface selects it.
+- **Unload** (the button beside `Load`, or `Tools > Unload Solver Network`) takes the network out
+  of the viewer: both maps leave the mask list, and the tree, the details, the overlays and the
+  3D graph are cleared. The files are not touched. Loading another network unloads the first.
 
 ## Example workflows
 - Place seeds for two labels, open the Segmentation dialog, choose "Segment all", and select an output directory; the per-label outputs will be merged into a multilabel NIfTI and loaded automatically.

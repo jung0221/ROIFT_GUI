@@ -1,4 +1,4 @@
-// The Solver Network section: a 1D haemodynamic network read from its YAML,
+// Tools > Solver Network: a 1D haemodynamic network read from its YAML,
 // shown as a topology tree, and placed on the image through what
 // `vessels.cli.analyze_vessels --solver-yaml` writes beside it: the geometry
 // (node positions, centrelines) and the segment maps (territory, lumen).
@@ -14,6 +14,8 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
+#include <QHBoxLayout>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -97,10 +99,18 @@ QVBoxLayout *ManualSeedSelector::buildSolverNetworkSection()
     Theme::applyHintStyle(hint);
     layout->addWidget(hint);
 
+    QHBoxLayout *buttons = new QHBoxLayout();
     QPushButton *load = new QPushButton("Load Network (YAML)...");
     load->setToolTip("Read <stem>.yaml and, beside it, <stem>_geometry.json, _segments.nii.gz and _lumen.nii.gz");
     connect(load, &QPushButton::clicked, this, &ManualSeedSelector::loadSolverNetwork);
-    layout->addWidget(load);
+    m_solverUnloadButton = new QPushButton("Unload");
+    m_solverUnloadButton->setToolTip("Remove the network, its two maps and its overlays from the viewer; "
+                                     "the files are not touched");
+    m_solverUnloadButton->setEnabled(false);
+    connect(m_solverUnloadButton, &QPushButton::clicked, this, &ManualSeedSelector::unloadSolverNetwork);
+    buttons->addWidget(load, 1);
+    buttons->addWidget(m_solverUnloadButton);
+    layout->addLayout(buttons);
 
     m_solverSummary = new QLabel("No network loaded.");
     m_solverSummary->setWordWrap(true);
@@ -188,7 +198,7 @@ QVBoxLayout *ManualSeedSelector::buildSolverNetworkSection()
                 if (index != m_selectedSolverSegment || m_selectedSolverNode >= 0)
                     selectSolverSegment(index, true);
             });
-    layout->addWidget(m_solverTree);
+    layout->addWidget(m_solverTree, 1); // the tree takes the window's spare height, not the gaps
 
     m_solverDetails = new QLabel();
     m_solverDetails->setWordWrap(true);
@@ -207,6 +217,58 @@ QVBoxLayout *ManualSeedSelector::buildSolverNetworkSection()
 }
 
 // ---------------------------------------------------------------- loading
+
+void ManualSeedSelector::showSolverNetworkDialog()
+{
+    if (!m_solverDialog)
+        return;
+    m_solverDialog->show();
+    m_solverDialog->raise();
+    m_solverDialog->activateWindow();
+}
+
+void ManualSeedSelector::unloadSolverNetwork()
+{
+    if (m_solverNetwork.empty())
+        return;
+    const QStringList maps = {m_solverSegmentMapPath, m_solverLumenMapPath};
+    const QString path = m_solverNetwork.path;
+    m_solverNetwork = SolverNetwork{};
+    m_solverGeometry = SolverGeometry{};
+    m_solverGeometryPlaced = false;
+    m_solverSegmentMapPath.clear();
+    m_solverLumenMapPath.clear();
+    m_solverImagePath.clear();
+    m_solverSegmentIndex.clear();
+    m_solverLumenIndex.clear();
+    m_selectedSolverSegment = -1;
+    m_selectedSolverNode = -1;
+    m_hoverSolverSegment = 0;
+    m_hoverSolverNode = -1;
+    m_hoverSolverPlane = -1;
+    m_locatedPoint.text.clear();
+    for (const QString &map : maps)
+        if (!map.isEmpty())
+            forgetMaskPath(map, kEveryMaskList);
+    rebuildSolverTree();
+    if (m_solverSearch)
+        m_solverSearch->clear();
+    refreshSolverDetails();
+    if (m_solverSummary)
+    {
+        m_solverSummary->setText("No network loaded.");
+        m_solverSummary->setToolTip(QString());
+    }
+    if (m_solverUnloadButton)
+        m_solverUnloadButton->setEnabled(false);
+    if (m_mask3DView)
+    {
+        m_mask3DView->setAnnotations({});
+        m_mask3DView->setNetworkGraph(NetworkGraph3D{});
+    }
+    appendSegmentationLog(QString("Solver network unloaded: %1").arg(path));
+    updateViews();
+}
 
 void ManualSeedSelector::loadSolverNetwork()
 {
@@ -227,6 +289,8 @@ bool ManualSeedSelector::loadSolverNetworkFromPath(const QString &yamlPath, QStr
     if (!readSolverNetwork(yamlPath, network, error))
         return false;
 
+    // A second network replaces the first, maps and all.
+    unloadSolverNetwork();
     m_solverNetwork = network;
     m_solverGeometry = SolverGeometry{};
     m_solverGeometryPlaced = false;
@@ -375,6 +439,8 @@ bool ManualSeedSelector::loadSolverNetworkFromPath(const QString &yamlPath, QStr
         m_solverSearch->clear();
     refreshSolverDetails();
     rebuildSolverGraph3D();
+    if (m_solverUnloadButton)
+        m_solverUnloadButton->setEnabled(true);
     updateViews();
     return true;
 }
