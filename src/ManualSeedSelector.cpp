@@ -3333,7 +3333,9 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
         bool found = false;
     };
 
-    AnatomyMatch leftMatch, rightMatch, tracheaMatch;
+    // LUNAS writes one labelmap, lungs_<case> (1 left, 2 right, 3 airway); merge_lung_masks
+    // writes lung_<case> with the same labels. The split files are older outputs.
+    AnatomyMatch labelmapMatch, mergedMatch, leftMatch, rightMatch, tracheaMatch;
     for (const std::string &path : candidatePaths)
     {
         const QString fileName = QFileInfo(QString::fromStdString(path)).fileName();
@@ -3343,7 +3345,17 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
         if (!base.contains(imageBaseName))
             continue;
 
-        if (!leftMatch.found && base.contains("left_lung"))
+        if (!labelmapMatch.found && base == QString("lungs_") + imageBaseName)
+        {
+            labelmapMatch.path = path;
+            labelmapMatch.found = true;
+        }
+        else if (!mergedMatch.found && base == QString("lung_") + imageBaseName)
+        {
+            mergedMatch.path = path;
+            mergedMatch.found = true;
+        }
+        else if (!leftMatch.found && base.contains("left_lung"))
         {
             leftMatch.path = path;
             leftMatch.found = true;
@@ -3360,7 +3372,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
         }
     }
 
-    if (!leftMatch.found && !rightMatch.found && !tracheaMatch.found)
+    if (!labelmapMatch.found && !mergedMatch.found && !leftMatch.found && !rightMatch.found && !tracheaMatch.found)
         return false;
 
     const size_t imagePlane = static_cast<size_t>(imageSX) * static_cast<size_t>(imageSY);
@@ -3376,6 +3388,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
     using MaskImageType = itk::Image<int32_t, 3>;
     using MaskReaderType = itk::ImageFileReader<MaskImageType>;
 
+    // labelValue 0 keeps the file's own values, for a labelmap
     auto applyMask = [&](const std::string &maskPath, int labelValue, const QString &anatomyName) -> bool
     {
         try
@@ -3421,7 +3434,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
                 for (size_t i = 0; i < imageTotal; ++i)
                 {
                     if (srcMask[i] != 0)
-                        m_maskData[i] = labelValue;
+                        m_maskData[i] = labelValue > 0 ? labelValue : srcMask[i];
                 }
             }
             else
@@ -3434,7 +3447,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
                     for (size_t i = 0; i < imagePlane; ++i)
                     {
                         if (srcMask[srcOffset + i] != 0)
-                            m_maskData[dstOffset + i] = labelValue;
+                            m_maskData[dstOffset + i] = labelValue > 0 ? labelValue : srcMask[srcOffset + i];
                     }
                 }
             }
@@ -3448,21 +3461,30 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
 
     int loadedCount = 0;
     QStringList loadedNames;
-    // Deterministic order; trachea last so it wins in overlaps.
-    if (leftMatch.found && applyMask(leftMatch.path, 1, "left_lung"))
+    const AnatomyMatch &singleMatch = labelmapMatch.found ? labelmapMatch : mergedMatch;
+    if (singleMatch.found && applyMask(singleMatch.path, 0, "lungs"))
     {
         ++loadedCount;
-        loadedNames.push_back("left_lung");
+        loadedNames.push_back(QFileInfo(QString::fromStdString(singleMatch.path)).fileName());
     }
-    if (rightMatch.found && applyMask(rightMatch.path, 2, "right_lung"))
+    else
     {
-        ++loadedCount;
-        loadedNames.push_back("right_lung");
-    }
-    if (tracheaMatch.found && applyMask(tracheaMatch.path, 3, "trachea"))
-    {
-        ++loadedCount;
-        loadedNames.push_back("trachea");
+        // Legacy split files. Deterministic order; trachea last so it wins in overlaps.
+        if (leftMatch.found && applyMask(leftMatch.path, 1, "left_lung"))
+        {
+            ++loadedCount;
+            loadedNames.push_back("left_lung");
+        }
+        if (rightMatch.found && applyMask(rightMatch.path, 2, "right_lung"))
+        {
+            ++loadedCount;
+            loadedNames.push_back("right_lung");
+        }
+        if (tracheaMatch.found && applyMask(tracheaMatch.path, 3, "trachea"))
+        {
+            ++loadedCount;
+            loadedNames.push_back("trachea");
+        }
     }
 
     if (loadedCount == 0)
