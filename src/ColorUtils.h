@@ -105,6 +105,8 @@ inline QColor colorForLabel(int lbl)
     };
 
     static const std::vector<QColor> palette = buildLabelPalette();
-    const int v = std::max(0, std::min(255, lbl));
+    // Past the table, cycle its distinct colours (4..255) rather than clamp: clamping
+    // painted every label above 255 of a 1000-segment map one magenta.
+    const int v = lbl < 0 ? 0 : lbl <= 255 ? lbl : 4 + (lbl - 4) % 252;
     return palette[static_cast<size_t>(v)];
 }

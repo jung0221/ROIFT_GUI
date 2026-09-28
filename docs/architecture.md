@@ -25,6 +25,30 @@
     generation, super-resolution, mask post-processing, and `runVesselGraph()` (Morse
     centreline of the current mask, rooted at the last seed — see `docs/usage.md`).
 
+- `SolverNetwork` (src/SolverNetwork.*) and `SolverNetworkUi` (src/SolverNetworkUi.cpp)
+  - `SolverNetwork` is free of widgets: `parseSolverNetwork()` reads the YAML subset the solver
+    files use; `parseSolverGeometry()` the geometry JSON; `solverGeometryProblems()` lists every
+    way a geometry fails to describe a YAML on an image (hash, labels, nodes, grid), and a
+    non-empty list means nothing is placed. `SegmentVoxelIndex` maps a voxel of a segment map to
+    its segment, storing only the vessel's voxels.
+  - `SolverNetworkUi.cpp` holds the `ManualSeedSelector` members of the `Tools > Solver Network...`
+    window. The window is built once, hidden, when the main window is, so the network's state
+    outlives closing it; `unloadSolverNetwork()` removes its maps through `forgetMaskPath()`, the
+    same path the mask list's remove button takes. Both maps are
+    ordinary mask layers, so drawing and colours need nothing new. Selection and hover never
+    re-contour the surface: the graph is two actors built once per load
+    (`Mask3DView::setNetworkGraph()`), the selection and hover swap small highlight actors
+    (`setNetworkHighlight()`), and names are at most two text actors (`setAnnotations()`). All
+    of these live in `Mask3DView`'s overlay renderer (layer 1, same camera), which draws after
+    the translucent surface. 3D hover is a ray cast against a `vtkStaticCellLocator` built once
+    per surface, throttled to one every 40 ms and skipped while a button is down.
+  - `Mask3DView::setMaskData()` contours one surface per label while a mask has up to 32
+    labels, so touching labels keep their shared wall. Past that it contours the union once
+    and colours each vertex by the label of the voxel under it (`paintSurfaceLabels()`):
+    discrete flying edges passes over the whole volume once per label, and a 1153-segment map
+    took 25 s against 0.35 s now. `colorForLabel()` cycles its 252 distinct colours past label
+    255 instead of clamping, which had painted every higher label one colour.
+
 - `NiftiImage` (src/NiftiImage.*)
   - A small wrapper for reading NIfTI images (ITK-backed when available). Provides helper functions to get axial/sagittal/coronal slices as RGB buffers used by `OrthogonalView`.
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QColor>
+#include <QString>
 #include <QWidget>
 #include <QPoint>
 #include <QRect>
@@ -7,6 +9,8 @@
 #include <vector>
 #include <map>
 #include <vtkSmartPointer.h>
+
+#include <array>
 
 QT_FORWARD_DECLARE_CLASS(QCheckBox)
 QT_FORWARD_DECLARE_CLASS(QComboBox)
@@ -16,6 +20,7 @@ QT_FORWARD_DECLARE_CLASS(QSlider)
 
 class QVTKOpenGLNativeWidget;
 class vtkActor;
+class vtkTextActor;
 class vtkCellPicker;
 class vtkDiscreteFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
@@ -24,8 +29,10 @@ class vtkLookupTable;
 class vtkPolyData;
 class vtkPolyDataMapper;
 class vtkRenderer;
+class vtkStaticCellLocator;
 class vtkWindowedSincPolyDataFilter;
 class QRubberBand;
+class QTimer;
 
 struct SeedRenderData
 {
@@ -34,6 +41,37 @@ struct SeedRenderData
     int z = 0;
     int label = 1;
     int seedIndex = -1;
+};
+
+/// A name drawn at a voxel, in the overlay layer: the surface never hides it.
+struct Annotation3D
+{
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    QString text;
+    QColor color = Qt::white;
+    bool emphasised = false;
+};
+
+/// A node-and-line graph drawn inside the surface, e.g. a 1D solver network.
+/// Positions are voxel indices, possibly fractional.
+struct NetworkGraph3D
+{
+    using Point = std::array<double, 3>;
+    struct Line
+    {
+        std::vector<Point> points;
+        QColor color;
+    };
+    struct Node
+    {
+        Point position{};
+        QColor color;
+    };
+    std::vector<Line> lines;
+    std::vector<Node> nodes;
+    bool empty() const { return lines.empty() && nodes.empty(); }
 };
 
 class Mask3DView : public QWidget
@@ -68,6 +106,18 @@ public:
                      const std::map<int, QString> *labelNames = nullptr);
     void setVoxelSpacing(double spacingX, double spacingY, double spacingZ);
     void setSeedData(const std::vector<SeedRenderData> &seeds);
+    /// Replace every text label; an empty list removes them. Renders immediately.
+    /// Meant for a handful: every label is redrawn on each camera move.
+    void setAnnotations(const std::vector<Annotation3D> &annotations);
+    /// The graph, built once into two actors (all lines, all nodes); empty removes it.
+    void setNetworkGraph(const NetworkGraph3D &graph);
+    /// Emphasise one line and/or one node of it (the selection) and another pair
+    /// more faintly (the hover). Empty inputs clear. Renders immediately.
+    void setNetworkHighlight(const std::vector<NetworkGraph3D::Point> &selectedLine,
+                             const NetworkGraph3D::Point *selectedNode,
+                             const std::vector<NetworkGraph3D::Point> &hoveredLine,
+                             const NetworkGraph3D::Point *hoveredNode);
+    void setNetworkVisible(bool visible);
     void setMaskVisible(bool visible);
     void setSeedsVisible(bool visible);
     // Set the 3D mask surface opacity, in [0, 1] (clamped). Renders immediately.
@@ -82,6 +132,11 @@ signals:
     void eraseSeedsInRectangle(const QVector<int> &seedIndices);
     // Shift+click hit the mask surface at this voxel.
     void surfacePointPicked(int x, int y, int z);
+    // The pointer rests over the surface at this voxel; emitted when the voxel
+    // changes, at most every hover interval, never while a button is down.
+    void surfacePointHovered(int x, int y, int z);
+    // The pointer left the surface or the view.
+    void surfaceHoverLeft();
 
 private slots:
     void onVisibilityToggled(bool checked);
@@ -121,6 +176,44 @@ private:
 
     float m_opacity = 0.4f;
     std::vector<SeedRenderData> m_seedRenderData;
+    std::vector<Annotation3D> m_annotations;
+    std::vector<vtkSmartPointer<vtkTextActor>> m_annotationActors;
+    // Drawn after the surface with the same camera, so the graph, its highlights
+    // and the names stay visible through a dense, translucent tree.
+    vtkSmartPointer<vtkRenderer> m_overlayRenderer;
+    void rebuildAnnotationActors();
+
+    NetworkGraph3D m_graph;
+    bool m_graphVisible = true;
+    vtkSmartPointer<vtkActor> m_graphLineActor;
+    vtkSmartPointer<vtkActor> m_graphNodeActor;
+    vtkSmartPointer<vtkActor> m_selectedLineActor;
+    vtkSmartPointer<vtkActor> m_selectedNodeActor;
+    vtkSmartPointer<vtkActor> m_hoveredLineActor;
+    vtkSmartPointer<vtkActor> m_hoveredNodeActor;
+    std::vector<NetworkGraph3D::Point> m_selectedLine;
+    std::vector<NetworkGraph3D::Point> m_hoveredLine;
+    bool m_hasSelectedNode = false;
+    bool m_hasHoveredNode = false;
+    NetworkGraph3D::Point m_selectedNode{};
+    NetworkGraph3D::Point m_hoveredNode{};
+    void rebuildNetworkActors();
+    // Above this many labels the surface is the union contoured once and coloured per
+    // vertex; below it, one contour per label (touching labels keep their shared wall).
+    static constexpr size_t kSurfacePerLabelLimit = 32;
+    void paintSurfaceLabels(vtkPolyData *poly, const std::vector<int> &mask, unsigned int sizeX,
+                            unsigned int sizeY, unsigned int sizeZ);
+    void rebuildHighlightActors();
+    NetworkGraph3D::Point toWorld(const NetworkGraph3D::Point &voxel) const;
+
+    // Hover picking: throttled, and against a locator built once per surface,
+    // so resting the pointer costs one ray cast, not one per mouse event.
+    vtkSmartPointer<vtkStaticCellLocator> m_surfaceLocator;
+    QTimer *m_hoverTimer = nullptr;
+    QPoint m_hoverPos;
+    bool m_hoverInside = false;
+    int m_lastHover[3] = {-1, -1, -1};
+    void resolveHover();
     std::vector<int> m_activeLabels;
     std::map<int, QColor> m_labelColors;
     // Names for the label picker when the ids are merged-mask ids and "Label 7"

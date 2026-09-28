@@ -122,6 +122,8 @@
   intensity at that voxel, not the mask label, whichever plane you clicked in.
 - `Erase seeds near this point` appears only on the `Seeds` tab, and clears seeds within the
   seed brush radius.
+- `Select network node <id>` and `Select network segment <name>` appear when a solver network is
+  placed on the image and the voxel is near one; see below.
 
 ## Vessel Graph (Morse centreline)
 - Sidebar section `Vessel Graph`, or Ctrl+Shift+G.
@@ -137,6 +139,51 @@
 - Writes `<image>_vessel_graph.nii.gz` next to the image, adds it to the mask list and loads it
   as the overlay; voxels not connected to the root stay 0 and the count is logged.
 - Runs `src/vessels/cli/vessel_graph.py`, so it needs the project Python (`ROIFT_PYTHON`).
+
+## Solver Network (1D haemodynamic YAML)
+- `Tools > Solver Network...` in the top bar opens its window, which is separate rather than a
+  sidebar section because it serves one workflow only. `Load Network (YAML)...` reads the
+  openBF-style network that `vessels.cli.analyze_vessels --solver-yaml` writes
+  (`<case>_artery_solver.yaml`), or any
+  file of that layout: top-level scalars, one level of blocks, and a `network:` list of flat
+  entries. An entry without `label`, `sn`, `tn`, `L` or `R0` refuses the whole file, by name.
+- **Placing it on the image** takes the three files the export writes beside the YAML, all on
+  the image's grid: `<stem>_geometry.json` (node positions, one ordered centreline per segment),
+  `<stem>_segments.nii.gz` (every vessel voxel, labelled with its segment's position in the YAML;
+  a branch the network cut carries the segment it hangs from) and `<stem>_lumen.nii.gz` (the
+  modelled vessels only). Open the image first. The geometry is checked before anything is
+  drawn: the YAML text must hash to its `yaml_sha256`, every segment must have the same label and
+  nodes, every node a position, and the grid the image's size. **Any disagreement refuses the
+  geometry and both maps**, and the summary line says why; the tree and details still work.
+  An older export without the geometry is placed by its segment map alone, without nodes.
+- **Colour** chooses which map is drawn: `Territory` (default; matches the artery file) or
+  `Modelled lumen`. Both are added to the mask list.
+- **The tree** is the topology: the trunk at the root, a segment's wider daughter on the same
+  level after it, each narrower daughter nested under it, so a long chain does not indent off
+  the panel. `L` and `Ø` in mm, `●` for an outlet. **Find** filters by name (`LB_0`, `RPA`);
+  Enter on `n27` or `27` selects node 27.
+- **Details** of the selected segment: size, E, its start and end nodes, its parent and
+  daughters, its lumen and territory volumes, then every other key as written. Of a node: its
+  kind (inlet, junction, outlet), voxel, and the segments into and out of it. Every node and
+  segment named there is a link that selects it.
+- **Selecting** a segment moves the three slices to half-way along its centreline and names it
+  beside the marker; a node, to its position. A connector the export inserted has no lumen of
+  its own, and says so.
+- **Hover**, on a slice or on the 3D surface, names what is under the pointer: a node within
+  2.5 mm (on the surface, within its vessel's radius), else the segment whose territory it is,
+  with `fed, not modelled` when the voxel is outside that segment's lumen. The status bar says
+  the same. Nothing is recomputed on hover: slices repaint their overlay; the 3D view re-renders
+  once per change of the hovered item, at most every 60 ms, and never while the camera is
+  dragged.
+- **Graph on slices** draws every centreline within 3 mm of the slice, in its segment's colour,
+  and the nodes there (green inlet, white junction, orange outlet); the selection bold in cyan,
+  with its course off the slice dashed. **Graph in 3D** draws the same over the surface, in a
+  layer the surface cannot hide. Only the selection and the hovered item are named in 3D.
+- Right-click on a slice offers `Select network node` and `Select network segment` for what is
+  under the cursor; Shift+click on the 3D surface selects it.
+- **Unload** (the button beside `Load`, or `Tools > Unload Solver Network`) takes the network out
+  of the viewer: both maps leave the mask list, and the tree, the details, the overlays and the
+  3D graph are cleared. The files are not touched. Loading another network unloads the first.
 
 ## Example workflows
 - Place seeds for two labels, open the Segmentation dialog, choose "Segment all", and select an output directory; the per-label outputs will be merged into a multilabel NIfTI and loaded automatically.

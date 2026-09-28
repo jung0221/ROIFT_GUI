@@ -618,6 +618,25 @@ void ManualSeedSelector::setupUi()
         m_sagittalView->resetView();
         m_coronalView->resetView(); });
 
+    mainToolBar->addSeparator();
+
+    // Tools: features too specific for the sidebar, each in its own window.
+    QToolButton *toolsButton = new QToolButton(this);
+    toolsButton->setText("Tools");
+    toolsButton->setToolTip("Specialised tools, each in its own window");
+    toolsButton->setPopupMode(QToolButton::InstantPopup);
+    QMenu *toolsMenu = new QMenu(toolsButton);
+    QAction *actSolver = toolsMenu->addAction("Solver Network...");
+    actSolver->setToolTip("Load a 1D solver network (YAML) and place it on the image");
+    connect(actSolver, &QAction::triggered, this, &ManualSeedSelector::showSolverNetworkDialog);
+    m_actUnloadSolver = toolsMenu->addAction("Unload Solver Network");
+    m_actUnloadSolver->setToolTip("Remove the loaded network, its maps and its overlays from the viewer");
+    connect(m_actUnloadSolver, &QAction::triggered, this, &ManualSeedSelector::unloadSolverNetwork);
+    connect(toolsMenu, &QMenu::aboutToShow, this, [this]()
+            { m_actUnloadSolver->setEnabled(solverNetworkLoaded()); });
+    toolsButton->setMenu(toolsMenu);
+    mainToolBar->addWidget(toolsButton);
+
     // Pushes About to the far end so it never sits among the tools.
     QWidget *toolBarSpacer = new QWidget(this);
     toolBarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -1268,6 +1287,14 @@ void ManualSeedSelector::setupUi()
         m_toolSections.push_back(sec);
     }
 
+    // Tools > Solver Network. Built now and kept hidden, so its state lives as long as the window.
+    m_solverDialog = new QDialog(this);
+    m_solverDialog->setWindowTitle("Solver Network");
+    m_solverDialog->setModal(false);
+    m_solverDialog->setLayout(buildSolverNetworkSection());
+    m_solverDialog->layout()->setContentsMargins(12, 12, 12, 12);
+    m_solverDialog->resize(460, 780);
+
     toolSidebarLayout->addStretch();
 
     // Wrap the section column in a scroll area so the whole tool panel scrolls
@@ -1869,46 +1896,12 @@ void ManualSeedSelector::setupUi()
 
         QListWidgetItem *item = m_maskList->currentItem();
         const QString path = QDir::cleanPath(QFileInfo(item->data(kPathRole).toString()).absoluteFilePath());
-        const std::string key = path.toStdString();
         const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
         const bool removingActiveMask = (!activeMaskPath.isEmpty() && path == activeMaskPath);
-        const int sourceImageIndex = item->data(kMaskSourceImageRole).toInt();
-        bool removed = false;
-        if (sourceImageIndex >= 0 && sourceImageIndex < static_cast<int>(m_images.size())) {
-            auto &maskPaths = m_images[static_cast<size_t>(sourceImageIndex)].maskPaths;
-            auto it = std::find(maskPaths.begin(), maskPaths.end(), key);
-            if (it != maskPaths.end()) {
-                maskPaths.erase(it);
-                removed = true;
-            }
-        } else {
-            auto it = std::find(m_unassignedMaskPaths.begin(), m_unassignedMaskPaths.end(), key);
-            if (it != m_unassignedMaskPaths.end()) {
-                m_unassignedMaskPaths.erase(it);
-                removed = true;
-            }
-        }
-
-        if (!removed) {
+        if (!forgetMaskPath(path, item->data(kMaskSourceImageRole).toInt())) {
             QMessageBox::warning(this, "Remove Mask", "Selected mask is not present in the internal list.");
             return;
         }
-
-        // A removed row has no eye left to close, so it must not stay drawn.
-        dropMaskLayer(path);
-
-        if (removingActiveMask)
-        {
-            m_loadedMaskPath.clear();
-            m_pendingActiveMaskPath.clear();
-            m_maskData.clear();
-            m_maskDimX = 0;
-            m_maskDimY = 0;
-            m_maskDimZ = 0;
-        }
-
-        m_mask3DDirty = true;
-        updateMaskSeedLists();
         updateViews();
         if (m_statusLabel)
             m_statusLabel->setText(removingActiveMask
@@ -2655,7 +2648,33 @@ void ManualSeedSelector::setupUi()
 
     // Shift+click on the 3D surface drives all three slice views to that voxel.
     connect(m_mask3DView, &Mask3DView::surfacePointPicked, this, [this](int x, int y, int z)
-            { jumpToVoxel(x, y, z); });
+            {
+        jumpToVoxel(x, y, z);
+        // The surface is smoothed, so the picked voxel can sit just outside the vessel.
+        if (const int node = solverNodeNear(x, y, z, 1.5, true); node >= 0)
+            selectSolverNode(node, false);
+        else if (const int segment = solverSegmentAtVoxel(x, y, z, 2))
+            selectSolverSegment(segment - 1, false); });
+    connect(m_mask3DView, &Mask3DView::surfacePointHovered, this, [this](int x, int y, int z)
+            {
+        if (!solverNetworkPlaced())
+            return;
+        const int node = solverNodeNear(x, y, z, 1.5, true);
+        const int segment = node >= 0 ? 0 : solverSegmentAtVoxel(x, y, z, 2);
+        setSolverHover(segment, node, x, y, z, -1);
+        if (m_statusLabel)
+        {
+            QString text = QString("3D | x:%1 y:%2 z:%3").arg(x).arg(y).arg(z);
+            if (node >= 0)
+                text += QString(" | Node %1 (%2)").arg(node).arg(solverNodeKindName(solverNodeKind(m_solverNetwork, node)));
+            else if (segment > 0)
+                text += QString(" | Segment: %1").arg(m_solverNetwork.segments[static_cast<size_t>(segment - 1)].label);
+            m_statusLabel->setText(text);
+        } });
+    connect(m_mask3DView, &Mask3DView::surfaceHoverLeft, this, [this]()
+            {
+        if (m_hoverSolverPlane < 0)
+            setSolverHover(0, -1, 0, 0, 0, -1); });
 
     if (m_mask3DView)
         m_mask3DView->setSeedRectangleEraseEnabled(isSeedsTabActive() && m_seedMode == 2);
@@ -4087,6 +4106,18 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
         hoverText += QString(" | Seed: label %1 (%2)").arg(seed->label).arg(seedType);
     }
 
+    if (solverNetworkPlaced())
+    {
+        // A node wins within 2.5 mm of it; otherwise whatever segment's territory this is.
+        const int node = solverNodeNear(x, y, z, 2.5, false);
+        const int segment = node >= 0 ? 0 : solverSegmentAtVoxel(x, y, z);
+        setSolverHover(segment, node, x, y, z, static_cast<int>(plane));
+        if (node >= 0)
+            hoverText += QString(" | Node %1 (%2)").arg(node).arg(solverNodeKindName(solverNodeKind(m_solverNetwork, node)));
+        else if (segment > 0)
+            hoverText += QString(" | Segment: %1").arg(m_solverNetwork.segments[static_cast<size_t>(segment - 1)].label);
+    }
+
     m_statusLabel->setText(hoverText);
 }
 
@@ -4202,6 +4233,20 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
 
     QMenu menu(this);
     QAction *copyVoxelAction = menu.addAction("Copy coordinates and value");
+    QAction *segmentAction = nullptr;
+    QAction *nodeAction = nullptr;
+    // Two voxels of slack: the click lands on the vessel wall as often as inside it.
+    const int segment = solverSegmentAtVoxel(vx, vy, vz, 2);
+    const int node = solverNodeNear(vx, vy, vz, 3.0, false);
+    if (node >= 0 || segment > 0)
+        menu.addSeparator();
+    if (node >= 0)
+        nodeAction = menu.addAction(QString("Select network node %1 (%2)")
+                                        .arg(node)
+                                        .arg(solverNodeKindName(solverNodeKind(m_solverNetwork, node))));
+    if (segment > 0)
+        segmentAction = menu.addAction(QString("Select network segment %1")
+                                           .arg(m_solverNetwork.segments[static_cast<size_t>(segment - 1)].label));
     QAction *eraseSeedsAction = nullptr;
     if (isSeedsTabActive())
     {
@@ -4212,6 +4257,17 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     QAction *selected = menu.exec(globalPos);
     if (!selected)
         return;
+
+    if (segmentAction && selected == segmentAction)
+    {
+        selectSolverSegment(segment - 1, false);
+        return;
+    }
+    if (nodeAction && selected == nodeAction)
+    {
+        selectSolverNode(node, true);
+        return;
+    }
 
     if (selected == copyVoxelAction)
     {
@@ -4294,8 +4350,7 @@ void ManualSeedSelector::setSeedTypeFilter(SeedTypeFilter filter)
 
 void ManualSeedSelector::updateLabelColor(int label)
 {
-    int l = std::max(0, std::min(255, label));
-    QColor c = colorForLabel(l);
+    QColor c = colorForLabel(label);
     QPixmap pm(m_labelColorIndicator->width(), m_labelColorIndicator->height());
     pm.fill(c);
     m_labelColorIndicator->setPixmap(pm);
@@ -4443,6 +4498,42 @@ void ManualSeedSelector::drawRulerOverlay(QPainter &p,
     p.restore();
 }
 
+bool ManualSeedSelector::forgetMaskPath(const QString &absolutePath, int imageIndex)
+{
+    const QString path = QDir::cleanPath(QFileInfo(absolutePath).absoluteFilePath());
+    const std::string key = path.toStdString();
+    bool removed = false;
+    auto erase = [&key, &removed](std::vector<std::string> &paths)
+    {
+        auto it = std::find(paths.begin(), paths.end(), key);
+        if (it != paths.end())
+        {
+            paths.erase(it);
+            removed = true;
+        }
+    };
+    for (int i = 0; i < static_cast<int>(m_images.size()); ++i)
+        if (imageIndex == kEveryMaskList || imageIndex == i)
+            erase(m_images[static_cast<size_t>(i)].maskPaths);
+    if (imageIndex == kEveryMaskList || imageIndex < 0 || imageIndex >= static_cast<int>(m_images.size()))
+        erase(m_unassignedMaskPaths);
+    // A removed row has no eye left to close, so it must not stay drawn.
+    dropMaskLayer(path);
+    const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
+    if (!m_loadedMaskPath.empty() && path == activeMaskPath)
+    {
+        m_loadedMaskPath.clear();
+        m_pendingActiveMaskPath.clear();
+        m_maskData.clear();
+        m_maskDimX = 0;
+        m_maskDimY = 0;
+        m_maskDimZ = 0;
+    }
+    m_mask3DDirty = true;
+    updateMaskSeedLists();
+    return removed;
+}
+
 void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const
 {
     if (!m_locatedPoint.valid || scaleX <= 0.0f || scaleY <= 0.0f)
@@ -4483,6 +4574,17 @@ void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, floa
         p.drawLine(center + QPointF(gap, gap), center + QPointF(arm, arm));
         p.drawLine(center + QPointF(-arm, arm), center + QPointF(-gap, gap));
         p.drawLine(center + QPointF(gap, -gap), center + QPointF(arm, -arm));
+    }
+    if (!m_locatedPoint.text.isEmpty())
+    {
+        QFont font = p.font();
+        font.setBold(true);
+        p.setFont(font);
+        const QPointF at = center + QPointF(arm + 4.0, -arm);
+        p.setPen(QColor(0, 0, 0, 200));
+        p.drawText(at + QPointF(1.0, 1.0), m_locatedPoint.text);
+        p.setPen(QColor(0, 229, 255));
+        p.drawText(at, m_locatedPoint.text);
     }
     p.restore();
 }
@@ -4644,7 +4746,8 @@ void ManualSeedSelector::updateViews()
             }
         }
         drawRulerOverlay(p, scaleX, scaleY, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY());
-        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Axial); });
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Axial);
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Axial); });
 
     m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                    {
@@ -4676,7 +4779,8 @@ void ManualSeedSelector::updateViews()
             }
         }
         drawRulerOverlay(p, scaleX, scaleY, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ());
-        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Sagittal); });
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Sagittal);
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Sagittal); });
 
     m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                   {
@@ -4708,7 +4812,8 @@ void ManualSeedSelector::updateViews()
             }
         }
         drawRulerOverlay(p, scaleX, scaleY, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ());
-        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Coronal); });
+        drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Coronal);
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Coronal); });
 }
 
 void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
@@ -5528,8 +5633,18 @@ void ManualSeedSelector::update3DMaskView()
 
         if (passThrough)
         {
+            // The segment map's label values are segment indices: name them.
+            std::map<int, QString> segmentNames;
+            if (first.style)
+                for (int label : first.style->labels)
+                {
+                    const QString name = solverSegmentName(first.style->path, label);
+                    if (!name.isEmpty())
+                        segmentNames[label] = name;
+                }
             m_mask3DView->setMaskData(*first.data, targetX, targetY, targetZ,
-                                      targetSpacingX, targetSpacingY, targetSpacingZ);
+                                      targetSpacingX, targetSpacingY, targetSpacingZ,
+                                      nullptr, segmentNames.empty() ? nullptr : &segmentNames);
         }
         else
         {
@@ -5553,7 +5668,10 @@ void ManualSeedSelector::update3DMaskView()
                     {
                         const int id = ids.idFor(label);
                         mergedColors[id] = item.style->colorForLabelValue(label);
-                        mergedNames[id] = manyLabels ? QString("%1: %2").arg(name).arg(label) : name;
+                        const QString segment = solverSegmentName(item.style->path, label);
+                        mergedNames[id] = !segment.isEmpty() ? QString("%1: %2").arg(name, segment)
+                                          : manyLabels     ? QString("%1: %2").arg(name).arg(label)
+                                                           : name;
                     }
                 }
 
@@ -5746,8 +5864,7 @@ void ManualSeedSelector::rebuildMaskLabelFilter()
 
     for (int label : presentLabels)
     {
-        const int clamped = std::max(0, std::min(255, label));
-        const QColor color = colorForLabel(clamped);
+        const QColor color = colorForLabel(label);
 
         // One row: [color swatch] [checkbox "Label N"]. A row widget keeps
         // teardown simple (takeAt(0)->widget()).

@@ -10,6 +10,9 @@
 //
 // The two test masks occupy opposite quadrants, so a coloured pixel in one
 // quadrant can only have come from one of them.
+//
+// It also loads a solver network with its segment map, the other feature that
+// puts a mask on screen on the program's initiative.
 #include "ManualSeedSelector.h"
 #include "MaskLayers.h"
 #include "MaskListDelegate.h"
@@ -21,6 +24,10 @@
 #include <QFileInfo>
 #include <QListWidget>
 #include <QMouseEvent>
+#include <QFile>
+#include <QCryptographicHash>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -285,6 +292,87 @@ int main(int argc, char **argv)
     layer.colorMode = MaskColorMode::PerLabel;
     layer.labels = {1};
     check(layer.usesLabelPalette(), "per-label: overrides the label count too");
+
+    // Solver network: segment 1 fills x < 12, segment 2 the rest, segment 3 has no voxel.
+    // The geometry places node 1 at x=2, node 2 at x=12, nodes 3 and 4 at the far corners.
+    const QString yamlPath = dir.filePath("case_artery_solver.yaml");
+    const QString segmentsPath = dir.filePath("case_artery_solver_segments.nii.gz");
+    const QString lumenPath = dir.filePath("case_artery_solver_lumen.nii.gz");
+    const QString geometryPath = dir.filePath("case_artery_solver_geometry.json");
+    const QByteArray yamlText = "project_name: case\nnetwork:\n"
+                                "  - label: PulmonaryTrunk\n    sn: 1\n    tn: 2\n    L: 1.0e-02\n    R0: 7.0e-03\n"
+                                "  - label: LPA_01\n    sn: 2\n    tn: 3\n    L: 2.0e-02\n    R0: 4.0e-03\n    R1: 1.5e+08\n"
+                                "  - label: RPA_01\n    sn: 2\n    tn: 4\n    L: 2.0e-02\n    R0: 4.0e-03\n    R1: 1.5e+08\n";
+    auto writeText = [](const QString &path, const QByteArray &text)
+    {
+        QFile f(path);
+        return f.open(QIODevice::WriteOnly) && f.write(text) == text.size();
+    };
+    auto geometryJson = [&](const QByteArray &sha)
+    {
+        return QByteArray(R"({"format": "ctsegmentation.solver_geometry", "version": 1, "yaml_sha256": ")") + sha +
+               QByteArray(R"(", "files": {"segment_map": "case_artery_solver_segments.nii.gz",
+                 "lumen_map": "case_artery_solver_lumen.nii.gz"},
+                 "grid": {"shape": [24, 24, 6], "spacing_mm": [1, 1, 1]},
+                 "nodes": [{"id": 1, "voxel": [2, 12, 3]}, {"id": 2, "voxel": [12, 12, 3]},
+                           {"id": 3, "voxel": [2, 22, 3]}, {"id": 4, "voxel": [22, 22, 3]}],
+                 "segments": [
+                   {"index": 1, "label": "PulmonaryTrunk", "sn": 1, "tn": 2, "lumen_voxels": 10, "territory_voxels": 10,
+                    "centerline": [[2, 12, 3], [12, 12, 3]]},
+                   {"index": 2, "label": "LPA_01", "sn": 2, "tn": 3, "lumen_voxels": 5, "territory_voxels": 9,
+                    "centerline": [[12, 12, 3], [2, 22, 3]]},
+                   {"index": 3, "label": "RPA_01", "sn": 2, "tn": 4, "lumen_voxels": 0, "territory_voxels": 0,
+                    "centerline": [[12, 12, 3], [22, 22, 3]]}]})");
+    };
+    const QByteArray sha = QCryptographicHash::hash(yamlText, QCryptographicHash::Sha256).toHex();
+    check(writeText(yamlPath, yamlText) && writeText(geometryPath, geometryJson(sha)) &&
+              writeVolume(segmentsPath, [](unsigned int x, unsigned int, unsigned int)
+                          { return x < kDimX / 2 ? 1 : 2; }) &&
+              writeVolume(lumenPath, [](unsigned int x, unsigned int y, unsigned int)
+                          { return x < kDimX / 2 ? 1 : (y < 4 ? 2 : 0); }),
+          "solver network written");
+
+    QString networkError;
+    check(window.loadSolverNetworkFromPath(yamlPath, &networkError), "solver network loads");
+    check(window.solverNetwork().segments.size() == 3, "three segments read");
+    check(window.solverNetworkPlaced(), "placed on the image through its geometry");
+    check(visibilityOf(QFileInfo(segmentsPath).fileName()) == MaskVisibility::Visible &&
+              visibilityOf(QFileInfo(lumenPath).fileName()) != MaskVisibility::Visible,
+          "the territory map is drawn, the lumen map is not");
+    QTreeWidget *tree = window.findChild<QTreeWidget *>();
+    int items = 0;
+    if (tree)
+        for (QTreeWidgetItemIterator it(tree); *it; ++it)
+            ++items;
+    check(tree && items == 3, "one tree item per segment");
+    check(tree && tree->topLevelItemCount() == 1 && tree->topLevelItem(0)->childCount() == 2,
+          "the trunk roots the tree, both main arteries under it");
+    if (tree && tree->topLevelItemCount() == 1 && tree->topLevelItem(0)->childCount() == 2)
+        tree->setCurrentItem(tree->topLevelItem(0)->child(1));
+    check(window.selectedSolverSegment() >= 1, "a tree click selects its segment");
+    window.selectSolverNode(2, true);
+    check(window.selectedSolverNode() == 2 && window.selectedSolverSegment() == -1,
+          "selecting a node clears the segment selection");
+    window.selectSolverSegment(1, true);
+    check(window.selectedSolverSegment() == 1 && tree && tree->currentItem() &&
+              tree->currentItem()->text(0) == "LPA_01",
+          "selecting from code moves the tree too");
+
+    // Unloading takes the network and both maps out of the viewer, and leaves the files alone.
+    window.unloadSolverNetwork();
+    check(!window.solverNetworkLoaded() && !window.solverNetworkPlaced(), "unload forgets the network");
+    check(rowForFile(maskList, QFileInfo(segmentsPath).fileName()) < 0 &&
+              rowForFile(maskList, QFileInfo(lumenPath).fileName()) < 0,
+          "and both of its maps leave the mask list");
+    check(QFileInfo::exists(segmentsPath) && QFileInfo::exists(yamlPath), "but not the disk");
+    check(window.loadSolverNetworkFromPath(yamlPath, &networkError) && window.solverNetworkPlaced(),
+          "and it loads again");
+
+    // A geometry for other YAML text is refused whole: nothing is placed from it.
+    check(writeText(geometryPath, geometryJson(QByteArray(64, '0'))) &&
+              window.loadSolverNetworkFromPath(yamlPath, &networkError),
+          "a stale geometry still lets the YAML load");
+    check(!window.solverNetworkPlaced(), "but places nothing");
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

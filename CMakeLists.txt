@@ -185,6 +185,14 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(ui_paths_test PRIVATE Qt6::Widgets)
   add_test(NAME ui_paths COMMAND ui_paths_test)
 
+  add_executable(solver_network_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/solver_network_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SolverNetwork.cpp
+  )
+  target_include_directories(solver_network_test PRIVATE src)
+  target_link_libraries(solver_network_test PRIVATE Qt6::Gui ${ITK_LIBRARIES})
+  add_test(NAME solver_network COMMAND solver_network_test)
+
   add_executable(wheel_guard_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/wheel_guard_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Theme.cpp
