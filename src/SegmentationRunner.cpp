@@ -1,4 +1,5 @@
 #include "SegmentationRunner.h"
+#include "SeedFiles.h"
 #include "ManualSeedSelector.h"
 #include <QDialog>
 #include <QVBoxLayout>
@@ -68,7 +69,9 @@ namespace
         return QFileInfo(path).fileName().startsWith("oiftrelax_gpu", Qt::CaseInsensitive);
     }
 
-    RoiftExecutable resolveRoiftExecutable(bool preferGpu)
+    // ROIFT_EXECUTABLE when it names an existing file, else the first of names on PATH,
+    // else in the build folders around the application and the current directory.
+    RoiftExecutable findRoiftExecutable(const QStringList &names)
     {
         RoiftExecutable resolved;
 
@@ -84,7 +87,6 @@ namespace
             }
         }
 
-        const QStringList names = roiftExecutableNames(preferGpu);
         for (const QString &name : names)
         {
             const QString inPath = QStandardPaths::findExecutable(name);
@@ -172,6 +174,11 @@ namespace
         }
 
         return resolved;
+    }
+
+    RoiftExecutable resolveRoiftExecutable(bool preferGpu)
+    {
+        return findRoiftExecutable(roiftExecutableNames(preferGpu));
     }
 
     QString roiftNotFoundMessage(bool preferGpu)
@@ -918,7 +925,8 @@ namespace
     struct SegmentationRequest
     {
         SegmentationRequestKind kind = SegmentationRequestKind::Single;
-        QString sourceImagePath;
+        QString sourceImagePath;  // the file the binary reads: an export for NumPy and raster images
+        QString ownerImagePath;   // the image as opened, whose mask list receives the outputs
         QString outputPath;
         QString outputDir;
         QString executablePath;
@@ -968,60 +976,12 @@ namespace
         }
     };
 
-    std::vector<Seed> dedupeSeedsKeepingLatest(const std::vector<Seed> &seeds)
-    {
-        std::vector<Seed> filtered;
-        filtered.reserve(seeds.size());
-        std::unordered_set<std::string> seen;
-        for (int i = static_cast<int>(seeds.size()) - 1; i >= 0; --i)
-        {
-            const Seed &s = seeds[static_cast<size_t>(i)];
-            const std::string key = std::to_string(s.x) + ":" + std::to_string(s.y) + ":" + std::to_string(s.z);
-            if (seen.find(key) != seen.end())
-                continue;
-            seen.insert(key);
-            filtered.push_back(s);
-        }
-        std::reverse(filtered.begin(), filtered.end());
-        return filtered;
-    }
-
     QStringList buildLabelChoices(const std::set<int> &labels)
     {
         QStringList choices;
         for (int label : labels)
             choices << QString::number(label);
         return choices;
-    }
-
-    bool writeMultilabelSeedFile(const QString &seedFilePath, const std::vector<Seed> &filteredSeeds)
-    {
-        std::ofstream ofs(seedFilePath.toStdString());
-        if (!ofs)
-            return false;
-
-        ofs << filteredSeeds.size() << "\n";
-        for (const auto &seed : filteredSeeds)
-        {
-            const int labelId = std::max(0, seed.label);
-            ofs << seed.x << " " << seed.y << " " << seed.z << " " << labelId << " " << labelId << "\n";
-        }
-        return true;
-    }
-
-    bool writeLegacySeedFile(const QString &seedFilePath, const std::vector<Seed> &filteredSeeds, int internalLabel)
-    {
-        std::ofstream ofs(seedFilePath.toStdString());
-        if (!ofs)
-            return false;
-
-        ofs << filteredSeeds.size() << "\n";
-        for (const auto &seed : filteredSeeds)
-        {
-            const int internalFlag = (seed.label == internalLabel) ? 1 : 0;
-            ofs << seed.x << " " << seed.y << " " << seed.z << " " << seed.label << " " << internalFlag << "\n";
-        }
-        return true;
     }
 
     QString quoteCommand(const QString &exePath, const QStringList &args)
@@ -1167,6 +1127,7 @@ namespace
         }
 
         request->sourceImagePath = sourceImagePath;
+        request->ownerImagePath = QFileInfo(QString::fromStdString(parent->getImagePath())).absoluteFilePath();
         request->filteredSeeds = dedupeSeedsKeepingLatest(seeds);
         request->pol = parent->getPolarity();
         request->niter = parent->getNiter();
@@ -1189,7 +1150,8 @@ namespace
 
         const bool doAll = parent->getSegmentAll();
         const bool polSweep = parent->getPolaritySweep();
-        const QString baseDir = QFileInfo(sourceImagePath).absolutePath();
+        // Beside the image as opened: sourceImagePath may sit in the window's export directory.
+        const QString baseDir = QFileInfo(QString::fromStdString(parent->getImagePath())).absolutePath();
         const QStringList labelChoices = buildLabelChoices(uniqueLabels);
 
         if (request->segmentationMethod > 0) {
@@ -1874,11 +1836,37 @@ namespace
                                   {
                                       parent->completeSegmentationTask(result.success,
                                                                        result.summary,
-                                                                       request.sourceImagePath,
+                                                                       request.ownerImagePath,
                                                                        result.generatedMaskPaths);
                                   },
                                   Qt::QueuedConnection);
     }
+}
+
+QString SegmentationRunner::resolveCpuRoiftExecutable(QString *whyNot)
+{
+    // Only this name: the folder search would otherwise reach roift/gpu before roift, and
+    // the plane runner relies on the newer CLI (an empty slot 8, --blur).
+#if defined(Q_OS_WIN)
+    const QString name = "oiftrelax.exe";
+    const Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
+#else
+    const QString name = "oiftrelax";
+    const Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
+#endif
+    const RoiftExecutable exe = findRoiftExecutable({name});
+    if (QFileInfo(exe.path).fileName().compare(name, sensitivity) == 0)
+        return exe.path;
+    // The search looks for this name only, so any other file came from ROIFT_EXECUTABLE.
+    if (whyNot)
+        *whyNot = exe.path.isEmpty()
+                      ? QString("Could not find %1: searched ROIFT_EXECUTABLE, PATH and the build folders around the "
+                                "application and the current directory. Set ROIFT_EXECUTABLE to its full path.")
+                            .arg(name)
+                      : QString("ROIFT_EXECUTABLE names %1, but one slice runs only on the standard CPU %2; "
+                                "the GPU and experiment binaries cannot. Point ROIFT_EXECUTABLE at %2 or unset it.")
+                            .arg(QFileInfo(exe.path).fileName(), name);
+    return QString();
 }
 
 void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)

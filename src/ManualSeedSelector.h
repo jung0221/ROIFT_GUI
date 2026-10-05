@@ -14,13 +14,17 @@
 #include <cstdint>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 #include "MaskLayers.h"
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
+#include "PlanarSlice.h"
 #include "RangeSlider.h"
+#include "Seed.h"
 #include "SolverNetwork.h"
 
 class QDoubleSpinBox;
@@ -40,19 +44,20 @@ class QVBoxLayout;
 class QProgressBar;
 class QPlainTextEdit;
 class QTimer;
+class QTemporaryDir;
 class QResizeEvent;
 class QMoveEvent;
 class QCloseEvent;
 class QPainter;
 class QSplitter;
+class QGridLayout;
 class CollapsibleSection;
 
-struct Seed
-{
-    int x, y, z, label, internal;
-    bool fromFile = false;
-};
 class Mask3DView;
+namespace planar
+{
+struct RunResult;
+}
 
 class ManualSeedSelector : public QMainWindow
 {
@@ -102,14 +107,23 @@ public:
     // True while that mask has been chosen but not read. Selecting a mask does
     // no file I/O; the read happens on the first operation that needs voxels.
     bool activeMaskPending() const { return !m_pendingActiveMaskPath.empty(); }
+    // The edited mask's voxels, x-fastest, read first when pending; empty when there is none.
+    const std::vector<int> &activeMaskLabels();
+    std::array<unsigned, 3> activeMaskDims() const { return {m_maskDimX, m_maskDimY, m_maskDimZ}; }
 
     // A path the native binaries and Python helpers can actually read. Those
-    // consume files, not the in-memory volume, and none of them speak numpy —
-    // so a .npz/.npy image is exported once to a temporary NIfTI carrying the
-    // orientation and spacing it was imported with. Other formats pass through.
+    // consume files, not the in-memory volume, and none of them reads numpy or
+    // raster files, so a .npz/.npy or PNG/JPEG/BMP/TIFF image is exported, once
+    // per load, to a NIfTI in a directory removed with the window. An export is
+    // never overwritten. Name outputs after getImagePath(), not after this. Other
+    // formats pass through.
     std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
+    // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
+    // 8-bit or 16-bit label image. Returns false and sets *error on failure. A deferred mask that
+    // cannot be read still raises the Load Mask dialog.
+    bool saveActiveMaskTo(const std::string &path, QString *error);
     // refresh mask/seed associations from disk for current image
     void refreshAssociatedFilesForCurrentImage(bool forceDetect = false);
     // add multiple NIfTI images to the list (used by CLI startup)
@@ -145,6 +159,15 @@ public:
     double getWindowWidth() const { return m_windowWidthSpin ? m_windowWidthSpin->value() : 1.0; }
     double getImageMin() const { return m_image.getGlobalMin(); }
     double getImageMax() const { return m_image.getGlobalMax(); }
+    // Run segments one slice of the selected plane instead of the volume; always for a one-slice image.
+    bool segmentCurrentSliceOnly() const;
+    // Axial for a one-slice image.
+    planar::Plane selectedPlane() const;
+    bool planeBorderBackground() const { return m_planeBorderBox ? m_planeBorderBox->isChecked() : true; }
+
+signals:
+    // A slice run ended: pasted into the edited mask, refused, failed or discarded.
+    void planeSegmentationFinished(bool success, QString message);
 
 private slots:
     void openImage();
@@ -174,7 +197,8 @@ private slots:
     void setMaskMode(int mode);
     void setSeedMode(int mode);
     void cleanMask();
-    bool saveMaskToFile(const std::string &path);
+    void saveMaskToFile();
+    bool savePngLabels(const std::string &path, QString *error);
     bool loadMaskFromFile(const std::string &path);
     void paintAxialMask(int x, int y);
     void paintSagittalMask(int x, int y);
@@ -398,6 +422,31 @@ private:
     void eraseNear(int x, int y, int z, int r);
     // Move the three slice views onto one voxel; out-of-range is ignored.
     void jumpToVoxel(int x, int y, int z);
+    // A one-slice image, shown in the axial panel alone.
+    bool isPlanarImage() const;
+    // Show or hide the sagittal, coronal and 3D panels for the loaded image.
+    void applySliceLayout();
+    // Title each slice panel with its slider position; "Image" for a one-slice image.
+    void updateSliceLabels();
+    // Enable the scope, plane and volume-only controls for the scope and the loaded image.
+    void updateSegmentationScopeControls();
+    // Show the Alpha, Sigma and Smoothing rows of the method a run will use.
+    void updateMethodParamRows();
+    // Run oiftrelax on the current slice of the selected plane in the background.
+    void segmentCurrentSlice();
+    // What a slice run started on; a result that comes back to anything else is discarded.
+    struct PlaneRunPins
+    {
+        QString imagePath;
+        QString maskPath;
+        planar::Geometry geometry;
+    };
+    // Paste a slice run's labels into that slice of the edited mask, on the GUI thread.
+    void applyPlaneSegmentationResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                                      const planar::RunResult &result);
+    // The reason the labels were not pasted, or empty with *summary set.
+    QString pastePlaneResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                             const std::vector<int> &labels, QString *summary);
 
     // -- Solver network (1D haemodynamic YAML, its maps and geometry) --------
     // See SolverNetworkUi.cpp. Hover state is separate from the selection: it
@@ -476,6 +525,13 @@ private:
     QLabel *m_axialLabel;
     QLabel *m_sagittalLabel;
     QLabel *m_coronalLabel;
+    // The 2x2 view grid and its panels; applySliceLayout() hides three for a one-slice image.
+    QWidget *m_axialPanel = nullptr;
+    QWidget *m_sagittalPanel = nullptr;
+    QWidget *m_coronalPanel = nullptr;
+    QWidget *m_renderPanel = nullptr;
+    QWidget *m_axialSliderRow = nullptr;
+    QGridLayout *m_viewGrid = nullptr;
     QSpinBox *m_labelSelector;
     QLabel *m_labelColorIndicator;
     QLabel *m_statusLabel;
@@ -566,6 +622,14 @@ private:
     QSlider *m_percSlider = nullptr;
     QLabel *m_percValue = nullptr;
     QComboBox *m_segmentationModeCombo = nullptr;
+    QComboBox *m_scopeCombo = nullptr;
+    QComboBox *m_planeCombo = nullptr;
+    QCheckBox *m_planeBorderBox = nullptr;
+    // The user's volume choices, shown again once a one-slice image or slice scope is left.
+    int m_volumeScopeIndex = 0;
+    int m_volumePlaneIndex = 0;
+    int m_volumeModeIndex = 0;
+    bool m_sliceScopeApplied = false;
     QComboBox *m_methodCombo = nullptr;
     QDoubleSpinBox *m_alphaSpin = nullptr;
     QDoubleSpinBox *m_sigmaSpin = nullptr;
@@ -590,6 +654,8 @@ private:
     std::deque<PendingSegmentationTask> m_pendingSegmentationTasks;
     std::thread m_segmentationWorker;
     std::atomic<bool> m_segmentationWorkerActive{false};
+    // Set only by stopSegmentationWorker(), which joins; results carry no task id, so a Cancel that does not join must add one.
+    std::atomic<bool> m_segmentationStopRequested{false};
     QString m_segmentationProgressLabel;
     int m_segmentationProgressDone = -1;
     int m_segmentationProgressTotal = -1;
@@ -619,9 +685,13 @@ private:
     // axis order and mirroring, so both land on the same voxel grid.
     NpzImportOptions numpyOptionsForMask() const;
 
-    // Cached NIfTI export of a numpy image, and the image it was made from.
+    // Cached NIfTI export of a numpy or raster image, and the image it was made
+    // from; cleared on every load. The directory is created on first export, and
+    // export n goes in its subdirectory n.
     std::string m_nativeImagePath;
     std::string m_nativeImageSource;
+    std::unique_ptr<QTemporaryDir> m_exportDir;
+    int m_exportCount = 0;
 
     QListWidget *m_niftiList = nullptr;
     QListWidget *m_maskList = nullptr;

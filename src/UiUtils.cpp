@@ -6,6 +6,7 @@
 
 #include "UiUtils.h"
 #include "RangeSlider.h"
+#include "RasterFormats.h"
 #include "Theme.h"
 #include "Version.h"
 
@@ -421,6 +422,18 @@ const QStringList &dicomExtensions()
     return extensions;
 }
 
+const QStringList &rasterExtensions()
+{
+    static const QStringList extensions = []
+    {
+        QStringList list;
+        for (std::string_view extension : raster::kExtensions)
+            list << QString::fromLatin1(extension.data(), static_cast<qsizetype>(extension.size()));
+        return list;
+    }();
+    return extensions;
+}
+
 bool endsWithAny(const QString &lowered, const QStringList &extensions)
 {
     for (const QString &extension : extensions)
@@ -435,25 +448,33 @@ bool isSupportedImagePath(const QString &path)
 {
     const QString lower = path.trimmed().toLower();
     return endsWithAny(lower, niftiExtensions()) || endsWithAny(lower, numpyExtensions()) ||
-           endsWithAny(lower, dicomExtensions());
+           endsWithAny(lower, dicomExtensions()) || endsWithAny(lower, rasterExtensions());
+}
+
+bool isRasterImagePath(const QString &path)
+{
+    return endsWithAny(path.trimmed().toLower(), rasterExtensions());
 }
 
 QString imageOpenFileFilter()
 {
     return QStringLiteral(
-        "Images (*.nii *.nii.gz *.dcm *.dicom *.ima *.npz *.npy);;"
+        "Images (*.nii *.nii.gz *.dcm *.dicom *.ima *.npz *.npy *.png *.jpg *.jpeg *.bmp *.tif *.tiff);;"
         "NIfTI files (*.nii *.nii.gz);;"
         "DICOM files (*.dcm *.dicom *.ima);;"
         "NumPy arrays (*.npz *.npy);;"
+        "Raster images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;"
         "All files (*)");
 }
 
 QString maskOpenFileFilter()
 {
+    // No JPEG: lossy compression turns label edges into values no label has.
     return QStringLiteral(
-        "Mask volumes (*.nii *.nii.gz *.npz *.npy);;"
+        "Mask volumes (*.nii *.nii.gz *.npz *.npy *.png *.bmp *.tif *.tiff);;"
         "NIfTI files (*.nii *.nii.gz);;"
         "NumPy arrays (*.npz *.npy);;"
+        "Raster label images (*.png *.bmp *.tif *.tiff);;"
         "All files (*)");
 }
 
@@ -462,6 +483,8 @@ bool isImagePathCell(const QString &value)
     return isSupportedImagePath(normalizeCsvCell(value));
 }
 
+// Raster files are not candidates: the folder scan takes every candidate beside the
+// image, and a folder of photographs would list each one as a mask of the others.
 bool isMaskFilenameCandidate(const QString &fileName)
 {
     const QString lower = fileName.trimmed().toLower();
@@ -776,6 +799,15 @@ QString stripImageSuffix(const QString &fileName)
              baseName.endsWith(".npz", Qt::CaseInsensitive) ||
              baseName.endsWith(".npy", Qt::CaseInsensitive))
         baseName.chop(4);
+    else
+    {
+        for (const QString &extension : rasterExtensions())
+            if (baseName.endsWith(extension, Qt::CaseInsensitive))
+            {
+                baseName.chop(extension.size());
+                break;
+            }
+    }
     return baseName;
 }
 

@@ -1,10 +1,14 @@
 // Checks on the helpers that decide what counts as an openable image.
 // They gate the file dialogs, the CSV importer and the folder scan, so a
 // regression here silently makes a supported format unopenable.
+#include "RasterFormats.h"
 #include "UiUtils.h"
 
 #include <QCoreApplication>
+#include <QRegularExpression>
+#include <QSet>
 #include <cstdio>
+#include <string>
 
 using namespace UiUtils;
 
@@ -20,6 +24,16 @@ void check(bool condition, const char *what)
         ++failures;
 }
 
+// The extensions a file-dialog filter offers, from its *.<ext> patterns.
+QSet<QString> filterExtensions(const QString &filter)
+{
+    QSet<QString> extensions;
+    static const QRegularExpression pattern(R"(\*(\.[A-Za-z0-9.]+))");
+    for (const QRegularExpressionMatch &match : pattern.globalMatch(filter))
+        extensions.insert(match.captured(1));
+    return extensions;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -32,6 +46,13 @@ int main(int argc, char **argv)
     check(isSupportedImagePath("case.nii.gz"), "supported: case.nii.gz");
     check(isSupportedImagePath("slice.dcm"), "supported: slice.dcm");
     check(isSupportedImagePath("CASE.NPZ"), "supported: extension match is case-insensitive");
+    for (const char *name : {"a.png", "a.JPG", "a.jpeg", "a.bmp", "a.tif", "a.tiff"})
+    {
+        check(isSupportedImagePath(name), (std::string("supported: ") + name).c_str());
+        check(isRasterImagePath(name), (std::string("raster: ") + name).c_str());
+    }
+    check(!isRasterImagePath("a.nii.gz"), "not raster: a.nii.gz");
+    check(!isRasterImagePath("a.npz"), "not raster: a.npz");
     check(!isSupportedImagePath("notes.txt"), "not supported: notes.txt");
     check(!isSupportedImagePath(""), "not supported: empty path");
 
@@ -41,6 +62,7 @@ int main(int argc, char **argv)
 
     check(isMaskFilenameCandidate("seg.npz"), "mask scan: seg.npz accepted");
     check(isMaskFilenameCandidate("seg.nii.gz"), "mask scan: seg.nii.gz accepted");
+    check(!isMaskFilenameCandidate("a.png"), "mask scan: raster rejected (a folder of photographs)");
     check(!isMaskFilenameCandidate("slice.dcm"), "mask scan: dicom rejected (holds no labels)");
 
     // Base names drive derived output names and the mask/seed folder scan.
@@ -48,11 +70,32 @@ int main(int argc, char **argv)
     check(stripImageSuffix("case.npy") == "case", "stripImageSuffix: case.npy -> case");
     check(stripImageSuffix("case.nii") == "case", "stripImageSuffix: case.nii -> case");
     check(stripImageSuffix("case.nii.gz") == "case", "stripImageSuffix: case.nii.gz -> case");
+    check(stripImageSuffix("photo.png") == "photo", "stripImageSuffix: photo.png -> photo");
+    check(stripImageSuffix("scan.tiff") == "scan", "stripImageSuffix: scan.tiff -> scan");
+    check(stripImageSuffix("x.JPEG") == "x", "stripImageSuffix: x.JPEG -> x");
     check(stripImageSuffix("plain") == "plain", "stripImageSuffix: unknown extension untouched");
 
     check(imageOpenFileFilter().contains("*.npz"), "open filter offers *.npz");
     check(imageOpenFileFilter().contains("*.nii.gz"), "open filter still offers *.nii.gz");
     check(maskOpenFileFilter().contains("*.npz"), "mask filter offers *.npz");
+    check(imageOpenFileFilter().contains("*.png") && imageOpenFileFilter().contains("*.tiff"),
+          "open filter offers raster images");
+    check(maskOpenFileFilter().contains("*.png") && maskOpenFileFilter().contains("*.tiff"),
+          "mask filter offers raster images");
+    check(!maskOpenFileFilter().contains("*.jpg") && !maskOpenFileFilter().contains("*.jpeg"),
+          "mask filter omits JPEG (lossy, labels would blur)");
+
+    // The filters are literal strings; the shared raster list must not outgrow them.
+    const QSet<QString> openOffers = filterExtensions(imageOpenFileFilter());
+    const QSet<QString> maskOffers = filterExtensions(maskOpenFileFilter());
+    for (std::string_view extension : raster::kExtensions)
+    {
+        const QString ext = QString::fromLatin1(extension.data(), static_cast<qsizetype>(extension.size()));
+        const bool jpeg = ext == ".jpg" || ext == ".jpeg";
+        check(openOffers.contains(ext), qPrintable("open filter offers *" + ext));
+        check(maskOffers.contains(ext) != jpeg,
+              qPrintable(jpeg ? "mask filter omits *" + ext : "mask filter offers *" + ext));
+    }
 
     std::printf("\n%s\n", failures ? "FAILURES" : "all path-helper checks passed");
     return failures ? 1 : 0;

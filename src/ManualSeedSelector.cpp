@@ -10,9 +10,11 @@
 #include "ManualSeedSelector.h"
 #include "SectionGroup.h"
 #include "SegmentationRunner.h"
+#include "SeedFiles.h"
 #include "ColorUtils.h"
 #include "Mask3DView.h"
 #include "MaskListDelegate.h"
+#include "PlaneSegmentation.h"
 #include "RangeSlider.h"
 
 #include <QColorDialog>
@@ -116,6 +118,30 @@
 
 using namespace UiUtils;
 
+namespace
+{
+// Item order of the Scope (Volume first), Plane, Mode and Method combos.
+constexpr int kSliceScope = 1;
+constexpr int kAxialPlaneItem = 0;
+constexpr int kSagittalPlaneItem = 1;
+constexpr int kCoronalPlaneItem = 2;
+constexpr int kMultiLabelMode = 0;
+constexpr int kStandardMethod = 0;
+
+QString planeName(planar::Plane plane)
+{
+    switch (plane)
+    {
+    case planar::Plane::Sagittal:
+        return "sagittal";
+    case planar::Plane::Coronal:
+        return "coronal";
+    case planar::Plane::Axial:
+    default:
+        return "axial";
+    }
+}
+} // namespace
 
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
     : QMainWindow(parent), m_path(niftiPath)
@@ -179,6 +205,7 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
                                     &m_windowHigh);
 
             clearRulerMeasurements();
+            applySliceLayout();
             updateViews();
         }
     }
@@ -230,6 +257,7 @@ void ManualSeedSelector::launchSegmentationTask(PendingSegmentationTask &&task)
 {
     if (m_segmentationWorker.joinable())
         m_segmentationWorker.join();
+    m_segmentationStopRequested.store(false);
 
     m_segmentationWorkerActive.store(true);
 
@@ -405,6 +433,7 @@ void ManualSeedSelector::completeSegmentationTask(bool success,
 
 void ManualSeedSelector::stopSegmentationWorker(bool waitForJoin)
 {
+    m_segmentationStopRequested.store(true);
     if (waitForJoin && m_segmentationWorker.joinable())
         m_segmentationWorker.join();
 
@@ -566,7 +595,7 @@ void ManualSeedSelector::setupUi()
     mainToolBar->setFloatable(false);
 
     QAction *actOpen = mainToolBar->addAction("Open");
-    actOpen->setToolTip("Open an image: NIfTI, DICOM series or NumPy array (Ctrl+O)");
+    actOpen->setToolTip("Open an image: NIfTI, DICOM series, NumPy array or PNG/JPEG/BMP/TIFF (Ctrl+O)");
     actOpen->setShortcut(QKeySequence("Ctrl+O"));
     connect(actOpen, &QAction::triggered, this, &ManualSeedSelector::openImage);
 
@@ -923,16 +952,14 @@ void ManualSeedSelector::setupUi()
     QHBoxLayout *maskFileLayout = new QHBoxLayout(maskFileGroup);
 
     QPushButton *btnMaskSave = new QPushButton("Save");
-    btnMaskSave->setToolTip("Save mask to NIfTI");
+    btnMaskSave->setToolTip("Save mask to NIfTI, or to a PNG label image for a one-slice image");
     connect(btnMaskSave, &QPushButton::clicked, [this]()
             {
-        QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", "NIfTI files (*.nii *.nii.gz)");
-        if (!f.isEmpty())
-            saveMaskToFile(f.toStdString()); });
+        saveMaskToFile(); });
     maskFileLayout->addWidget(btnMaskSave);
 
     QPushButton *btnMaskLoad = new QPushButton("Load");
-    btnMaskLoad->setToolTip("Load mask from NIfTI or NumPy");
+    btnMaskLoad->setToolTip("Load mask from NIfTI, NumPy or a raster label image (PNG, BMP, TIFF)");
     connect(btnMaskLoad, &QPushButton::clicked, [this]()
             {
         QString f = QFileDialog::getOpenFileName(this, "Open Mask", "",
@@ -1021,42 +1048,68 @@ void ManualSeedSelector::setupUi()
     leftGrid->setSpacing(2);
     leftGrid->setContentsMargins(0, 0, 0, 0);
 
-    leftGrid->addWidget(new QLabel("Mode:"), 0, 0);
+    leftGrid->addWidget(new QLabel("Scope:"), 0, 0);
+    m_scopeCombo = new QComboBox();
+    m_scopeCombo->setObjectName("segmentationScope");
+    m_scopeCombo->addItem("Volume");
+    m_scopeCombo->addItem("Current slice");
+    m_scopeCombo->setToolTip("Volume segments the whole image. Current slice segments only the slice shown in the chosen plane "
+                             "and writes the result into that slice of the edited mask.");
+    leftGrid->addWidget(m_scopeCombo, 0, 1, 1, 2);
+
+    leftGrid->addWidget(new QLabel("Plane:"), 1, 0);
+    m_planeCombo = new QComboBox();
+    m_planeCombo->setObjectName("segmentationPlane");
+    m_planeCombo->addItem("Axial");
+    m_planeCombo->addItem("Sagittal");
+    m_planeCombo->addItem("Coronal");
+    m_planeCombo->setToolTip("The view whose current slice is segmented.");
+    leftGrid->addWidget(m_planeCombo, 1, 1, 1, 2);
+
+    m_planeBorderBox = new QCheckBox("Background on the plane border");
+    m_planeBorderBox->setObjectName("planeBorderBackground");
+    m_planeBorderBox->setChecked(true);
+    m_planeBorderBox->setToolTip("Seed background on every edge pixel of the slice. "
+                                 "Turn it off when the structure touches the edge of the plane.");
+    leftGrid->addWidget(m_planeBorderBox, 2, 0, 1, 3);
+
+    leftGrid->addWidget(new QLabel("Mode:"), 3, 0);
     m_segmentationModeCombo = new QComboBox();
+    m_segmentationModeCombo->setObjectName("segmentationMode");
     m_segmentationModeCombo->addItem("Multi-label");
     m_segmentationModeCombo->addItem("Legacy binary");
     m_segmentationModeCombo->setToolTip("Multi-label runs all labels in one execution. Legacy binary restores the original internal-versus-external workflow.");
-    leftGrid->addWidget(m_segmentationModeCombo, 0, 1, 1, 2);
+    leftGrid->addWidget(m_segmentationModeCombo, 3, 1, 1, 2);
 
-    leftGrid->addWidget(new QLabel("Polarity:"), 1, 0);
+    leftGrid->addWidget(new QLabel("Polarity:"), 4, 0);
     m_polSlider = new QSlider(Qt::Horizontal);
     m_polSlider->setRange(-100, 100);
     m_polSlider->setValue(100);
     m_polSlider->setToolTip("+1.0=bright inside, -1.0=dark inside");
-    leftGrid->addWidget(m_polSlider, 1, 1);
+    leftGrid->addWidget(m_polSlider, 4, 1);
     m_polValue = new QLabel("1.00");
     m_polValue->setMinimumWidth(32);
-    leftGrid->addWidget(m_polValue, 1, 2);
+    leftGrid->addWidget(m_polValue, 4, 2);
 
-    leftGrid->addWidget(new QLabel("Relax:"), 2, 0);
+    leftGrid->addWidget(new QLabel("Relax:"), 5, 0);
     m_niterSlider = new QSlider(Qt::Horizontal);
     m_niterSlider->setRange(0, 100);
     m_niterSlider->setValue(0);
     m_niterSlider->setToolTip("Relaxation iterations");
-    leftGrid->addWidget(m_niterSlider, 2, 1);
+    leftGrid->addWidget(m_niterSlider, 5, 1);
     m_niterValue = new QLabel("0");
     m_niterValue->setMinimumWidth(32);
-    leftGrid->addWidget(m_niterValue, 2, 2);
+    leftGrid->addWidget(m_niterValue, 5, 2);
 
-    leftGrid->addWidget(new QLabel("Pctile:"), 3, 0);
+    leftGrid->addWidget(new QLabel("Pctile:"), 6, 0);
     m_percSlider = new QSlider(Qt::Horizontal);
     m_percSlider->setRange(0, 100);
     m_percSlider->setValue(0);
     m_percSlider->setToolTip("Arc-weight percentile threshold");
-    leftGrid->addWidget(m_percSlider, 3, 1);
+    leftGrid->addWidget(m_percSlider, 6, 1);
     m_percValue = new QLabel("0");
     m_percValue->setMinimumWidth(32);
-    leftGrid->addWidget(m_percValue, 3, 2);
+    leftGrid->addWidget(m_percValue, 6, 2);
 
     connect(m_polSlider, &QSlider::valueChanged, [this](int v)
             { m_polValue->setText(QString::number(v / 100.0, 'f', 2)); });
@@ -1074,6 +1127,7 @@ void ManualSeedSelector::setupUi()
 
     rightGrid->addWidget(new QLabel("Method:"), 0, 0);
     m_methodCombo = new QComboBox();
+    m_methodCombo->setObjectName("segmentationMethod");
     m_methodCombo->addItem("Standard OIFT");           // index 0
     m_methodCombo->addItem("Gradient Weight (1A)");    // index 1
     m_methodCombo->addItem("Gaussian RBF Relax (1B)"); // index 2
@@ -1093,6 +1147,7 @@ void ManualSeedSelector::setupUi()
     m_alphaLabel = new QLabel("Alpha:");
     rightGrid->addWidget(m_alphaLabel, 1, 0);
     m_alphaSpin = new QDoubleSpinBox();
+    m_alphaSpin->setObjectName("segmentationAlpha");
     m_alphaSpin->setRange(0.0, 1.0);
     m_alphaSpin->setSingleStep(0.05);
     m_alphaSpin->setValue(0.5);
@@ -1103,6 +1158,7 @@ void ManualSeedSelector::setupUi()
     m_sigmaLabel = new QLabel("Sigma:");
     rightGrid->addWidget(m_sigmaLabel, 2, 0);
     m_sigmaSpin = new QDoubleSpinBox();
+    m_sigmaSpin->setObjectName("segmentationSigma");
     m_sigmaSpin->setRange(0.0, 10000.0);
     m_sigmaSpin->setSingleStep(1.0);
     m_sigmaSpin->setValue(0.0);
@@ -1115,6 +1171,7 @@ void ManualSeedSelector::setupUi()
     m_blurLabel = new QLabel("Smoothing:");
     rightGrid->addWidget(m_blurLabel, 3, 0);
     m_blurCombo = new QComboBox();
+    m_blurCombo->setObjectName("segmentationSmoothing");
     m_blurCombo->addItem("Default (2×)", QVariant(2)); // index 0 -> 2 passes (historical)
     m_blurCombo->addItem("Light (1×)", QVariant(1));   // index 1 -> 1 pass
     m_blurCombo->addItem("None (sharp)", QVariant(0));      // index 2 -> 0 passes
@@ -1128,21 +1185,9 @@ void ManualSeedSelector::setupUi()
     rightGrid->setRowStretch(4, 1); // push content up
 
     // Show/hide alpha/sigma and disable GPU based on method selection
-    auto updateMethodParams = [this]() {
-        int method = m_methodCombo->currentIndex();
-        bool showAlpha = (method == 1); // Gradient Weight
-        bool showSigma = (method == 2); // Gaussian RBF
-        bool showBlur = (method == 0);  // Standard OIFT (only path that parses --blur)
-        m_alphaLabel->setVisible(showAlpha);
-        m_alphaSpin->setVisible(showAlpha);
-        m_sigmaLabel->setVisible(showSigma);
-        m_sigmaSpin->setVisible(showSigma);
-        m_blurLabel->setVisible(showBlur);
-        m_blurCombo->setVisible(showBlur);
-    };
     connect(m_methodCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            [this, updateMethodParams](int idx) {
-                updateMethodParams();
+            [this](int idx) {
+                updateMethodParamRows();
                 if (m_useGPUBox) {
                     if (idx > 0) {
                         m_useGPUBox->setChecked(false);
@@ -1152,7 +1197,7 @@ void ManualSeedSelector::setupUi()
                     }
                 }
             });
-    updateMethodParams(); // set initial visibility
+    updateMethodParamRows(); // set initial visibility
 
     paramsColumns->addLayout(rightGrid, 1);
 
@@ -1164,14 +1209,17 @@ void ManualSeedSelector::setupUi()
     optionsLayout->setSpacing(4);
 
     m_segmentAllBox = new QCheckBox("Batch per label");
+    m_segmentAllBox->setObjectName("segmentAll");
     m_segmentAllBox->setToolTip("Run one binary segmentation per label and merge the outputs into a multilabel mask.");
     optionsLayout->addWidget(m_segmentAllBox);
 
     m_polSweepBox = new QCheckBox("Polarity sweep");
+    m_polSweepBox->setObjectName("polaritySweep");
     m_polSweepBox->setToolTip("Test polarity range -1.0 to +1.0");
     optionsLayout->addWidget(m_polSweepBox);
 
     m_useGPUBox = new QCheckBox("Use GPU");
+    m_useGPUBox->setObjectName("useGpu");
     m_useGPUBox->setToolTip("Use GPU acceleration");
     optionsLayout->addWidget(m_useGPUBox);
 
@@ -1184,6 +1232,19 @@ void ManualSeedSelector::setupUi()
         if (m_segmentationModeCombo)
             m_segmentationModeCombo->setEnabled(!on); });
 
+    // Only a choice made while a volume is loaded is remembered; the forced one-slice
+    // values are set with signals blocked.
+    connect(m_scopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
+            {
+        if (!isPlanarImage())
+            m_volumeScopeIndex = index;
+        updateSegmentationScopeControls(); });
+    connect(m_planeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
+            {
+        if (!isPlanarImage())
+            m_volumePlaneIndex = index; });
+    updateSegmentationScopeControls();
+
     segSecLayout->addWidget(optionsGroup);
 
     // Run button
@@ -1192,11 +1253,15 @@ void ManualSeedSelector::setupUi()
 
     m_btnRunSegment = new QPushButton("Run");
     m_btnRunSegment->setObjectName("runButton");
+    m_btnRunSegment->setAccessibleName("Run segmentation");
     m_btnRunSegment->setToolTip("Start ROIFT segmentation (Ctrl+Shift+S)");
     m_btnRunSegment->setShortcut(QKeySequence("Ctrl+Shift+S"));
     connect(m_btnRunSegment, &QPushButton::clicked, [this]()
             {
-        SegmentationRunner::runSegmentation(this); });
+        if (segmentCurrentSliceOnly())
+            segmentCurrentSlice();
+        else
+            SegmentationRunner::runSegmentation(this); });
     runLayout->addWidget(m_btnRunSegment);
 
     segSecLayout->addWidget(runGroup);
@@ -1325,7 +1390,7 @@ void ManualSeedSelector::setupUi()
     // =====================================================
     // CENTER: 2x2 View Grid
     // =====================================================
-    QGridLayout *viewGrid = new QGridLayout();
+    m_viewGrid = new QGridLayout();
     m_axialView = new OrthogonalView();
     m_axialView->setObjectName("axialView");
     m_sagittalView = new OrthogonalView();
@@ -1336,10 +1401,13 @@ void ManualSeedSelector::setupUi()
 
     // Slice navigation now lives inside each view panel so it is always visible.
     m_axialSlider = new QSlider(Qt::Horizontal);
+    m_axialSlider->setObjectName("axialSlider");
     m_axialSlider->setToolTip("Axial slice (W/S keys)");
     m_sagittalSlider = new QSlider(Qt::Horizontal);
+    m_sagittalSlider->setObjectName("sagittalSlider");
     m_sagittalSlider->setToolTip("Sagittal slice (A/D keys)");
     m_coronalSlider = new QSlider(Qt::Horizontal);
+    m_coronalSlider->setObjectName("coronalSlider");
     m_coronalSlider->setToolTip("Coronal slice (Q/E keys)");
 
     m_axialLabel = new QLabel("Axial: 0/0");
@@ -1382,7 +1450,8 @@ void ManualSeedSelector::setupUi()
     QCheckBox *coronalMaskCheck = nullptr;
     QCheckBox *coronalSeedsCheck = nullptr;
 
-    auto createSlicePanel = [](const QString &title, OrthogonalView *view, QLabel *label, QSlider *slider) -> QWidget *
+    auto createSlicePanel = [](const QString &title, OrthogonalView *view, QLabel *label, QSlider *slider,
+                               QWidget **sliderRow = nullptr) -> QWidget *
     {
         QWidget *panel = new QWidget();
         QVBoxLayout *panelLayout = new QVBoxLayout(panel);
@@ -1398,9 +1467,12 @@ void ManualSeedSelector::setupUi()
         slider->setSingleStep(1); // one slice per "-"/"+" click
         slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
+        QWidget *row = makeSliderStepperRow(slider, panel);
         panelLayout->addWidget(view, 1);
         panelLayout->addWidget(label);
-        panelLayout->addWidget(makeSliderStepperRow(slider, panel));
+        panelLayout->addWidget(row);
+        if (sliderRow)
+            *sliderRow = row;
         return panel;
     };
 
@@ -1432,14 +1504,18 @@ void ManualSeedSelector::setupUi()
             *seedsOut = showSeeds;
     };
 
-    QWidget *axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider);
-    QWidget *sagittalPanel = createSlicePanel("Sagittal", m_sagittalView, m_sagittalLabel, m_sagittalSlider);
-    QWidget *coronalPanel = createSlicePanel("Coronal", m_coronalView, m_coronalLabel, m_coronalSlider);
-    addSliceToggleRow(axialPanel, "axial", m_enableAxialMask, m_enableAxialSeeds,
+    m_axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider, &m_axialSliderRow);
+    m_axialPanel->setObjectName("axialPanel");
+    m_axialLabel->setObjectName("axialTitle");
+    m_sagittalPanel = createSlicePanel("Sagittal", m_sagittalView, m_sagittalLabel, m_sagittalSlider);
+    m_sagittalPanel->setObjectName("sagittalPanel");
+    m_coronalPanel = createSlicePanel("Coronal", m_coronalView, m_coronalLabel, m_coronalSlider);
+    m_coronalPanel->setObjectName("coronalPanel");
+    addSliceToggleRow(m_axialPanel, "axial", m_enableAxialMask, m_enableAxialSeeds,
                       &axialMaskCheck, &axialSeedsCheck);
-    addSliceToggleRow(sagittalPanel, "sagittal", m_enableSagittalMask, m_enableSagittalSeeds,
+    addSliceToggleRow(m_sagittalPanel, "sagittal", m_enableSagittalMask, m_enableSagittalSeeds,
                       &sagittalMaskCheck, &sagittalSeedsCheck);
-    addSliceToggleRow(coronalPanel, "coronal", m_enableCoronalMask, m_enableCoronalSeeds,
+    addSliceToggleRow(m_coronalPanel, "coronal", m_enableCoronalMask, m_enableCoronalSeeds,
                       &coronalMaskCheck, &coronalSeedsCheck);
 
     m_showMaskCheck = axialMaskCheck;
@@ -1447,12 +1523,13 @@ void ManualSeedSelector::setupUi()
     // The 3D toggles used to float over the canvas, which put them on top of
     // the view's own status line. They now sit in flow under the canvas, in the
     // same place as the toggle rows of the three slice panels beside it.
-    QWidget *renderPanel = new QWidget();
-    QVBoxLayout *renderPanelLayout = new QVBoxLayout(renderPanel);
+    m_renderPanel = new QWidget();
+    m_renderPanel->setObjectName("renderPanel");
+    QVBoxLayout *renderPanelLayout = new QVBoxLayout(m_renderPanel);
     renderPanelLayout->setContentsMargins(0, 0, 0, 0);
     renderPanelLayout->setSpacing(4);
     renderPanelLayout->addWidget(m_mask3DView, 1);
-    QWidget *renderTogglePanel = new QWidget(renderPanel);
+    QWidget *renderTogglePanel = new QWidget(m_renderPanel);
     QHBoxLayout *renderToggleLayout = new QHBoxLayout(renderTogglePanel);
     renderToggleLayout->setContentsMargins(0, 0, 0, 0);
     renderToggleLayout->setSpacing(6);
@@ -1472,18 +1549,19 @@ void ManualSeedSelector::setupUi()
 
     renderPanelLayout->addWidget(renderTogglePanel);
 
-    viewGrid->addWidget(axialPanel, 0, 0);
-    viewGrid->addWidget(sagittalPanel, 0, 1);
-    viewGrid->addWidget(coronalPanel, 1, 0);
-    viewGrid->addWidget(renderPanel, 1, 1);
-    viewGrid->setColumnStretch(0, 1);
-    viewGrid->setColumnStretch(1, 1);
-    viewGrid->setRowStretch(0, 1);
-    viewGrid->setRowStretch(1, 1);
-    viewGrid->setSpacing(6);
+    m_viewGrid->addWidget(m_axialPanel, 0, 0);
+    m_viewGrid->addWidget(m_sagittalPanel, 0, 1);
+    m_viewGrid->addWidget(m_coronalPanel, 1, 0);
+    m_viewGrid->addWidget(m_renderPanel, 1, 1);
+    m_viewGrid->setColumnStretch(0, 1);
+    m_viewGrid->setColumnStretch(1, 1);
+    m_viewGrid->setRowStretch(0, 1);
+    m_viewGrid->setRowStretch(1, 1);
+    m_viewGrid->setSpacing(6);
 
     QWidget *viewContainer = new QWidget();
-    viewContainer->setLayout(viewGrid);
+    viewContainer->setObjectName("viewContainer");
+    viewContainer->setLayout(m_viewGrid);
     viewContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     viewContainer->setMinimumWidth(0);
     contentSplitter->addWidget(viewContainer);
@@ -1533,6 +1611,7 @@ void ManualSeedSelector::setupUi()
     niftiListLayout->setSpacing(4);
 
     m_niftiList = new QListWidget();
+    m_niftiList->setObjectName("imageList");
     m_niftiList->setMinimumHeight(70);
     m_niftiList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_niftiList->setToolTip("Click to select which image to display");
@@ -1636,6 +1715,7 @@ void ManualSeedSelector::setupUi()
                 clearRulerMeasurements();
                 m_locatedPoint = LocatedPoint{};
                 updateMaskSeedLists();
+                applySliceLayout();
                 updateViews();
             } else if (m_currentImageIndex > currentRow) {
                 m_currentImageIndex--;
@@ -1690,6 +1770,7 @@ void ManualSeedSelector::setupUi()
         m_coronalView->setImage(QImage());
 
         updateMaskSeedLists();
+        applySliceLayout();
         updateViews();
         if (m_statusLabel)
             m_statusLabel->setText("All images removed.");
@@ -1794,10 +1875,19 @@ void ManualSeedSelector::setupUi()
                 
                 // Update mask and seed lists for this image
                 updateMaskSeedLists();
+                applySliceLayout();
                 updateViews();
                 if (m_mask3DView && preservedCamera.valid)
                     m_mask3DView->restoreCameraState(preservedCamera, true);
                 m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(path)));
+            } else {
+                // Windows GUI builds keep no stderr, so the reason has to reach the window.
+                const QString name = QFileInfo(QString::fromStdString(path)).fileName();
+                const QString reason = QString::fromStdString(m_image.lastError());
+                m_statusLabel->setText(reason.isEmpty()
+                                           ? QString("Could not read %1; see the log for details.").arg(name)
+                                           : QString("Could not read %1: %2").arg(name, reason));
+                applySliceLayout();
             }
         } });
 
@@ -2399,19 +2489,19 @@ void ManualSeedSelector::setupUi()
     // =====================================================
 
     // Slice sliders update labels and views; any move drops the 3D locate marker.
-    connect(m_axialSlider, &QSlider::valueChanged, [this](int v)
+    connect(m_axialSlider, &QSlider::valueChanged, [this]()
             {
-        m_axialLabel->setText(QString("Axial: %1/%2").arg(v).arg(m_axialSlider->maximum()));
+        updateSliceLabels();
         m_locatedPoint = LocatedPoint{};
         updateViews(); });
-    connect(m_sagittalSlider, &QSlider::valueChanged, [this](int v)
+    connect(m_sagittalSlider, &QSlider::valueChanged, [this]()
             {
-        m_sagittalLabel->setText(QString("Sagittal: %1/%2").arg(v).arg(m_sagittalSlider->maximum()));
+        updateSliceLabels();
         m_locatedPoint = LocatedPoint{};
         updateViews(); });
-    connect(m_coronalSlider, &QSlider::valueChanged, [this](int v)
+    connect(m_coronalSlider, &QSlider::valueChanged, [this]()
             {
-        m_coronalLabel->setText(QString("Coronal: %1/%2").arg(v).arg(m_coronalSlider->maximum()));
+        updateSliceLabels();
         m_locatedPoint = LocatedPoint{};
         updateViews(); });
 
@@ -2444,7 +2534,7 @@ void ManualSeedSelector::setupUi()
         m_enable3DView = checked;
         if (m_mask3DView)
             m_mask3DView->setMaskVisible(m_enable3DView);
-        if (checked && m_mask3DDirty)
+        if (checked && m_mask3DDirty && !isPlanarImage())
         {
             update3DMaskView();
             m_mask3DDirty = false;
@@ -2693,23 +2783,33 @@ void ManualSeedSelector::setupUi()
 bool ManualSeedSelector::loadImageData(ImageData &data)
 {
     if (!data.isNumpy)
-        return m_image.load(data.imagePath);
+    {
+        if (!m_image.load(data.imagePath))
+            return false;
+    }
+    else
+    {
+        NpzImportReport report;
+        if (!m_image.loadNumpy(data.imagePath, data.npzOptions, &report))
+            return false;
 
-    NpzImportReport report;
-    if (!m_image.loadNumpy(data.imagePath, data.npzOptions, &report))
-        return false;
+        // Pin down whatever "Automatic" resolved to. Masks loaded next inherit it,
+        // and reselecting the image later cannot silently resolve it differently.
+        data.npzOptions.axisOrder = report.axisOrder;
+        for (int i = 0; i < 3; ++i)
+            data.npzOptions.flip[i] = report.flip[i];
+    }
 
-    // Pin down whatever "Automatic" resolved to. Masks loaded next inherit it,
-    // and reselecting the image later cannot silently resolve it differently.
-    data.npzOptions.axisOrder = report.axisOrder;
-    for (int i = 0; i < 3; ++i)
-        data.npzOptions.flip[i] = report.flip[i];
+    // The file or its import options may have changed since the last export.
+    m_nativeImagePath.clear();
+    m_nativeImageSource.clear();
     return true;
 }
 
 std::string ManualSeedSelector::nativeImagePath()
 {
-    if (m_path.empty() || !NiftiImage::isNumpyPath(m_path))
+    const bool numpy = NiftiImage::isNumpyPath(m_path);
+    if (m_path.empty() || !(numpy || NiftiImage::isRasterPath(m_path)))
         return m_path;
 
     // Reuse the export while the same image stays loaded.
@@ -2717,12 +2817,24 @@ std::string ManualSeedSelector::nativeImagePath()
         QFileInfo::exists(QString::fromStdString(m_nativeImagePath)))
         return m_nativeImagePath;
 
+    if (!m_exportDir || !m_exportDir->isValid())
+        m_exportDir = std::make_unique<QTemporaryDir>();
     const QString baseName = stripImageSuffix(QFileInfo(QString::fromStdString(m_path)).fileName());
-    const QString exportPath = QDir::temp().filePath(QString("roift_npz_%1.nii.gz").arg(baseName));
-    if (!m_image.save(exportPath.toStdString()))
+    const QString prefix = numpy ? QStringLiteral("roift_npz_") : QStringLiteral("roift_src_");
+    // A fresh subdirectory per export: a queued run may still be reading an earlier one,
+    // and the file name stays roift_*_<base> because LUNAS names its case after it.
+    QString exportPath;
+    const QString subdir = QString::number(++m_exportCount);
+    if (m_exportDir->isValid())
     {
-        QMessageBox::warning(this, "NumPy image",
-                             "Could not export this NumPy volume to a temporary NIfTI file, which the "
+        const QDir root(m_exportDir->path());
+        if (root.mkpath(subdir))
+            exportPath = QDir(root.filePath(subdir)).filePath(QString("%1%2.nii.gz").arg(prefix, baseName));
+    }
+    if (exportPath.isEmpty() || !m_image.save(exportPath.toStdString()))
+    {
+        QMessageBox::warning(this, "Export image",
+                             "Could not export this image to a temporary NIfTI file, which the "
                              "segmentation tools need in order to read it.");
         return m_path;
     }
@@ -3186,7 +3298,7 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
     if (pathColumn < 0)
     {
         if (errorMessage)
-            *errorMessage = "Could not find a column containing image paths (.nii, .nii.gz, .npz, .npy, DICOM).";
+            *errorMessage = "Could not find a column containing image paths (.nii, .nii.gz, .npz, .npy, DICOM, .png, .jpg, .bmp, .tif).";
         return {};
     }
 
@@ -4617,7 +4729,9 @@ void ManualSeedSelector::updateViews()
     unsigned int sizeY = m_image.getSizeY();
     unsigned int sizeZ = m_image.getSizeZ();
 
-    if (m_mask3DView)
+    // A one-slice image hides the 3D panel; it stays dirty and catches up once shown again.
+    const bool render3D = m_mask3DView && !isPlanarImage();
+    if (render3D)
     {
         m_mask3DView->setVoxelSpacing(m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
         m_mask3DView->setMaskVisible(m_enable3DView);
@@ -4625,12 +4739,12 @@ void ManualSeedSelector::updateViews()
     }
 
     // 3D mask rendering is controlled by "Show 3D", seeds are controlled separately.
-    if (m_enable3DView && m_mask3DDirty)
+    if (render3D && m_enable3DView && m_mask3DDirty)
     {
         update3DMaskView();
         m_mask3DDirty = false;
     }
-    else if (m_mask3DView)
+    else if (render3D)
     {
         std::vector<SeedRenderData> seedRenderData;
         seedRenderData.reserve(m_seeds.size());
@@ -4862,13 +4976,377 @@ void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
         m_sagittalSlider->setValue(x);
         m_coronalSlider->setValue(y);
     }
-    m_axialLabel->setText(QString("Axial: %1/%2").arg(z).arg(m_axialSlider->maximum()));
-    m_sagittalLabel->setText(QString("Sagittal: %1/%2").arg(x).arg(m_sagittalSlider->maximum()));
-    m_coronalLabel->setText(QString("Coronal: %1/%2").arg(y).arg(m_coronalSlider->maximum()));
+    updateSliceLabels();
     updateViews();
 
     if (m_statusLabel)
         m_statusLabel->setText(QString("Located 3D point at x:%1 y:%2 z:%3").arg(x).arg(y).arg(z));
+}
+
+bool ManualSeedSelector::isPlanarImage() const
+{
+    return hasImage() && m_image.getSizeZ() == 1;
+}
+
+void ManualSeedSelector::applySliceLayout()
+{
+    // A one-slice image has no sagittal or coronal picture and no surface to contour. A grid
+    // row or column with stretch keeps its share even when all of its widgets are hidden.
+    const bool planar = isPlanarImage();
+    m_sagittalPanel->setVisible(!planar);
+    m_coronalPanel->setVisible(!planar);
+    m_renderPanel->setVisible(!planar);
+    m_axialSliderRow->setVisible(!planar);
+    m_viewGrid->setColumnStretch(1, planar ? 0 : 1);
+    m_viewGrid->setRowStretch(1, planar ? 0 : 1);
+    updateSliceLabels();
+    updateSegmentationScopeControls();
+}
+
+bool ManualSeedSelector::segmentCurrentSliceOnly() const
+{
+    return isPlanarImage() || (m_scopeCombo && m_scopeCombo->currentIndex() == kSliceScope);
+}
+
+planar::Plane ManualSeedSelector::selectedPlane() const
+{
+    if (isPlanarImage() || !m_planeCombo)
+        return planar::Plane::Axial;
+    switch (m_planeCombo->currentIndex())
+    {
+    case kSagittalPlaneItem:
+        return planar::Plane::Sagittal;
+    case kCoronalPlaneItem:
+        return planar::Plane::Coronal;
+    default:
+        return planar::Plane::Axial;
+    }
+}
+
+void ManualSeedSelector::updateMethodParamRows()
+{
+    if (!m_methodCombo || !m_alphaLabel || !m_alphaSpin || !m_sigmaLabel || !m_sigmaSpin || !m_blurLabel || !m_blurCombo)
+        return;
+    // A slice run is always Standard OIFT, whatever the disabled Method combo still shows.
+    const bool slice = m_scopeCombo && m_scopeCombo->currentIndex() == kSliceScope;
+    const int method = slice ? kStandardMethod : m_methodCombo->currentIndex();
+    const bool showAlpha = (method == 1); // Gradient Weight
+    const bool showSigma = (method == 2); // Gaussian RBF
+    const bool showBlur = (method == kStandardMethod); // the only path that parses --blur
+    m_alphaLabel->setVisible(showAlpha);
+    m_alphaSpin->setVisible(showAlpha);
+    m_sigmaLabel->setVisible(showSigma);
+    m_sigmaSpin->setVisible(showSigma);
+    m_blurLabel->setVisible(showBlur);
+    m_blurCombo->setVisible(showBlur);
+}
+
+void ManualSeedSelector::updateSegmentationScopeControls()
+{
+    if (!m_scopeCombo || !m_planeCombo || !m_planeBorderBox || !m_segmentationModeCombo || !m_segmentAllBox ||
+        !m_polSweepBox || !m_useGPUBox || !m_methodCombo)
+        return;
+
+    // A one-slice image has one plane to segment, its axial one.
+    const bool planar = isPlanarImage();
+    {
+        const QSignalBlocker blockScope(m_scopeCombo);
+        const QSignalBlocker blockPlane(m_planeCombo);
+        m_scopeCombo->setCurrentIndex(planar ? kSliceScope : m_volumeScopeIndex);
+        m_planeCombo->setCurrentIndex(planar ? kAxialPlaneItem : m_volumePlaneIndex);
+    }
+    const bool slice = m_scopeCombo->currentIndex() == kSliceScope;
+
+    // A slice run is always multi-label.
+    if (slice != m_sliceScopeApplied)
+    {
+        if (slice)
+        {
+            m_volumeModeIndex = m_segmentationModeCombo->currentIndex();
+            m_segmentationModeCombo->setCurrentIndex(kMultiLabelMode);
+        }
+        else
+        {
+            m_segmentationModeCombo->setCurrentIndex(m_volumeModeIndex);
+        }
+        m_sliceScopeApplied = slice;
+    }
+
+    m_scopeCombo->setEnabled(!planar);
+    m_planeCombo->setEnabled(slice && !planar);
+    m_planeBorderBox->setEnabled(slice);
+    // Outside slice scope, the rules the batch and method handlers apply.
+    const bool batch = m_segmentAllBox->isChecked();
+    m_segmentAllBox->setEnabled(!slice);
+    m_polSweepBox->setEnabled(!slice && !batch);
+    m_segmentationModeCombo->setEnabled(!slice && !batch);
+    m_methodCombo->setEnabled(!slice);
+    m_useGPUBox->setEnabled(!slice && m_methodCombo->currentIndex() == kStandardMethod);
+    updateMethodParamRows();
+}
+
+void ManualSeedSelector::segmentCurrentSlice()
+{
+    const auto refuse = [this](const QString &reason)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(reason);
+        appendSegmentationLog(reason);
+        emit planeSegmentationFinished(false, reason);
+    };
+    if (!hasImage())
+    {
+        refuse("Open an image before segmenting a slice.");
+        return;
+    }
+    // The paste needs the image's grid; a mask whose depth is only mapped onto it would be refused after the run.
+    if (!activeMaskPending() && !m_maskData.empty() &&
+        (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() || m_maskDimZ != m_image.getSizeZ()))
+    {
+        refuse(QString("The edited mask is %1 x %2 x %3 and the image %4 x %5 x %6; a slice run needs the same grid.")
+                   .arg(m_maskDimX)
+                   .arg(m_maskDimY)
+                   .arg(m_maskDimZ)
+                   .arg(m_image.getSizeX())
+                   .arg(m_image.getSizeY())
+                   .arg(m_image.getSizeZ()));
+        return;
+    }
+
+    const planar::Plane plane = selectedPlane();
+    const QSlider *slider = m_axialSlider;
+    switch (plane)
+    {
+    case planar::Plane::Axial:
+        slider = m_axialSlider;
+        break;
+    case planar::Plane::Sagittal:
+        slider = m_sagittalSlider;
+        break;
+    case planar::Plane::Coronal:
+        slider = m_coronalSlider;
+        break;
+    }
+    const std::array<int, 3> dims{static_cast<int>(m_image.getSizeX()), static_cast<int>(m_image.getSizeY()),
+                                  static_cast<int>(m_image.getSizeZ())};
+    planar::Geometry geometry;
+    if (!planar::makeGeometry(plane, slider->value(), dims, &geometry))
+    {
+        refuse(QString("Slice %1 is not a %2 slice of the image.").arg(slider->value()).arg(planeName(plane)));
+        return;
+    }
+    const QString where = QString("%1 slice %2").arg(planeName(plane)).arg(geometry.index);
+
+    const std::vector<Seed> seeds = dedupeSeedsKeepingLatest(m_seeds);
+    std::vector<Seed> planeSeeds;
+    std::set<int> runLabels;
+    for (const Seed &s : seeds)
+    {
+        int u = 0, v = 0;
+        if (!planar::toPlane(geometry, {s.x, s.y, s.z}, &u, &v))
+            continue;
+        planeSeeds.push_back(Seed{u, v, 0, s.label, s.internal});
+        if (s.label > 0)
+            runLabels.insert(s.label);
+    }
+    const std::size_t ignored = seeds.size() - planeSeeds.size();
+    appendSegmentationLog(QString("Slice run on %1: %2 seed(s) used, %3 on other slices ignored.")
+                              .arg(where)
+                              .arg(planeSeeds.size())
+                              .arg(ignored));
+    if (runLabels.empty())
+    {
+        refuse(QString("No object seed (label > 0) on %1.").arg(where));
+        return;
+    }
+
+    const std::size_t voxelCount = std::size_t(dims[0]) * std::size_t(dims[1]) * std::size_t(dims[2]);
+    std::vector<float> pixels = planar::extractPlane(geometry, m_image.buffer(), voxelCount);
+    if (pixels.empty())
+    {
+        refuse(QString("Could not read the pixels of %1.").arg(where));
+        return;
+    }
+    // The volume run's test: only a window moved off the full range is applied.
+    const double level = getWindowLevel();
+    const double width = getWindowWidth();
+    const double imageMin = getImageMin();
+    const double imageMax = getImageMax();
+    if ((std::abs(level - (imageMax + imageMin) / 2.0) > 1.0 || std::abs(width - (imageMax - imageMin)) > 1.0) &&
+        width > 0.0)
+    {
+        const float low = static_cast<float>(level - width / 2.0);
+        const float high = static_cast<float>(level + width / 2.0);
+        for (float &p : pixels)
+            p = std::clamp(p, low, high);
+        appendSegmentationLog(QString("Applying current window/level before segmentation (WL=%1, WW=%2).")
+                                  .arg(level, 0, 'f', 1)
+                                  .arg(width, 0, 'f', 1));
+    }
+
+    QString executableProblem;
+    const QString executable = SegmentationRunner::resolveCpuRoiftExecutable(&executableProblem);
+    if (executable.isEmpty())
+    {
+        refuse(executableProblem);
+        return;
+    }
+
+    planar::RunRequest request;
+    request.geometry = geometry;
+    request.pixels = std::move(pixels);
+    request.spacing = planar::planeSpacing(geometry, {m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ()});
+    request.seeds = std::move(planeSeeds);
+    request.borderBackground = planeBorderBackground();
+    request.pol = getPolarity();
+    request.niter = getNiter();
+    request.percentile = getPercentile();
+    request.blurPasses = getBlurPasses();
+    request.executablePath = executable;
+    request.cancelled = [this]() { return m_segmentationStopRequested.load(); };
+    const PlaneRunPins pins{QString::fromStdString(m_path), activeMaskPath(), geometry};
+
+    const QString initialMessage = QString("Slice segmentation of %1 started in background.").arg(where);
+    // The destructor joins the worker before members go, so the task may use this; the
+    // result is posted, and dropped by Qt if the window is gone by then.
+    startSegmentationTask([this, request = std::move(request), pins, runLabels]() mutable
+                          {
+        planar::RunResult result;
+        try
+        {
+            QTemporaryDir work(QDir::temp().filePath("roift_plane_XXXXXX"));
+            if (!work.isValid())
+            {
+                result.message = "Could not create a temporary directory for the slice run.";
+            }
+            else
+            {
+                request.workDir = work.path();
+                result = planar::segmentPlane(request);
+            }
+        }
+        catch (const std::exception &e)
+        {
+            result = planar::RunResult();
+            result.message = QString("The slice run failed with an unexpected error: %1").arg(e.what());
+        }
+        catch (...)
+        {
+            result = planar::RunResult();
+            result.message = "The slice run failed with an unknown error.";
+        }
+        QMetaObject::invokeMethod(this,
+                                  [this, pins, runLabels, result = std::move(result)]()
+                                  { applyPlaneSegmentationResult(pins, runLabels, result); },
+                                  Qt::QueuedConnection); },
+                          initialMessage,
+                          {QString("Executable: %1").arg(executable)},
+                          "Slice segmentation");
+}
+
+void ManualSeedSelector::applyPlaneSegmentationResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                                                      const planar::RunResult &result)
+{
+    if (!result.commandLine.isEmpty())
+        appendSegmentationLog(QString("Command: %1").arg(result.commandLine));
+
+    QString reason;
+    QString details;
+    QString summary;
+    if (!result.success)
+    {
+        reason = QString("Slice segmentation failed: %1").arg(result.message.section('\n', 0, 0));
+        details = result.message.section('\n', 1);
+    }
+    else
+    {
+        // Whatever happens here, the task must still be completed, or every later run queues behind it.
+        try
+        {
+            reason = pastePlaneResult(pins, runLabels, result.labels, &summary);
+        }
+        catch (const std::exception &e)
+        {
+            reason = QString("Slice result could not be pasted: %1").arg(e.what());
+        }
+        catch (...)
+        {
+            reason = "Slice result could not be pasted: unknown error.";
+        }
+    }
+
+    if (!reason.isEmpty())
+    {
+        // Before completing: completion may start the next queued task, which logs too.
+        appendSegmentationLog(details);
+        completeSegmentationTask(false, reason);
+        emit planeSegmentationFinished(false, reason);
+        return;
+    }
+    completeSegmentationTask(true, summary);
+    emit planeSegmentationFinished(true, summary);
+}
+
+QString ManualSeedSelector::pastePlaneResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                                             const std::vector<int> &labels, QString *summary)
+{
+    const std::array<int, 3> dims{static_cast<int>(m_image.getSizeX()), static_cast<int>(m_image.getSizeY()),
+                                  static_cast<int>(m_image.getSizeZ())};
+    if (QString::fromStdString(m_path) != pins.imagePath || dims != pins.geometry.dims)
+        return "Slice result discarded: the image changed during the run.";
+    if (activeMaskPath() != pins.maskPath)
+        return "Slice result discarded: the edited mask changed during the run.";
+
+    // As the brush: read a mask that is only selected, and paint a blank one when there is none.
+    if (activeMaskPending() && !ensureActiveMaskLoaded())
+        return "Slice result discarded: the edited mask could not be read.";
+    if (m_maskData.empty())
+    {
+        m_maskData.assign(std::size_t(dims[0]) * std::size_t(dims[1]) * std::size_t(dims[2]), 0);
+        m_maskDimX = m_image.getSizeX();
+        m_maskDimY = m_image.getSizeY();
+        m_maskDimZ = m_image.getSizeZ();
+    }
+    if (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() || m_maskDimZ != m_image.getSizeZ())
+        return QString("Slice result discarded: the edited mask is %1 x %2 x %3 and the image %4 x %5 x %6.")
+            .arg(m_maskDimX)
+            .arg(m_maskDimY)
+            .arg(m_maskDimZ)
+            .arg(dims[0])
+            .arg(dims[1])
+            .arg(dims[2]);
+    if (!planar::pastePlaneLabels(pins.geometry, labels, runLabels, m_maskData))
+        return "Slice result discarded: the label plane does not fit the slice.";
+
+    const std::set<int> written(labels.begin(), labels.end());
+    QStringList writtenNames;
+    for (int label : written)
+    {
+        if (label <= 0)
+            continue;
+        noteActiveMaskLabel(label);
+        writtenNames << QString::number(label);
+    }
+    rebuildMaskLabelFilter(); // the paste can clear a label from the whole mask
+    m_mask3DDirty = true;
+    setActiveMaskVisible();
+    updateViews();
+
+    *summary = QString("Segmented %1 slice %2: %3.")
+                   .arg(planeName(pins.geometry.plane))
+                   .arg(pins.geometry.index)
+                   .arg(writtenNames.isEmpty() ? QString("no label")
+                                               : QString("label(s) %1").arg(writtenNames.join(", ")));
+    return QString();
+}
+
+void ManualSeedSelector::updateSliceLabels()
+{
+    const auto position = [](const QString &plane, const QSlider *slider)
+    { return QString("%1: %2/%3").arg(plane).arg(slider->value()).arg(slider->maximum()); };
+    m_axialLabel->setText(isPlanarImage() ? QString("Image") : position("Axial", m_axialSlider));
+    m_sagittalLabel->setText(position("Sagittal", m_sagittalSlider));
+    m_coronalLabel->setText(position("Coronal", m_coronalSlider));
 }
 
 // =============================================================================
@@ -5360,6 +5838,13 @@ bool ManualSeedSelector::ensureActiveMaskLoaded()
         }
     }
     return ok && !m_maskData.empty();
+}
+
+const std::vector<int> &ManualSeedSelector::activeMaskLabels()
+{
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
+    return m_maskData;
 }
 
 bool ManualSeedSelector::setActiveMaskVisible()
@@ -6016,15 +6501,100 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     }
 }
 
-bool ManualSeedSelector::saveMaskToFile(const std::string &path)
+namespace
+{
+bool isPngPath(const std::string &path)
+{
+    return QString::fromStdString(path).endsWith(".png", Qt::CaseInsensitive);
+}
+} // namespace
+
+// The edited mask as a PNG: 8-bit up to label 255, 16-bit up to 65535, refused beyond.
+bool ManualSeedSelector::savePngLabels(const std::string &path, QString *error)
+{
+    const auto fail = [error](const QString &message)
+    {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (m_image.getSizeX() == 0 || m_image.getSizeY() == 0 || m_image.getSizeZ() == 0)
+        return fail("No image loaded.");
+    if (m_maskData.empty() && isPlanarImage())
+    {
+        m_maskDimX = m_image.getSizeX();
+        m_maskDimY = m_image.getSizeY();
+        m_maskDimZ = 1;
+        m_maskData.assign(size_t(m_maskDimX) * m_maskDimY, 0);
+    }
+    if (m_maskDimZ != 1)
+        return fail("A PNG label image holds one slice; this mask has " + QString::number(m_maskDimZ) +
+                    " slices. Save a one-slice mask as PNG, or save as NIfTI.");
+    if (m_maskData.size() != size_t(m_maskDimX) * m_maskDimY)
+        return fail("The mask size does not match its dimensions.");
+    int largest = 0;
+    for (const int v : m_maskData)
+    {
+        if (v < 0)
+            return fail("A PNG label image cannot hold negative labels.");
+        largest = std::max(largest, v);
+    }
+    if (largest > std::numeric_limits<uint16_t>::max())
+        return fail(QString("Label %1 exceeds the 65535 limit of a PNG label image.").arg(largest));
+
+    const auto write = [&](auto pixelTag)
+    {
+        using PixelType = decltype(pixelTag);
+        using ImageType = itk::Image<PixelType, 2>;
+        typename ImageType::Pointer out = ImageType::New();
+        typename ImageType::SizeType size;
+        size[0] = m_maskDimX;
+        size[1] = m_maskDimY;
+        typename ImageType::RegionType region;
+        region.SetSize(size);
+        out->SetRegions(region);
+        out->Allocate();
+        PixelType *buffer = out->GetBufferPointer();
+        for (size_t i = 0; i < m_maskData.size(); ++i)
+            buffer[i] = static_cast<PixelType>(m_maskData[i]);
+        auto writer = itk::ImageFileWriter<ImageType>::New();
+        writer->SetFileName(path);
+        writer->SetInput(out);
+        writer->Update();
+    };
+    try
+    {
+        if (largest <= std::numeric_limits<uint8_t>::max())
+            write(uint8_t{});
+        else
+            write(uint16_t{});
+    }
+    catch (const std::exception &e)
+    {
+        return fail(QString("Failed: %1").arg(e.what()));
+    }
+    return true;
+}
+
+bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *error)
 {
     // Writing before the deferred read would save a blank volume over a mask
     // the user only meant to select.
     if (activeMaskPending())
         ensureActiveMaskLoaded();
 
+    const auto fail = [error](const QString &message)
+    {
+        if (error)
+            *error = message;
+        return false;
+    };
+
     try
     {
+        if (isPngPath(path))
+            return savePngLabels(path, error);
+
         using PixelType = int16_t;
         using ImageType = itk::Image<PixelType, 3>;
         using WriterType = itk::ImageFileWriter<ImageType>;
@@ -6039,8 +6609,7 @@ bool ManualSeedSelector::saveMaskToFile(const std::string &path)
         unsigned int sz = m_image.getSizeZ();
         if (sx == 0 || sy == 0 || sz == 0)
         {
-            QMessageBox::warning(this, "Save Mask", "No image loaded.");
-            return false;
+            return fail("No image loaded.");
         }
         size[0] = static_cast<ImageType::SizeValueType>(sx);
         size[1] = static_cast<ImageType::SizeValueType>(sy);
@@ -6111,9 +6680,24 @@ bool ManualSeedSelector::saveMaskToFile(const std::string &path)
     }
     catch (const std::exception &e)
     {
-        QMessageBox::critical(this, "Save Mask", QString("Failed: %1").arg(e.what()));
-        return false;
+        return fail(QString("Failed: %1").arg(e.what()));
     }
+}
+
+void ManualSeedSelector::saveMaskToFile()
+{
+    const QString niftiFilter = "NIfTI files (*.nii *.nii.gz)";
+    const QString pngFilter = "PNG label image (*.png)";
+    const QString filters = isPlanarImage() ? niftiFilter + ";;" + pngFilter : niftiFilter;
+    QString selected = niftiFilter;
+    QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", filters, &selected);
+    if (f.isEmpty())
+        return;
+    if (selected == pngFilter && QFileInfo(f).suffix().isEmpty())
+        f += ".png";
+    QString error;
+    if (!saveActiveMaskTo(f.toStdString(), &error))
+        QMessageBox::critical(this, "Save Mask", error);
 }
 
 bool ManualSeedSelector::loadMaskFromFile(const std::string &path)

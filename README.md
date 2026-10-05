@@ -8,6 +8,7 @@
 - Place manual seeds for segmentation and edit masks (draw/erase per-label).
 - Launch an external segmentation tool (ROIFT / `oiftrelax`) for per-label segmentation and merge results.
 - Save/load seeds and save/load masks.
+- Open 2D raster images (PNG, JPEG, BMP, TIFF) and segment a single plane: the current axial, sagittal or coronal slice.
 
 ## Install
 

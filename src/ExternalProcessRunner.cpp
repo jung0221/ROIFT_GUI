@@ -66,10 +66,12 @@ void ManualSeedSelector::runLunasSeedGeneration()
         return;
     }
 
-    const QFileInfo inputInfo(inputPath);
-    const QString patientName = stripImageSuffix(inputInfo.fileName());
-    QDir outputRootDir = inputInfo.absoluteDir();
-    if (QString::compare(outputRootDir.dirName(), patientName, Qt::CaseInsensitive) == 0)
+    // Output goes beside the image as opened; the input may be a temporary export.
+    // LUNAS names its case after the file it reads, so its seeds are found by that name.
+    const QString patientName = stripImageSuffix(QFileInfo(inputPath).fileName());
+    const QFileInfo imageInfo(QString::fromStdString(m_path));
+    QDir outputRootDir = imageInfo.absoluteDir();
+    if (QString::compare(outputRootDir.dirName(), stripImageSuffix(imageInfo.fileName()), Qt::CaseInsensitive) == 0)
     {
         QDir parentDir = outputRootDir;
         if (parentDir.cdUp())
@@ -367,16 +369,17 @@ void ManualSeedSelector::runSuperResolution()
         return;
     }
 
-    QFileInfo inputInfo(inputPath);
-    QString baseName = inputInfo.fileName();
+    // Named and placed after the image as opened; the input may be a temporary export.
+    const QFileInfo imageInfo(QString::fromStdString(m_path));
+    QString baseName = imageInfo.fileName();
     if (baseName.endsWith(".nii.gz", Qt::CaseInsensitive))
         baseName.chop(7);
     else if (baseName.endsWith(".nii", Qt::CaseInsensitive))
         baseName.chop(4);
     else
-        baseName = inputInfo.completeBaseName();
+        baseName = imageInfo.completeBaseName();
 
-    QString defaultOutput = QDir(inputInfo.absolutePath()).filePath(baseName + "_sr.nii.gz");
+    QString defaultOutput = QDir(imageInfo.absolutePath()).filePath(baseName + "_sr.nii.gz");
     QString outQ = QFileDialog::getSaveFileName(
         this,
         "Save Super Resolution Output",
@@ -854,8 +857,12 @@ void ManualSeedSelector::runVesselGraph()
     if (!segmentFromCt)
     {
         tmpMask = QDir(tmpDir.path()).filePath("vessel_graph_domain.nii.gz");
-        if (!saveMaskToFile(tmpMask.toStdString()))
+        QString saveError;
+        if (!saveActiveMaskTo(tmpMask.toStdString(), &saveError))
+        {
+            QMessageBox::critical(this, "Save Mask", saveError);
             return;
+        }
     }
 
     // Output names follow the image the user opened; the payload path may be

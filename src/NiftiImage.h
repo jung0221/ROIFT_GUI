@@ -84,6 +84,11 @@ public:
 
     // True for paths this class routes through the numpy importer.
     static bool isNumpyPath(const std::string &path);
+    // True for 2D raster files (PNG, JPEG, BMP, TIFF), read as one-slice volumes.
+    static bool isRasterPath(const std::string &path);
+    // False for raster samples ITK reads without error but leaves unwritten
+    // (integer TIFF samples wider than 16 bits); call after ReadImageInformation.
+    static bool rasterComponentReadable(const itk::ImageIOBase &io);
     // List the arrays in a .npz/.npy without loading any of them.
     static bool inspectNumpy(const std::string &path, std::vector<npz::ArrayInfo> &arrays, std::string *error);
     // What loadNumpy() would produce for these options, without reading voxels.
@@ -112,11 +117,22 @@ public:
     float getGlobalMin() const;
     float getGlobalMax() const;
 
+    // Contiguous, x fastest; null when nothing is loaded.
+    const float *buffer() const { return m_image ? m_image->GetBufferPointer() : nullptr; }
+
     bool isMask() const { return m_isMask; }
+
+    // Why the last load()/loadNumpy() failed, on one line; empty after a success or
+    // when the failing reader gave no reason (NIfTI and DICOM report to stderr only).
+    const std::string &lastError() const { return m_lastError; }
 
 private:
     // Loads a DICOM volume from a directory of slices or a single DICOM file.
     bool loadDicomSeries(const std::string &path);
+    // Loads a PNG/JPEG/BMP/TIFF as grey, in pixels; a 2D file becomes one slice.
+    bool loadRaster(const std::string &path);
+    // m_spacing* from m_image's spacing as |s|, or 1 where an axis is zero or non-finite.
+    void takeSpacingFromImage();
     // Shared post-read processing (min/max, mask classification, logging).
     void finalizeLoad(const std::string &path);
 
@@ -128,5 +144,6 @@ private:
     double m_spacingY = 1.0;
     double m_spacingZ = 1.0;
     bool m_isMask = false;
+    std::string m_lastError;
     itk::ImageIOBase::IOComponentType m_component = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
 };

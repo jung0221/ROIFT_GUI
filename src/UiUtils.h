@@ -99,20 +99,26 @@ QString normalizeCsvCell(QString value);
 // ---------------------------------------------------------------------------
 // Openable image formats
 //
-// Kept in one place so the file dialogs, the CSV importer and the folder scan
-// all agree on what counts as an image instead of each repeating the list.
+// Kept in one place so the file dialogs and the CSV importer agree on what
+// counts as an image instead of each repeating the list. The folder scan for
+// masks deliberately excludes raster files.
 // ---------------------------------------------------------------------------
 
 /// True when the path's extension is one the GUI can open as a volume.
 bool isSupportedImagePath(const QString &path);
 
-/// QFileDialog filter for opening images (NIfTI, DICOM and NumPy).
+/// True when the path's extension is a 2D raster format (PNG, JPEG, BMP, TIFF).
+bool isRasterImagePath(const QString &path);
+
+/// QFileDialog filter for opening images (NIfTI, DICOM, NumPy and raster images).
 QString imageOpenFileFilter();
 
-/// QFileDialog filter for opening masks (NIfTI and NumPy; DICOM holds no labels).
+/// QFileDialog filter for opening masks: NIfTI, NumPy, PNG, BMP and TIFF (DICOM holds
+/// no labels; JPEG blurs them).
 QString maskOpenFileFilter();
 
-/// Strip a known image extension (.nii, .nii.gz, .npz, .npy) from a filename.
+/// Strip a known image extension (.nii, .nii.gz, .npz, .npy, .png, .jpg, .jpeg,
+/// .bmp, .tif, .tiff) from a filename.
 QString stripImageSuffix(const QString &fileName);
 
 /// Escape a value for CSV output (handles commas, quotes, newlines).

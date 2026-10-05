@@ -39,7 +39,8 @@ static void print_help()
         QStringLiteral(
             "roift_gui [--version] [--input <image_path> [more_paths...]]\n"
             "You can pass multiple paths after --input/-i or as positional arguments.\n"
-            "Accepted: .nii, .nii.gz, DICOM (file or directory), .npz and .npy.\n"
+            "Accepted: .nii, .nii.gz, DICOM (file or directory), .npz, .npy, and the raster\n"
+            "formats .png, .jpg, .jpeg, .bmp, .tif and .tiff (measured in pixels).\n"
             "A .npz/.npy carries no spacing: it is taken from a matching .nii.gz next to it,\n"
             "or from a <name>.json sidecar, otherwise 1 mm isotropic is assumed."));
 }
