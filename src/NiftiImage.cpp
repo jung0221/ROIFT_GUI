@@ -8,11 +8,11 @@
 #include <itkGDCMSeriesFileNames.h>
 #include <itkImageRegionIterator.h>
 #include <itkImageDuplicator.h>
+#include <itkVectorImage.h>
 #include <algorithm>
 #include <filesystem>
 #include <unordered_set>
 #include <cmath>
-#include <limits>
 #include <zlib.h>
 #include <cstdio>
 #include <fstream>
@@ -315,55 +315,103 @@ bool NiftiImage::loadDicomSeries(const std::string &path)
 namespace
 {
 
-// Largest value of an integer component; 1 for floating point, whose alpha is already in [0, 1].
-double componentMaximum(itk::ImageIOBase::IOComponentType component)
+// A read allocates one float per sample (voxels times channels), so at this many
+// a file needs about 1.6 GB before the views and masks; larger ones are refused.
+constexpr std::size_t kMaxRasterSamples = 400'000'000;
+
+// ITK's weights, as integers so a grey triple maps to itself exactly.
+float luminance(double r, double g, double b)
 {
-    switch (component)
-    {
-    case itk::ImageIOBase::UCHAR: return std::numeric_limits<unsigned char>::max();
-    case itk::ImageIOBase::CHAR: return std::numeric_limits<signed char>::max();
-    case itk::ImageIOBase::USHORT: return std::numeric_limits<unsigned short>::max();
-    case itk::ImageIOBase::SHORT: return std::numeric_limits<short>::max();
-    case itk::ImageIOBase::UINT: return std::numeric_limits<unsigned int>::max();
-    case itk::ImageIOBase::INT: return std::numeric_limits<int>::max();
-    case itk::ImageIOBase::ULONG: return static_cast<double>(std::numeric_limits<unsigned long>::max());
-    case itk::ImageIOBase::LONG: return static_cast<double>(std::numeric_limits<long>::max());
-    case itk::ImageIOBase::ULONGLONG: return static_cast<double>(std::numeric_limits<unsigned long long>::max());
-    case itk::ImageIOBase::LONGLONG: return static_cast<double>(std::numeric_limits<long long>::max());
-    default: return 1.0;
-    }
+    return static_cast<float>((2125.0 * r + 7154.0 * g + 721.0 * b) / 10000.0);
+}
+
+// Colour to luminance with alpha ignored; grey+alpha to its grey.
+ImageType::Pointer readRasterAsGrey(const std::string &path)
+{
+    using VectorType = itk::VectorImage<float, 3>;
+    auto reader = itk::ImageFileReader<VectorType>::New();
+    reader->SetFileName(path);
+    reader->Update();
+    VectorType::Pointer colour = reader->GetOutput();
+
+    auto grey = ImageType::New();
+    grey->CopyInformation(colour);
+    grey->SetRegions(colour->GetLargestPossibleRegion());
+    grey->Allocate();
+    const unsigned int stride = colour->GetNumberOfComponentsPerPixel();
+    const float *in = colour->GetBufferPointer();
+    PixelType *out = grey->GetBufferPointer();
+    const std::size_t count = grey->GetLargestPossibleRegion().GetNumberOfPixels();
+    for (std::size_t i = 0; i < count; ++i, in += stride)
+        out[i] = (stride == 2) ? in[0] : luminance(in[0], in[1], in[2]);
+    return grey;
 }
 
 } // namespace
 
+bool NiftiImage::rasterComponentReadable(const itk::ImageIOBase &io)
+{
+    // ITK's TIFF reader has no path for integer samples wider than 16 bits and leaves the buffer unwritten.
+    if (std::string(io.GetNameOfClass()) != "TIFFImageIO")
+        return true;
+    switch (io.GetComponentType())
+    {
+    case itk::ImageIOBase::UINT:
+    case itk::ImageIOBase::INT:
+    case itk::ImageIOBase::ULONG:
+    case itk::ImageIOBase::LONG:
+    case itk::ImageIOBase::ULONGLONG:
+    case itk::ImageIOBase::LONGLONG:
+        return false;
+    default:
+        return true;
+    }
+}
+
 bool NiftiImage::loadRaster(const std::string &path)
 {
-    // The factory reader gives a 2D file Z = 1 and converts colour to luminance;
-    // a multi-page TIFF reads as a volume.
+    // A 2D file reads as one slice, a multi-page TIFF as a volume.
+    ImageType::Pointer image;
+    itk::ImageIOBase::IOComponentType component = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
     try
     {
-        using ReaderType = itk::ImageFileReader<ImageType>;
-        ReaderType::Pointer reader = ReaderType::New();
+        auto reader = itk::ImageFileReader<ImageType>::New();
         reader->SetFileName(path);
         reader->UpdateOutputInformation();
-        m_component = reader->GetImageIO()->GetComponentType();
-        const unsigned int components = reader->GetImageIO()->GetNumberOfComponents();
-        reader->Update();
-        m_image = reader->GetOutput();
-        m_image->DisconnectPipeline();
-        m_region = m_image->GetLargestPossibleRegion();
-        takeSpacingFromImage();
+        const itk::ImageIOBase *io = reader->GetImageIO();
+        component = io->GetComponentType();
+        const unsigned int components = io->GetNumberOfComponents();
+        const std::size_t samples =
+            static_cast<std::size_t>(reader->GetOutput()->GetLargestPossibleRegion().GetNumberOfPixels()) * components;
 
-        // ITK weights grey by the raw alpha (component 2, or 4 onwards) when the output
-        // is wider than 2 bytes, so opaque 8-bit RGBA would read 255 times its luminance.
-        const double alphaMaximum = componentMaximum(m_component);
-        if ((components == 2 || components >= 4) && alphaMaximum > 1.0)
+        if (!rasterComponentReadable(*io))
         {
-            const float scale = static_cast<float>(1.0 / alphaMaximum);
-            PixelType *voxel = m_image->GetBufferPointer();
-            const std::size_t count = m_image->GetPixelContainer()->Size();
-            for (std::size_t i = 0; i < count; ++i)
-                voxel[i] *= scale;
+            std::cerr << "NiftiImage::load: '" << path << "' has 32-bit or wider integer TIFF samples, which ITK "
+                      << "cannot read; save it with 8- or 16-bit or float samples\n";
+            return false;
+        }
+        if (samples > kMaxRasterSamples)
+        {
+            std::cerr << "NiftiImage::load: '" << path << "' holds " << samples << " samples, more than the "
+                      << kMaxRasterSamples << " a raster image may have\n";
+            return false;
+        }
+        if (components < 1 || components > 4)
+        {
+            std::cerr << "NiftiImage::load: '" << path << "' has " << components
+                      << " channels; expected grey, grey+alpha, RGB or RGBA\n";
+            return false;
+        }
+
+        if (components == 1)
+        {
+            reader->Update();
+            image = reader->GetOutput();
+            image->DisconnectPipeline();
+        }
+        else
+        {
+            image = readRasterAsGrey(path);
         }
     }
     catch (itk::ExceptionObject &e)
@@ -376,13 +424,28 @@ bool NiftiImage::loadRaster(const std::string &path)
         std::cerr << "NiftiImage::load: std::exception while reading '" << path << "': " << e.what() << std::endl;
         return false;
     }
-
-    if (m_region.GetSize()[0] == 0 || m_region.GetSize()[1] == 0 || m_region.GetSize()[2] == 0)
+    catch (...)
     {
-        std::cerr << "NiftiImage::load: image has zero size in one or more dimensions for '" << path << "' size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ")" << std::endl;
+        std::cerr << "NiftiImage::load: unknown exception while reading '" << path << "'\n";
         return false;
     }
 
+    const ImageType::SizeType size = image->GetLargestPossibleRegion().GetSize();
+    if (size[0] == 0 || size[1] == 0 || size[2] == 0)
+    {
+        std::cerr << "NiftiImage::load: image has zero size in one or more dimensions for '" << path << "' size=(" << size[0] << "," << size[1] << "," << size[2] << ")" << std::endl;
+        return false;
+    }
+
+    // Measured in pixels: DPI describes print size, not the imaged object, and differs by format for one picture.
+    ImageType::SpacingType unit;
+    unit.Fill(1.0);
+    image->SetSpacing(unit);
+
+    m_image = image;
+    m_region = m_image->GetLargestPossibleRegion();
+    m_component = component;
+    takeSpacingFromImage();
     finalizeLoad(path);
     return true;
 }

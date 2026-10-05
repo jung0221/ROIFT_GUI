@@ -69,6 +69,8 @@ int main(int argc, char **argv)
           "open filter offers raster images");
     check(maskOpenFileFilter().contains("*.png") && maskOpenFileFilter().contains("*.tiff"),
           "mask filter offers raster images");
+    check(!maskOpenFileFilter().contains("*.jpg") && !maskOpenFileFilter().contains("*.jpeg"),
+          "mask filter omits JPEG (lossy, labels would blur)");
 
     std::printf("\n%s\n", failures ? "FAILURES" : "all path-helper checks passed");
     return failures ? 1 : 0;

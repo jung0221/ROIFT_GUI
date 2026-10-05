@@ -11,6 +11,7 @@
 
 #include <itkImage.h>
 #include <itkImageFileReader.h>
+#include <itkImageIOFactory.h>
 #include <itkImageRegionConstIterator.h>
 
 namespace
@@ -33,6 +34,37 @@ const QColor kMaskSlotPalette[] = {
     QColor(74, 224, 160),  // mint
 };
 constexpr int kMaskSlotPaletteSize = static_cast<int>(sizeof(kMaskSlotPalette) / sizeof(kMaskSlotPalette[0]));
+
+// The IO for a raster label image, or null with *error set. Palette indices are
+// the labels, so the palette is not expanded to colour; anything with more than
+// one channel (colour, alpha) is not a label image.
+itk::ImageIOBase::Pointer openRasterMaskIO(const std::string &path, QString *error)
+{
+    const QString name = QFileInfo(QString::fromStdString(path)).fileName();
+    itk::ImageIOBase::Pointer io = itk::ImageIOFactory::CreateImageIO(path.c_str(), itk::IOFileModeEnum::ReadMode);
+    if (!io)
+    {
+        *error = QStringLiteral("No reader for mask %1").arg(name);
+        return nullptr;
+    }
+    io->SetExpandRGBPalette(false);
+    io->SetFileName(path);
+    io->ReadImageInformation();
+    if (io->GetNumberOfComponents() != 1)
+    {
+        *error = QStringLiteral("Mask %1 has %2 channels; a label image has one (grey or palette indices)")
+                     .arg(name)
+                     .arg(io->GetNumberOfComponents());
+        return nullptr;
+    }
+    if (!NiftiImage::rasterComponentReadable(*io))
+    {
+        *error = QStringLiteral("Mask %1 has 32-bit integer TIFF samples, which cannot be read; save it as 8 or 16 bit")
+                     .arg(name);
+        return nullptr;
+    }
+    return io;
+}
 } // namespace
 
 std::size_t MaskVolume::voxelCount() const
@@ -101,6 +133,19 @@ bool readMaskVolume(const std::string &path,
             using ReaderType = itk::ImageFileReader<MaskImageType>;
             ReaderType::Pointer reader = ReaderType::New();
             reader->SetFileName(path);
+            const bool raster = NiftiImage::isRasterPath(path);
+            if (raster)
+            {
+                QString refusal;
+                itk::ImageIOBase::Pointer io = openRasterMaskIO(path, &refusal);
+                if (!io)
+                {
+                    if (error)
+                        *error = refusal;
+                    return false;
+                }
+                reader->SetImageIO(io);
+            }
             reader->Update();
             MaskImageType::Pointer img = reader->GetOutput();
             const MaskImageType::RegionType region = img->GetLargestPossibleRegion();
@@ -112,6 +157,9 @@ bool readMaskVolume(const std::string &path,
             out.spacingX = std::abs(static_cast<double>(spacing[0]));
             out.spacingY = std::abs(static_cast<double>(spacing[1]));
             out.spacingZ = std::abs(static_cast<double>(spacing[2]));
+            // In pixels, as NiftiImage reads a raster image, so the mask matches its image.
+            if (raster)
+                out.spacingX = out.spacingY = out.spacingZ = 1.0;
             out.data.resize(out.voxelCount());
             itk::ImageRegionConstIterator<MaskImageType> it(img, region);
             std::size_t writeIdx = 0;

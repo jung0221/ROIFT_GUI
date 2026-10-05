@@ -200,15 +200,17 @@ if(BUILD_ROIFT_TESTS)
   target_include_directories(planar_slice_test PRIVATE src)
   add_test(NAME planar_slice COMMAND planar_slice_test)
 
-  # Reads PNG/JPEG/BMP/TIFF through NiftiImage and the plane mapping; no Qt, no display.
+  # Reads PNG/JPEG/BMP/TIFF as images (NiftiImage, the plane mapping) and as masks
+  # (readMaskVolume, hence Qt Gui for QColor); no display.
   add_executable(raster_image_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/raster_image_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/MaskLayers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/NpzVolume.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/PlanarSlice.cpp
   )
   target_include_directories(raster_image_test PRIVATE src)
-  target_link_libraries(raster_image_test PRIVATE ${ITK_LIBRARIES})
+  target_link_libraries(raster_image_test PRIVATE Qt6::Gui ${ITK_LIBRARIES})
   add_test(NAME raster_image COMMAND raster_image_test)
 
   add_executable(wheel_guard_test
@@ -226,7 +228,6 @@ if(BUILD_ROIFT_TESTS)
   set(GUI_TEST_SOURCES ${SRC_FILES})
   list(REMOVE_ITEM GUI_TEST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
   add_library(roift_gui_test_objects OBJECT ${GUI_TEST_SOURCES})
-  set_target_properties(roift_gui_test_objects PROPERTIES AUTOMOC ON AUTORCC ON)
   target_include_directories(roift_gui_test_objects PUBLIC src)
   target_link_libraries(roift_gui_test_objects PUBLIC Qt6::Widgets ${ITK_LIBRARIES} ${VTK_LIBRARIES})
   if(TARGET Qt6::Svg)

@@ -932,7 +932,7 @@ void ManualSeedSelector::setupUi()
     maskFileLayout->addWidget(btnMaskSave);
 
     QPushButton *btnMaskLoad = new QPushButton("Load");
-    btnMaskLoad->setToolTip("Load mask from NIfTI, NumPy or a raster label image (PNG, JPEG, BMP, TIFF)");
+    btnMaskLoad->setToolTip("Load mask from NIfTI, NumPy or a raster label image (PNG, BMP, TIFF)");
     connect(btnMaskLoad, &QPushButton::clicked, [this]()
             {
         QString f = QFileDialog::getOpenFileName(this, "Open Mask", "",
@@ -1533,6 +1533,7 @@ void ManualSeedSelector::setupUi()
     niftiListLayout->setSpacing(4);
 
     m_niftiList = new QListWidget();
+    m_niftiList->setObjectName("imageList");
     m_niftiList->setMinimumHeight(70);
     m_niftiList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_niftiList->setToolTip("Click to select which image to display");
@@ -2696,17 +2697,26 @@ void ManualSeedSelector::setupUi()
 bool ManualSeedSelector::loadImageData(ImageData &data)
 {
     if (!data.isNumpy)
-        return m_image.load(data.imagePath);
+    {
+        if (!m_image.load(data.imagePath))
+            return false;
+    }
+    else
+    {
+        NpzImportReport report;
+        if (!m_image.loadNumpy(data.imagePath, data.npzOptions, &report))
+            return false;
 
-    NpzImportReport report;
-    if (!m_image.loadNumpy(data.imagePath, data.npzOptions, &report))
-        return false;
+        // Pin down whatever "Automatic" resolved to. Masks loaded next inherit it,
+        // and reselecting the image later cannot silently resolve it differently.
+        data.npzOptions.axisOrder = report.axisOrder;
+        for (int i = 0; i < 3; ++i)
+            data.npzOptions.flip[i] = report.flip[i];
+    }
 
-    // Pin down whatever "Automatic" resolved to. Masks loaded next inherit it,
-    // and reselecting the image later cannot silently resolve it differently.
-    data.npzOptions.axisOrder = report.axisOrder;
-    for (int i = 0; i < 3; ++i)
-        data.npzOptions.flip[i] = report.flip[i];
+    // The file or its import options may have changed since the last export.
+    m_nativeImagePath.clear();
+    m_nativeImageSource.clear();
     return true;
 }
 
@@ -2721,10 +2731,14 @@ std::string ManualSeedSelector::nativeImagePath()
         QFileInfo::exists(QString::fromStdString(m_nativeImagePath)))
         return m_nativeImagePath;
 
+    if (!m_exportDir || !m_exportDir->isValid())
+        m_exportDir = std::make_unique<QTemporaryDir>();
     const QString baseName = stripImageSuffix(QFileInfo(QString::fromStdString(m_path)).fileName());
     const QString prefix = numpy ? QStringLiteral("roift_npz_") : QStringLiteral("roift_src_");
-    const QString exportPath = QDir::temp().filePath(QString("%1%2.nii.gz").arg(prefix, baseName));
-    if (!m_image.save(exportPath.toStdString()))
+    const QString exportPath = m_exportDir->isValid()
+                                   ? QDir(m_exportDir->path()).filePath(QString("%1%2.nii.gz").arg(prefix, baseName))
+                                   : QString();
+    if (exportPath.isEmpty() || !m_image.save(exportPath.toStdString()))
     {
         QMessageBox::warning(this, "Export image",
                              "Could not export this image to a temporary NIfTI file, which the "

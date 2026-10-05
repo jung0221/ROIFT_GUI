@@ -1142,7 +1142,8 @@ namespace
 
         const bool doAll = parent->getSegmentAll();
         const bool polSweep = parent->getPolaritySweep();
-        const QString baseDir = QFileInfo(sourceImagePath).absolutePath();
+        // Beside the image as opened: sourceImagePath may sit in the window's export directory.
+        const QString baseDir = QFileInfo(QString::fromStdString(parent->getImagePath())).absolutePath();
         const QStringList labelChoices = buildLabelChoices(uniqueLabels);
 
         if (request->segmentationMethod > 0) {

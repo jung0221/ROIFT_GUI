@@ -113,7 +113,8 @@ bool isRasterImagePath(const QString &path);
 /// QFileDialog filter for opening images (NIfTI, DICOM, NumPy and raster images).
 QString imageOpenFileFilter();
 
-/// QFileDialog filter for opening masks (NIfTI, NumPy and raster images; DICOM holds no labels).
+/// QFileDialog filter for opening masks: NIfTI, NumPy, PNG, BMP and TIFF (DICOM holds
+/// no labels; JPEG blurs them).
 QString maskOpenFileFilter();
 
 /// Strip a known image extension (.nii, .nii.gz, .npz, .npy, .png, .jpg, .jpeg,

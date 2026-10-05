@@ -462,11 +462,12 @@ QString imageOpenFileFilter()
 
 QString maskOpenFileFilter()
 {
+    // No JPEG: lossy compression turns label edges into values no label has.
     return QStringLiteral(
-        "Mask volumes (*.nii *.nii.gz *.npz *.npy *.png *.jpg *.jpeg *.bmp *.tif *.tiff);;"
+        "Mask volumes (*.nii *.nii.gz *.npz *.npy *.png *.bmp *.tif *.tiff);;"
         "NIfTI files (*.nii *.nii.gz);;"
         "NumPy arrays (*.npz *.npy);;"
-        "Raster images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;"
+        "Raster label images (*.png *.bmp *.tif *.tiff);;"
         "All files (*)");
 }
 

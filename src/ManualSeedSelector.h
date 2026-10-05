@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <atomic>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -41,6 +42,7 @@ class QVBoxLayout;
 class QProgressBar;
 class QPlainTextEdit;
 class QTimer;
+class QTemporaryDir;
 class QResizeEvent;
 class QMoveEvent;
 class QCloseEvent;
@@ -101,9 +103,9 @@ public:
 
     // A path the native binaries and Python helpers can actually read. Those
     // consume files, not the in-memory volume, and none of them reads numpy or
-    // raster files, so a .npz/.npy or PNG/JPEG/BMP/TIFF image is exported once
-    // to a temporary NIfTI carrying the geometry it was read with. Other formats
-    // pass through.
+    // raster files, so a .npz/.npy or PNG/JPEG/BMP/TIFF image is exported, once
+    // per load, to a NIfTI in a directory removed with the window. Name outputs
+    // after getImagePath(), not after this. Other formats pass through.
     std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
@@ -616,9 +618,11 @@ private:
     // axis order and mirroring, so both land on the same voxel grid.
     NpzImportOptions numpyOptionsForMask() const;
 
-    // Cached NIfTI export of a numpy image, and the image it was made from.
+    // Cached NIfTI export of a numpy or raster image, and the image it was made
+    // from; cleared on every load. The directory is created on first export.
     std::string m_nativeImagePath;
     std::string m_nativeImageSource;
+    std::unique_ptr<QTemporaryDir> m_exportDir;
 
     QListWidget *m_niftiList = nullptr;
     QListWidget *m_maskList = nullptr;

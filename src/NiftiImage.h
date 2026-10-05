@@ -86,6 +86,9 @@ public:
     static bool isNumpyPath(const std::string &path);
     // True for 2D raster files (PNG, JPEG, BMP, TIFF), read as one-slice volumes.
     static bool isRasterPath(const std::string &path);
+    // False for raster samples ITK reads without error but leaves unwritten
+    // (integer TIFF samples wider than 16 bits); call after ReadImageInformation.
+    static bool rasterComponentReadable(const itk::ImageIOBase &io);
     // List the arrays in a .npz/.npy without loading any of them.
     static bool inspectNumpy(const std::string &path, std::vector<npz::ArrayInfo> &arrays, std::string *error);
     // What loadNumpy() would produce for these options, without reading voxels.
@@ -122,7 +125,7 @@ public:
 private:
     // Loads a DICOM volume from a directory of slices or a single DICOM file.
     bool loadDicomSeries(const std::string &path);
-    // Loads a PNG/JPEG/BMP/TIFF; a 2D file becomes one slice, colour becomes luminance.
+    // Loads a PNG/JPEG/BMP/TIFF as grey, in pixels; a 2D file becomes one slice.
     bool loadRaster(const std::string &path);
     // m_spacing* from m_image's spacing as |s|, or 1 where an axis is zero or non-finite.
     void takeSpacingFromImage();
