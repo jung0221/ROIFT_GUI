@@ -566,7 +566,7 @@ void ManualSeedSelector::setupUi()
     mainToolBar->setFloatable(false);
 
     QAction *actOpen = mainToolBar->addAction("Open");
-    actOpen->setToolTip("Open an image: NIfTI, DICOM series or NumPy array (Ctrl+O)");
+    actOpen->setToolTip("Open an image: NIfTI, DICOM series, NumPy array or PNG/JPEG/BMP/TIFF (Ctrl+O)");
     actOpen->setShortcut(QKeySequence("Ctrl+O"));
     connect(actOpen, &QAction::triggered, this, &ManualSeedSelector::openImage);
 
@@ -932,7 +932,7 @@ void ManualSeedSelector::setupUi()
     maskFileLayout->addWidget(btnMaskSave);
 
     QPushButton *btnMaskLoad = new QPushButton("Load");
-    btnMaskLoad->setToolTip("Load mask from NIfTI or NumPy");
+    btnMaskLoad->setToolTip("Load mask from NIfTI, NumPy or a raster label image (PNG, JPEG, BMP, TIFF)");
     connect(btnMaskLoad, &QPushButton::clicked, [this]()
             {
         QString f = QFileDialog::getOpenFileName(this, "Open Mask", "",
@@ -1798,6 +1798,9 @@ void ManualSeedSelector::setupUi()
                 if (m_mask3DView && preservedCamera.valid)
                     m_mask3DView->restoreCameraState(preservedCamera, true);
                 m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(path)));
+            } else {
+                m_statusLabel->setText(QString("Could not read %1; see the log for details.")
+                                           .arg(QFileInfo(QString::fromStdString(path)).fileName()));
             }
         } });
 
@@ -2709,7 +2712,8 @@ bool ManualSeedSelector::loadImageData(ImageData &data)
 
 std::string ManualSeedSelector::nativeImagePath()
 {
-    if (m_path.empty() || !NiftiImage::isNumpyPath(m_path))
+    const bool numpy = NiftiImage::isNumpyPath(m_path);
+    if (m_path.empty() || !(numpy || NiftiImage::isRasterPath(m_path)))
         return m_path;
 
     // Reuse the export while the same image stays loaded.
@@ -2718,11 +2722,12 @@ std::string ManualSeedSelector::nativeImagePath()
         return m_nativeImagePath;
 
     const QString baseName = stripImageSuffix(QFileInfo(QString::fromStdString(m_path)).fileName());
-    const QString exportPath = QDir::temp().filePath(QString("roift_npz_%1.nii.gz").arg(baseName));
+    const QString prefix = numpy ? QStringLiteral("roift_npz_") : QStringLiteral("roift_src_");
+    const QString exportPath = QDir::temp().filePath(QString("%1%2.nii.gz").arg(prefix, baseName));
     if (!m_image.save(exportPath.toStdString()))
     {
-        QMessageBox::warning(this, "NumPy image",
-                             "Could not export this NumPy volume to a temporary NIfTI file, which the "
+        QMessageBox::warning(this, "Export image",
+                             "Could not export this image to a temporary NIfTI file, which the "
                              "segmentation tools need in order to read it.");
         return m_path;
     }

@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <unordered_set>
 #include <cmath>
+#include <limits>
 #include <zlib.h>
 #include <cstdio>
 #include <fstream>
@@ -42,7 +43,8 @@ bool NiftiImage::load(const std::string &path)
         return loadNumpy(path, NpzImportOptions{});
 
     // Route DICOM input (a directory of slices, or a single .dcm/.dicom/.ima file)
-    // through the GDCM series reader; everything else is treated as NIfTI.
+    // through the GDCM series reader, raster files through ITK's factory reader;
+    // everything else is treated as NIfTI.
     {
         std::error_code ec;
         const bool isDir = std::filesystem::is_directory(path, ec);
@@ -63,6 +65,9 @@ bool NiftiImage::load(const std::string &path)
             return true;
         }
     }
+
+    if (isRasterPath(path))
+        return loadRaster(path);
 
     // If .nii.gz, decompress to a temporary .nii to avoid any plugin quirks.
     std::string actualPath = path;
@@ -166,16 +171,7 @@ bool NiftiImage::load(const std::string &path)
             return false;
         }
         m_region = m_image->GetLargestPossibleRegion();
-        const auto spacing = m_image->GetSpacing();
-        m_spacingX = std::abs(static_cast<double>(spacing[0]));
-        m_spacingY = std::abs(static_cast<double>(spacing[1]));
-        m_spacingZ = std::abs(static_cast<double>(spacing[2]));
-        if (!std::isfinite(m_spacingX) || m_spacingX <= 0.0)
-            m_spacingX = 1.0;
-        if (!std::isfinite(m_spacingY) || m_spacingY <= 0.0)
-            m_spacingY = 1.0;
-        if (!std::isfinite(m_spacingZ) || m_spacingZ <= 0.0)
-            m_spacingZ = 1.0;
+        takeSpacingFromImage();
     }
     catch (itk::ExceptionObject &e)
     {
@@ -293,17 +289,7 @@ bool NiftiImage::loadDicomSeries(const std::string &path)
         m_image->DisconnectPipeline();
         m_region = m_image->GetLargestPossibleRegion();
         m_component = dicomIO->GetComponentType();
-
-        const auto spacing = m_image->GetSpacing();
-        m_spacingX = std::abs(static_cast<double>(spacing[0]));
-        m_spacingY = std::abs(static_cast<double>(spacing[1]));
-        m_spacingZ = std::abs(static_cast<double>(spacing[2]));
-        if (!std::isfinite(m_spacingX) || m_spacingX <= 0.0)
-            m_spacingX = 1.0;
-        if (!std::isfinite(m_spacingY) || m_spacingY <= 0.0)
-            m_spacingY = 1.0;
-        if (!std::isfinite(m_spacingZ) || m_spacingZ <= 0.0)
-            m_spacingZ = 1.0;
+        takeSpacingFromImage();
 
         std::cerr << "NiftiImage::loadDicomSeries: loaded series '" << chosenUID << "' from '" << dir
                   << "' (" << fileNames.size() << " file(s), " << seriesUIDs.size() << " series in directory)\n";
@@ -323,6 +309,92 @@ bool NiftiImage::loadDicomSeries(const std::string &path)
     {
         std::cerr << "NiftiImage::loadDicomSeries: unknown exception while reading '" << path << "'\n";
         return false;
+    }
+}
+
+namespace
+{
+
+// Largest value of an integer component; 1 for floating point, whose alpha is already in [0, 1].
+double componentMaximum(itk::ImageIOBase::IOComponentType component)
+{
+    switch (component)
+    {
+    case itk::ImageIOBase::UCHAR: return std::numeric_limits<unsigned char>::max();
+    case itk::ImageIOBase::CHAR: return std::numeric_limits<signed char>::max();
+    case itk::ImageIOBase::USHORT: return std::numeric_limits<unsigned short>::max();
+    case itk::ImageIOBase::SHORT: return std::numeric_limits<short>::max();
+    case itk::ImageIOBase::UINT: return std::numeric_limits<unsigned int>::max();
+    case itk::ImageIOBase::INT: return std::numeric_limits<int>::max();
+    case itk::ImageIOBase::ULONG: return static_cast<double>(std::numeric_limits<unsigned long>::max());
+    case itk::ImageIOBase::LONG: return static_cast<double>(std::numeric_limits<long>::max());
+    case itk::ImageIOBase::ULONGLONG: return static_cast<double>(std::numeric_limits<unsigned long long>::max());
+    case itk::ImageIOBase::LONGLONG: return static_cast<double>(std::numeric_limits<long long>::max());
+    default: return 1.0;
+    }
+}
+
+} // namespace
+
+bool NiftiImage::loadRaster(const std::string &path)
+{
+    // The factory reader gives a 2D file Z = 1 and converts colour to luminance;
+    // a multi-page TIFF reads as a volume.
+    try
+    {
+        using ReaderType = itk::ImageFileReader<ImageType>;
+        ReaderType::Pointer reader = ReaderType::New();
+        reader->SetFileName(path);
+        reader->UpdateOutputInformation();
+        m_component = reader->GetImageIO()->GetComponentType();
+        const unsigned int components = reader->GetImageIO()->GetNumberOfComponents();
+        reader->Update();
+        m_image = reader->GetOutput();
+        m_image->DisconnectPipeline();
+        m_region = m_image->GetLargestPossibleRegion();
+        takeSpacingFromImage();
+
+        // ITK weights grey by the raw alpha (component 2, or 4 onwards) when the output
+        // is wider than 2 bytes, so opaque 8-bit RGBA would read 255 times its luminance.
+        const double alphaMaximum = componentMaximum(m_component);
+        if ((components == 2 || components >= 4) && alphaMaximum > 1.0)
+        {
+            const float scale = static_cast<float>(1.0 / alphaMaximum);
+            PixelType *voxel = m_image->GetBufferPointer();
+            const std::size_t count = m_image->GetPixelContainer()->Size();
+            for (std::size_t i = 0; i < count; ++i)
+                voxel[i] *= scale;
+        }
+    }
+    catch (itk::ExceptionObject &e)
+    {
+        std::cerr << "NiftiImage::load: ITK exception while reading '" << path << "': " << e << std::endl;
+        return false;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "NiftiImage::load: std::exception while reading '" << path << "': " << e.what() << std::endl;
+        return false;
+    }
+
+    if (m_region.GetSize()[0] == 0 || m_region.GetSize()[1] == 0 || m_region.GetSize()[2] == 0)
+    {
+        std::cerr << "NiftiImage::load: image has zero size in one or more dimensions for '" << path << "' size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ")" << std::endl;
+        return false;
+    }
+
+    finalizeLoad(path);
+    return true;
+}
+
+void NiftiImage::takeSpacingFromImage()
+{
+    const auto spacing = m_image->GetSpacing();
+    double *const targets[3] = {&m_spacingX, &m_spacingY, &m_spacingZ};
+    for (unsigned int axis = 0; axis < 3; ++axis)
+    {
+        const double s = std::abs(static_cast<double>(spacing[axis]));
+        *targets[axis] = (std::isfinite(s) && s > 0.0) ? s : 1.0;
     }
 }
 
@@ -626,6 +698,19 @@ itk::ImageIOBase::IOComponentType componentForDType(npz::DType t)
 bool NiftiImage::isNumpyPath(const std::string &path)
 {
     return npz::isNpzPath(path) || npz::isNpyPath(path);
+}
+
+bool NiftiImage::isRasterPath(const std::string &path)
+{
+    // Matches rasterExtensions() in UiUtils, which this Qt-free class cannot include.
+    static const char *const kExtensions[] = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"};
+    std::string ext = std::filesystem::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const char *candidate : kExtensions)
+        if (ext == candidate)
+            return true;
+    return false;
 }
 
 bool NiftiImage::inspectNumpy(const std::string &path, std::vector<npz::ArrayInfo> &arrays, std::string *error)

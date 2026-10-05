@@ -200,6 +200,17 @@ if(BUILD_ROIFT_TESTS)
   target_include_directories(planar_slice_test PRIVATE src)
   add_test(NAME planar_slice COMMAND planar_slice_test)
 
+  # Reads PNG/JPEG/BMP/TIFF through NiftiImage and the plane mapping; no Qt, no display.
+  add_executable(raster_image_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/raster_image_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NpzVolume.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/PlanarSlice.cpp
+  )
+  target_include_directories(raster_image_test PRIVATE src)
+  target_link_libraries(raster_image_test PRIVATE ${ITK_LIBRARIES})
+  add_test(NAME raster_image COMMAND raster_image_test)
+
   add_executable(wheel_guard_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/wheel_guard_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Theme.cpp
@@ -210,23 +221,35 @@ if(BUILD_ROIFT_TESTS)
   # Needs a QApplication but no display.
   set_tests_properties(wheel_guard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-  # Drives the real window (mask list, overlay blend), so it needs the whole
-  # application except its entry point.
+  # The window tests drive the whole application except its entry point, which
+  # compiles once here and is linked into each of them.
   set(GUI_TEST_SOURCES ${SRC_FILES})
   list(REMOVE_ITEM GUI_TEST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
-  add_executable(mask_overlay_test
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_overlay_test.cpp
-    ${GUI_TEST_SOURCES}
-  )
-  target_include_directories(mask_overlay_test PRIVATE src)
-  target_link_libraries(mask_overlay_test PRIVATE Qt6::Widgets ${ITK_LIBRARIES} ${VTK_LIBRARIES})
+  add_library(roift_gui_test_objects OBJECT ${GUI_TEST_SOURCES})
+  set_target_properties(roift_gui_test_objects PROPERTIES AUTOMOC ON AUTORCC ON)
+  target_include_directories(roift_gui_test_objects PUBLIC src)
+  target_link_libraries(roift_gui_test_objects PUBLIC Qt6::Widgets ${ITK_LIBRARIES} ${VTK_LIBRARIES})
   if(TARGET Qt6::Svg)
-    target_link_libraries(mask_overlay_test PRIVATE Qt6::Svg)
-    target_compile_definitions(mask_overlay_test PRIVATE ROIFT_HAS_QT_SVG=1)
+    target_link_libraries(roift_gui_test_objects PUBLIC Qt6::Svg)
+    target_compile_definitions(roift_gui_test_objects PUBLIC ROIFT_HAS_QT_SVG=1)
   endif()
+
+  # Mask list and overlay blend.
+  add_executable(mask_overlay_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_overlay_test.cpp)
+  target_link_libraries(mask_overlay_test PRIVATE roift_gui_test_objects)
   add_test(NAME mask_overlay COMMAND mask_overlay_test)
   # Builds a window and reads composed slices back; no display needed.
   set_tests_properties(mask_overlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+  # Opens a raster image in the window and checks what the tools are handed.
+  add_executable(plane_mode_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/plane_mode_gui_test.cpp)
+  target_link_libraries(plane_mode_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME plane_mode_gui COMMAND plane_mode_gui_test)
+  set(_plane_mode_gui_env "QT_QPA_PLATFORM=offscreen")
+  if(TARGET oiftrelax)
+    list(APPEND _plane_mode_gui_env "ROIFT_EXECUTABLE=$<TARGET_FILE:oiftrelax>")
+  endif()
+  set_tests_properties(plane_mode_gui PROPERTIES ENVIRONMENT "${_plane_mode_gui_env}")
 
   add_executable(npz_import_probe
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/npz_import_probe.cpp
@@ -266,14 +289,14 @@ if(BUILD_ROIFT_TESTS)
     message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
   endif()
 
-  # wheel_guard and mask_overlay run with QT_QPA_PLATFORM=offscreen. Qt aborts
-  # at startup if the requested platform plugin is absent, and windeployqt
+  # wheel_guard, mask_overlay and plane_mode_gui run with QT_QPA_PLATFORM=offscreen.
+  # Qt aborts at startup if the requested platform plugin is absent, and windeployqt
   # stages only the native one — so on Windows the offscreen plugin has to be
   # put beside the test binaries. Without it the tests do not fail, they hang:
   # the aborting process sits on a Windows error dialog until CI's job limit
   # kills the whole run.
   if(WIN32 AND TARGET Qt6::QOffscreenIntegrationPlugin)
-    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test)
+    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test plane_mode_gui_test)
       add_custom_command(TARGET ${_offscreen_consumer} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
           "$<TARGET_FILE_DIR:${_offscreen_consumer}>/platforms"

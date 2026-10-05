@@ -100,9 +100,10 @@ public:
     bool activeMaskPending() const { return !m_pendingActiveMaskPath.empty(); }
 
     // A path the native binaries and Python helpers can actually read. Those
-    // consume files, not the in-memory volume, and none of them speak numpy —
-    // so a .npz/.npy image is exported once to a temporary NIfTI carrying the
-    // orientation and spacing it was imported with. Other formats pass through.
+    // consume files, not the in-memory volume, and none of them reads numpy or
+    // raster files, so a .npz/.npy or PNG/JPEG/BMP/TIFF image is exported once
+    // to a temporary NIfTI carrying the geometry it was read with. Other formats
+    // pass through.
     std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
