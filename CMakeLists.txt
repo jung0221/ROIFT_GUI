@@ -249,6 +249,11 @@ if(BUILD_ROIFT_TESTS)
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/oiftrelax_single_slice_test.py
           $<TARGET_FILE:oiftrelax> one_slice
       )
+      add_test(NAME oiftrelax_header_2d
+        COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/oiftrelax_single_slice_test.py
+          $<TARGET_FILE:oiftrelax> header_2d
+      )
     endif()
   else()
     message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
