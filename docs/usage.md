@@ -67,7 +67,12 @@
   with any other suffix is saved as NIfTI under the rule above.
 - `Open Mask` reads PNG, BMP and TIFF label images as well as NIfTI and NumPy; see
   [Raster images](#raster-images-png-jpeg-bmp-tiff) for how their labels are read.
-- Segmentation outputs from `SegmentationRunner` are merged using ITK when available and then loaded into the GUI as the current mask.
+- A volume run started with `Run` works in the background. When it ends, the files it wrote
+  (the single output, each polarity of a sweep, or each label of `Batch per label` together
+  with the merged `segmentation_multilabel.nii.gz`) are added to the image's mask list. They
+  are not loaded as the edited mask, and each is drawn only once its eye is opened. The
+  outputs of a run on an exported image are listed among the unassigned masks instead; see
+  [Raster images](#raster-images-png-jpeg-bmp-tiff).
 
 ## Opening images
 - The sidebar panel is `Images` and the toolbar action is `Open` (Ctrl+O). Both take any
