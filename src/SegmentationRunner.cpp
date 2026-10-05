@@ -925,7 +925,8 @@ namespace
     struct SegmentationRequest
     {
         SegmentationRequestKind kind = SegmentationRequestKind::Single;
-        QString sourceImagePath;
+        QString sourceImagePath;  // the file the binary reads: an export for NumPy and raster images
+        QString ownerImagePath;   // the image as opened, whose mask list receives the outputs
         QString outputPath;
         QString outputDir;
         QString executablePath;
@@ -1126,6 +1127,7 @@ namespace
         }
 
         request->sourceImagePath = sourceImagePath;
+        request->ownerImagePath = QFileInfo(QString::fromStdString(parent->getImagePath())).absoluteFilePath();
         request->filteredSeeds = dedupeSeedsKeepingLatest(seeds);
         request->pol = parent->getPolarity();
         request->niter = parent->getNiter();
@@ -1834,7 +1836,7 @@ namespace
                                   {
                                       parent->completeSegmentationTask(result.success,
                                                                        result.summary,
-                                                                       request.sourceImagePath,
+                                                                       request.ownerImagePath,
                                                                        result.generatedMaskPaths);
                                   },
                                   Qt::QueuedConnection);

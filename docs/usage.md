@@ -73,8 +73,8 @@
 - A volume run started with `Run` works in the background. When it ends, the files it wrote
   (the single output, each polarity of a sweep, or each label of `Batch per label` together
   with the merged `segmentation_multilabel.nii.gz`) are added to the image's mask list. They
-  are not loaded as the edited mask, and each is drawn only once its eye is opened. The
-  outputs of a run on an exported image are listed among the unassigned masks instead; see
+  are not loaded as the edited mask, and each is drawn only once its eye is opened. This
+  holds for a NumPy or raster image too, although the binary reads its exported NIfTI; see
   [Raster images](#raster-images-png-jpeg-bmp-tiff).
 
 ## Opening images
@@ -133,12 +133,11 @@
   an exported image. The vessel graph writes beside the original image. Super-resolution and
   a volume run of `oiftrelax` only open their save dialogs in the folder of the original
   image. The rib runner works beside the export (see below).
-- **Known limitations**, shared with NumPy images and older than raster support: the rib
+- **Outputs of a volume run.** The masks a volume run of `oiftrelax` produces from an
+  exported image are listed under the image as opened, not under the export the binary read.
+- **Known limitation**, shared with NumPy images and older than raster support: the rib
   runner looks for the lung labelmap (`lungs_<case>.nii.gz` or `lung_<case>.nii.gz`) beside
-  the file it is handed, which is the export, so it stops with `Lung labelmap not found`. The
-  masks a volume run of `oiftrelax` produces from an exported image are listed among the
-  unassigned masks rather than under the image, because they are registered against the
-  export's path.
+  the file it is handed, which is the export, so it stops with `Lung labelmap not found`.
 - **Folder scan.** Raster files are never picked up by the mask/seed folder scan. The scan
   lists every candidate beside the image, so a folder of photographs would list each one as a
   mask of the others. Open a raster mask explicitly with `Open Mask`, or with `Add` in
