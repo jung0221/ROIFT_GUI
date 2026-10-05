@@ -47,11 +47,7 @@ class QPainter;
 class QSplitter;
 class CollapsibleSection;
 
-struct Seed
-{
-    int x, y, z, label, internal;
-    bool fromFile = false;
-};
+#include "Seed.h"
 class Mask3DView;
 
 class ManualSeedSelector : public QMainWindow
