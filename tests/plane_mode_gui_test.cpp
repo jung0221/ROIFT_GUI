@@ -3,9 +3,11 @@
 // oiftrelax and the Python helpers read files, not the volume in memory, and none
 // of them reads PNG or TIFF; nativeImagePath() must hand them a NIfTI holding the
 // voxels of the image now selected, in a directory that goes away with the window.
+// A one-slice image has no sagittal, coronal or 3D picture, so it fills the view area.
 #include "ManualSeedSelector.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -13,6 +15,7 @@
 #include <QListWidget>
 #include <QTemporaryDir>
 
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -38,11 +41,11 @@ void check(bool condition, const char *what)
 
 using ValueAt = std::function<float(unsigned int, unsigned int, unsigned int)>;
 
-// Write an 8-bit image of the given size; 2D when sizeZ is 1.
-template <unsigned int Dimension>
+// Write an image of the given size, 8-bit unless told otherwise; 2D when sizeZ is 1.
+template <unsigned int Dimension, typename PixelT = unsigned char>
 bool writeImage(const QString &path, const unsigned int (&size)[3], const ValueAt &valueAt)
 {
-    using ImageT = itk::Image<unsigned char, Dimension>;
+    using ImageT = itk::Image<PixelT, Dimension>;
     auto image = ImageT::New();
     typename ImageT::SizeType imageSize;
     for (unsigned int i = 0; i < Dimension; ++i)
@@ -56,7 +59,7 @@ bool writeImage(const QString &path, const unsigned int (&size)[3], const ValueA
     {
         const typename ImageT::IndexType i = it.GetIndex();
         const unsigned int z = Dimension > 2 ? static_cast<unsigned int>(i[Dimension - 1]) : 0;
-        it.Set(static_cast<unsigned char>(valueAt(i[0], i[1], z)));
+        it.Set(static_cast<PixelT>(valueAt(i[0], i[1], z)));
     }
     try
     {
@@ -125,6 +128,30 @@ std::string selectAndExport(ManualSeedSelector &window, QListWidget *list, const
         return std::string();
     list->setCurrentRow(row);
     return window.nativeImagePath();
+}
+
+// Let posted layout requests run so widget geometry reflects the current layout.
+void settle()
+{
+    for (int i = 0; i < 5; ++i)
+        QCoreApplication::processEvents();
+}
+
+double widthShare(const QWidget *panel, const QWidget *container)
+{
+    return container->width() > 0 ? double(panel->width()) / container->width() : 0.0;
+}
+
+double heightShare(const QWidget *panel, const QWidget *container)
+{
+    return container->height() > 0 ? double(panel->height()) / container->height() : 0.0;
+}
+
+// The axial panel's title: its only direct QLabel child.
+QString axialTitle(QWidget *axialPanel)
+{
+    const QList<QLabel *> labels = axialPanel->findChildren<QLabel *>(Qt::FindDirectChildrenOnly);
+    return labels.size() == 1 ? labels.front()->text() : QString();
 }
 
 } // namespace
@@ -222,6 +249,59 @@ int main(int argc, char **argv)
     window.reset();
     check(!QFileInfo::exists(nativePath) && !QFileInfo::exists(windowDir),
           "closing the window removes its export directory");
+
+    // Panel geometry needs a shown window; the window above is never shown.
+    {
+        const QString grayPath = dir.filePath("gray.png");
+        const QString volumePath = dir.filePath("volume.nii.gz");
+        const unsigned int volumeSize[3] = {12, 10, 8};
+        const bool wroteLayout = writeImage<2>(grayPath, planeSize, planeValue) &&
+                                 writeImage<3, std::int16_t>(volumePath, volumeSize, stackValue);
+        check(wroteLayout, "layout fixtures written");
+
+        ManualSeedSelector shown("");
+        shown.resize(1200, 900);
+        shown.show();
+        settle();
+
+        QListWidget *list = shown.findChild<QListWidget *>("imageList");
+        QWidget *container = shown.findChild<QWidget *>("viewContainer");
+        QWidget *axialPanel = shown.findChild<QWidget *>("axialPanel");
+        QWidget *sagittalPanel = shown.findChild<QWidget *>("sagittalPanel");
+        QWidget *coronalPanel = shown.findChild<QWidget *>("coronalPanel");
+        QWidget *renderPanel = shown.findChild<QWidget *>("renderPanel");
+        OrthogonalView *axialView = shown.findChild<OrthogonalView *>("axialView");
+        const bool found = wroteLayout && list && container && axialPanel && sagittalPanel && coronalPanel &&
+                           renderPanel && axialView;
+        check(found, "view container, four panels and axial view are named");
+        if (!found)
+            return 1;
+
+        shown.addImagesFromPaths({grayPath, volumePath});
+        list->setCurrentRow(rowForPath(list, grayPath));
+        settle();
+        std::printf("  gray.png: axial panel %dx%d in container %dx%d, title \"%s\"\n", axialPanel->width(),
+                    axialPanel->height(), container->width(), container->height(), qPrintable(axialTitle(axialPanel)));
+        check(shown.hasImage(), "gray.png opens as the image");
+        check(sagittalPanel->isHidden() && coronalPanel->isHidden() && renderPanel->isHidden(),
+              "gray.png: sagittal, coronal and 3D panels are hidden");
+        check(!axialPanel->isHidden() && axialPanel->isVisible(), "gray.png: axial panel is shown");
+        check(widthShare(axialPanel, container) >= 0.9 && heightShare(axialPanel, container) >= 0.9,
+              "gray.png: axial panel fills the view area");
+        check(axialView->image().size() == QSize(40, 30), "gray.png: axial view shows the 40 x 30 image");
+        check(axialTitle(axialPanel).startsWith("Image"), "gray.png: axial panel is titled Image");
+
+        list->setCurrentRow(rowForPath(list, volumePath));
+        settle();
+        std::printf("  volume: axial panel %dx%d in container %dx%d, title \"%s\"\n", axialPanel->width(),
+                    axialPanel->height(), container->width(), container->height(), qPrintable(axialTitle(axialPanel)));
+        check(axialPanel->isVisible() && sagittalPanel->isVisible() && coronalPanel->isVisible() &&
+                  renderPanel->isVisible(),
+              "12 x 10 x 8 volume: all four panels are shown again");
+        const double share = widthShare(axialPanel, container);
+        check(share >= 0.35 && share <= 0.65, "12 x 10 x 8 volume: axial panel takes half the width");
+        check(!axialTitle(axialPanel).startsWith("Image"), "12 x 10 x 8 volume: axial panel is not titled Image");
+    }
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;

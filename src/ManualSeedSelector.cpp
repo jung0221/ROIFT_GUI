@@ -179,6 +179,7 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
                                     &m_windowHigh);
 
             clearRulerMeasurements();
+            applySliceLayout();
             updateViews();
         }
     }
@@ -1023,6 +1024,7 @@ void ManualSeedSelector::setupUi()
 
     leftGrid->addWidget(new QLabel("Mode:"), 0, 0);
     m_segmentationModeCombo = new QComboBox();
+    m_segmentationModeCombo->setObjectName("segmentationMode");
     m_segmentationModeCombo->addItem("Multi-label");
     m_segmentationModeCombo->addItem("Legacy binary");
     m_segmentationModeCombo->setToolTip("Multi-label runs all labels in one execution. Legacy binary restores the original internal-versus-external workflow.");
@@ -1074,6 +1076,7 @@ void ManualSeedSelector::setupUi()
 
     rightGrid->addWidget(new QLabel("Method:"), 0, 0);
     m_methodCombo = new QComboBox();
+    m_methodCombo->setObjectName("segmentationMethod");
     m_methodCombo->addItem("Standard OIFT");           // index 0
     m_methodCombo->addItem("Gradient Weight (1A)");    // index 1
     m_methodCombo->addItem("Gaussian RBF Relax (1B)"); // index 2
@@ -1164,14 +1167,17 @@ void ManualSeedSelector::setupUi()
     optionsLayout->setSpacing(4);
 
     m_segmentAllBox = new QCheckBox("Batch per label");
+    m_segmentAllBox->setObjectName("segmentAll");
     m_segmentAllBox->setToolTip("Run one binary segmentation per label and merge the outputs into a multilabel mask.");
     optionsLayout->addWidget(m_segmentAllBox);
 
     m_polSweepBox = new QCheckBox("Polarity sweep");
+    m_polSweepBox->setObjectName("polaritySweep");
     m_polSweepBox->setToolTip("Test polarity range -1.0 to +1.0");
     optionsLayout->addWidget(m_polSweepBox);
 
     m_useGPUBox = new QCheckBox("Use GPU");
+    m_useGPUBox->setObjectName("useGpu");
     m_useGPUBox->setToolTip("Use GPU acceleration");
     optionsLayout->addWidget(m_useGPUBox);
 
@@ -1325,7 +1331,7 @@ void ManualSeedSelector::setupUi()
     // =====================================================
     // CENTER: 2x2 View Grid
     // =====================================================
-    QGridLayout *viewGrid = new QGridLayout();
+    m_viewGrid = new QGridLayout();
     m_axialView = new OrthogonalView();
     m_axialView->setObjectName("axialView");
     m_sagittalView = new OrthogonalView();
@@ -1336,10 +1342,13 @@ void ManualSeedSelector::setupUi()
 
     // Slice navigation now lives inside each view panel so it is always visible.
     m_axialSlider = new QSlider(Qt::Horizontal);
+    m_axialSlider->setObjectName("axialSlider");
     m_axialSlider->setToolTip("Axial slice (W/S keys)");
     m_sagittalSlider = new QSlider(Qt::Horizontal);
+    m_sagittalSlider->setObjectName("sagittalSlider");
     m_sagittalSlider->setToolTip("Sagittal slice (A/D keys)");
     m_coronalSlider = new QSlider(Qt::Horizontal);
+    m_coronalSlider->setObjectName("coronalSlider");
     m_coronalSlider->setToolTip("Coronal slice (Q/E keys)");
 
     m_axialLabel = new QLabel("Axial: 0/0");
@@ -1432,14 +1441,17 @@ void ManualSeedSelector::setupUi()
             *seedsOut = showSeeds;
     };
 
-    QWidget *axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider);
-    QWidget *sagittalPanel = createSlicePanel("Sagittal", m_sagittalView, m_sagittalLabel, m_sagittalSlider);
-    QWidget *coronalPanel = createSlicePanel("Coronal", m_coronalView, m_coronalLabel, m_coronalSlider);
-    addSliceToggleRow(axialPanel, "axial", m_enableAxialMask, m_enableAxialSeeds,
+    m_axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider);
+    m_axialPanel->setObjectName("axialPanel");
+    m_sagittalPanel = createSlicePanel("Sagittal", m_sagittalView, m_sagittalLabel, m_sagittalSlider);
+    m_sagittalPanel->setObjectName("sagittalPanel");
+    m_coronalPanel = createSlicePanel("Coronal", m_coronalView, m_coronalLabel, m_coronalSlider);
+    m_coronalPanel->setObjectName("coronalPanel");
+    addSliceToggleRow(m_axialPanel, "axial", m_enableAxialMask, m_enableAxialSeeds,
                       &axialMaskCheck, &axialSeedsCheck);
-    addSliceToggleRow(sagittalPanel, "sagittal", m_enableSagittalMask, m_enableSagittalSeeds,
+    addSliceToggleRow(m_sagittalPanel, "sagittal", m_enableSagittalMask, m_enableSagittalSeeds,
                       &sagittalMaskCheck, &sagittalSeedsCheck);
-    addSliceToggleRow(coronalPanel, "coronal", m_enableCoronalMask, m_enableCoronalSeeds,
+    addSliceToggleRow(m_coronalPanel, "coronal", m_enableCoronalMask, m_enableCoronalSeeds,
                       &coronalMaskCheck, &coronalSeedsCheck);
 
     m_showMaskCheck = axialMaskCheck;
@@ -1447,12 +1459,13 @@ void ManualSeedSelector::setupUi()
     // The 3D toggles used to float over the canvas, which put them on top of
     // the view's own status line. They now sit in flow under the canvas, in the
     // same place as the toggle rows of the three slice panels beside it.
-    QWidget *renderPanel = new QWidget();
-    QVBoxLayout *renderPanelLayout = new QVBoxLayout(renderPanel);
+    m_renderPanel = new QWidget();
+    m_renderPanel->setObjectName("renderPanel");
+    QVBoxLayout *renderPanelLayout = new QVBoxLayout(m_renderPanel);
     renderPanelLayout->setContentsMargins(0, 0, 0, 0);
     renderPanelLayout->setSpacing(4);
     renderPanelLayout->addWidget(m_mask3DView, 1);
-    QWidget *renderTogglePanel = new QWidget(renderPanel);
+    QWidget *renderTogglePanel = new QWidget(m_renderPanel);
     QHBoxLayout *renderToggleLayout = new QHBoxLayout(renderTogglePanel);
     renderToggleLayout->setContentsMargins(0, 0, 0, 0);
     renderToggleLayout->setSpacing(6);
@@ -1472,18 +1485,19 @@ void ManualSeedSelector::setupUi()
 
     renderPanelLayout->addWidget(renderTogglePanel);
 
-    viewGrid->addWidget(axialPanel, 0, 0);
-    viewGrid->addWidget(sagittalPanel, 0, 1);
-    viewGrid->addWidget(coronalPanel, 1, 0);
-    viewGrid->addWidget(renderPanel, 1, 1);
-    viewGrid->setColumnStretch(0, 1);
-    viewGrid->setColumnStretch(1, 1);
-    viewGrid->setRowStretch(0, 1);
-    viewGrid->setRowStretch(1, 1);
-    viewGrid->setSpacing(6);
+    m_viewGrid->addWidget(m_axialPanel, 0, 0);
+    m_viewGrid->addWidget(m_sagittalPanel, 0, 1);
+    m_viewGrid->addWidget(m_coronalPanel, 1, 0);
+    m_viewGrid->addWidget(m_renderPanel, 1, 1);
+    m_viewGrid->setColumnStretch(0, 1);
+    m_viewGrid->setColumnStretch(1, 1);
+    m_viewGrid->setRowStretch(0, 1);
+    m_viewGrid->setRowStretch(1, 1);
+    m_viewGrid->setSpacing(6);
 
     QWidget *viewContainer = new QWidget();
-    viewContainer->setLayout(viewGrid);
+    viewContainer->setObjectName("viewContainer");
+    viewContainer->setLayout(m_viewGrid);
     viewContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     viewContainer->setMinimumWidth(0);
     contentSplitter->addWidget(viewContainer);
@@ -1637,6 +1651,7 @@ void ManualSeedSelector::setupUi()
                 clearRulerMeasurements();
                 m_locatedPoint = LocatedPoint{};
                 updateMaskSeedLists();
+                applySliceLayout();
                 updateViews();
             } else if (m_currentImageIndex > currentRow) {
                 m_currentImageIndex--;
@@ -1691,6 +1706,7 @@ void ManualSeedSelector::setupUi()
         m_coronalView->setImage(QImage());
 
         updateMaskSeedLists();
+        applySliceLayout();
         updateViews();
         if (m_statusLabel)
             m_statusLabel->setText("All images removed.");
@@ -1795,6 +1811,7 @@ void ManualSeedSelector::setupUi()
                 
                 // Update mask and seed lists for this image
                 updateMaskSeedLists();
+                applySliceLayout();
                 updateViews();
                 if (m_mask3DView && preservedCamera.valid)
                     m_mask3DView->restoreCameraState(preservedCamera, true);
@@ -2407,19 +2424,19 @@ void ManualSeedSelector::setupUi()
     // =====================================================
 
     // Slice sliders update labels and views; any move drops the 3D locate marker.
-    connect(m_axialSlider, &QSlider::valueChanged, [this](int v)
+    connect(m_axialSlider, &QSlider::valueChanged, [this]()
             {
-        m_axialLabel->setText(QString("Axial: %1/%2").arg(v).arg(m_axialSlider->maximum()));
+        updateSliceLabels();
         m_locatedPoint = LocatedPoint{};
         updateViews(); });
-    connect(m_sagittalSlider, &QSlider::valueChanged, [this](int v)
+    connect(m_sagittalSlider, &QSlider::valueChanged, [this]()
             {
-        m_sagittalLabel->setText(QString("Sagittal: %1/%2").arg(v).arg(m_sagittalSlider->maximum()));
+        updateSliceLabels();
         m_locatedPoint = LocatedPoint{};
         updateViews(); });
-    connect(m_coronalSlider, &QSlider::valueChanged, [this](int v)
+    connect(m_coronalSlider, &QSlider::valueChanged, [this]()
             {
-        m_coronalLabel->setText(QString("Coronal: %1/%2").arg(v).arg(m_coronalSlider->maximum()));
+        updateSliceLabels();
         m_locatedPoint = LocatedPoint{};
         updateViews(); });
 
@@ -2452,7 +2469,7 @@ void ManualSeedSelector::setupUi()
         m_enable3DView = checked;
         if (m_mask3DView)
             m_mask3DView->setMaskVisible(m_enable3DView);
-        if (checked && m_mask3DDirty)
+        if (checked && m_mask3DDirty && !isPlanarImage())
         {
             update3DMaskView();
             m_mask3DDirty = false;
@@ -4647,7 +4664,9 @@ void ManualSeedSelector::updateViews()
     unsigned int sizeY = m_image.getSizeY();
     unsigned int sizeZ = m_image.getSizeZ();
 
-    if (m_mask3DView)
+    // A one-slice image hides the 3D panel; it stays dirty and catches up once shown again.
+    const bool render3D = m_mask3DView && !isPlanarImage();
+    if (render3D)
     {
         m_mask3DView->setVoxelSpacing(m_maskSpacingX, m_maskSpacingY, m_maskSpacingZ);
         m_mask3DView->setMaskVisible(m_enable3DView);
@@ -4655,12 +4674,12 @@ void ManualSeedSelector::updateViews()
     }
 
     // 3D mask rendering is controlled by "Show 3D", seeds are controlled separately.
-    if (m_enable3DView && m_mask3DDirty)
+    if (render3D && m_enable3DView && m_mask3DDirty)
     {
         update3DMaskView();
         m_mask3DDirty = false;
     }
-    else if (m_mask3DView)
+    else if (render3D)
     {
         std::vector<SeedRenderData> seedRenderData;
         seedRenderData.reserve(m_seeds.size());
@@ -4892,13 +4911,38 @@ void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
         m_sagittalSlider->setValue(x);
         m_coronalSlider->setValue(y);
     }
-    m_axialLabel->setText(QString("Axial: %1/%2").arg(z).arg(m_axialSlider->maximum()));
-    m_sagittalLabel->setText(QString("Sagittal: %1/%2").arg(x).arg(m_sagittalSlider->maximum()));
-    m_coronalLabel->setText(QString("Coronal: %1/%2").arg(y).arg(m_coronalSlider->maximum()));
+    updateSliceLabels();
     updateViews();
 
     if (m_statusLabel)
         m_statusLabel->setText(QString("Located 3D point at x:%1 y:%2 z:%3").arg(x).arg(y).arg(z));
+}
+
+bool ManualSeedSelector::isPlanarImage() const
+{
+    return hasImage() && m_image.getSizeZ() == 1;
+}
+
+void ManualSeedSelector::applySliceLayout()
+{
+    // A one-slice image has no sagittal or coronal picture and no surface to contour. A grid
+    // row or column with stretch keeps its share even when all of its widgets are hidden.
+    const bool planar = isPlanarImage();
+    m_sagittalPanel->setVisible(!planar);
+    m_coronalPanel->setVisible(!planar);
+    m_renderPanel->setVisible(!planar);
+    m_viewGrid->setColumnStretch(1, planar ? 0 : 1);
+    m_viewGrid->setRowStretch(1, planar ? 0 : 1);
+    updateSliceLabels();
+}
+
+void ManualSeedSelector::updateSliceLabels()
+{
+    const auto position = [](const QString &plane, const QSlider *slider)
+    { return QString("%1: %2/%3").arg(plane).arg(slider->value()).arg(slider->maximum()); };
+    m_axialLabel->setText(isPlanarImage() ? QString("Image") : position("Axial", m_axialSlider));
+    m_sagittalLabel->setText(position("Sagittal", m_sagittalSlider));
+    m_coronalLabel->setText(position("Coronal", m_coronalSlider));
 }
 
 // =============================================================================

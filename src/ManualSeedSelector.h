@@ -48,6 +48,7 @@ class QMoveEvent;
 class QCloseEvent;
 class QPainter;
 class QSplitter;
+class QGridLayout;
 class CollapsibleSection;
 
 class Mask3DView;
@@ -398,6 +399,12 @@ private:
     void eraseNear(int x, int y, int z, int r);
     // Move the three slice views onto one voxel; out-of-range is ignored.
     void jumpToVoxel(int x, int y, int z);
+    // A one-slice image, shown in the axial panel alone.
+    bool isPlanarImage() const;
+    // Show or hide the sagittal, coronal and 3D panels for the loaded image.
+    void applySliceLayout();
+    // Title each slice panel with its slider position; "Image" for a one-slice image.
+    void updateSliceLabels();
 
     // -- Solver network (1D haemodynamic YAML, its maps and geometry) --------
     // See SolverNetworkUi.cpp. Hover state is separate from the selection: it
@@ -476,6 +483,12 @@ private:
     QLabel *m_axialLabel;
     QLabel *m_sagittalLabel;
     QLabel *m_coronalLabel;
+    // The 2x2 view grid and its panels; applySliceLayout() hides three for a one-slice image.
+    QWidget *m_axialPanel = nullptr;
+    QWidget *m_sagittalPanel = nullptr;
+    QWidget *m_coronalPanel = nullptr;
+    QWidget *m_renderPanel = nullptr;
+    QGridLayout *m_viewGrid = nullptr;
     QSpinBox *m_labelSelector;
     QLabel *m_labelColorIndicator;
     QLabel *m_statusLabel;
