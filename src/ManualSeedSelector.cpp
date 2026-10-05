@@ -116,6 +116,15 @@
 
 using namespace UiUtils;
 
+namespace
+{
+// Item order of the Scope (Volume first), Plane and Mode combos.
+constexpr int kSliceScope = 1;
+constexpr int kAxialPlaneItem = 0;
+constexpr int kSagittalPlaneItem = 1;
+constexpr int kCoronalPlaneItem = 2;
+constexpr int kMultiLabelMode = 0;
+} // namespace
 
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
     : QMainWindow(parent), m_path(niftiPath)
@@ -1022,43 +1031,68 @@ void ManualSeedSelector::setupUi()
     leftGrid->setSpacing(2);
     leftGrid->setContentsMargins(0, 0, 0, 0);
 
-    leftGrid->addWidget(new QLabel("Mode:"), 0, 0);
+    leftGrid->addWidget(new QLabel("Scope:"), 0, 0);
+    m_scopeCombo = new QComboBox();
+    m_scopeCombo->setObjectName("segmentationScope");
+    m_scopeCombo->addItem("Volume");
+    m_scopeCombo->addItem("Current slice");
+    m_scopeCombo->setToolTip("Volume segments the whole image. Current slice segments only the slice shown in the chosen plane "
+                             "and writes the result into that slice of the edited mask.");
+    leftGrid->addWidget(m_scopeCombo, 0, 1, 1, 2);
+
+    leftGrid->addWidget(new QLabel("Plane:"), 1, 0);
+    m_planeCombo = new QComboBox();
+    m_planeCombo->setObjectName("segmentationPlane");
+    m_planeCombo->addItem("Axial");
+    m_planeCombo->addItem("Sagittal");
+    m_planeCombo->addItem("Coronal");
+    m_planeCombo->setToolTip("The view whose current slice is segmented.");
+    leftGrid->addWidget(m_planeCombo, 1, 1, 1, 2);
+
+    m_planeBorderBox = new QCheckBox("Background on the plane border");
+    m_planeBorderBox->setObjectName("planeBorderBackground");
+    m_planeBorderBox->setChecked(true);
+    m_planeBorderBox->setToolTip("Seed background on every edge pixel of the slice. "
+                                 "Turn it off when the structure touches the edge of the plane.");
+    leftGrid->addWidget(m_planeBorderBox, 2, 0, 1, 3);
+
+    leftGrid->addWidget(new QLabel("Mode:"), 3, 0);
     m_segmentationModeCombo = new QComboBox();
     m_segmentationModeCombo->setObjectName("segmentationMode");
     m_segmentationModeCombo->addItem("Multi-label");
     m_segmentationModeCombo->addItem("Legacy binary");
     m_segmentationModeCombo->setToolTip("Multi-label runs all labels in one execution. Legacy binary restores the original internal-versus-external workflow.");
-    leftGrid->addWidget(m_segmentationModeCombo, 0, 1, 1, 2);
+    leftGrid->addWidget(m_segmentationModeCombo, 3, 1, 1, 2);
 
-    leftGrid->addWidget(new QLabel("Polarity:"), 1, 0);
+    leftGrid->addWidget(new QLabel("Polarity:"), 4, 0);
     m_polSlider = new QSlider(Qt::Horizontal);
     m_polSlider->setRange(-100, 100);
     m_polSlider->setValue(100);
     m_polSlider->setToolTip("+1.0=bright inside, -1.0=dark inside");
-    leftGrid->addWidget(m_polSlider, 1, 1);
+    leftGrid->addWidget(m_polSlider, 4, 1);
     m_polValue = new QLabel("1.00");
     m_polValue->setMinimumWidth(32);
-    leftGrid->addWidget(m_polValue, 1, 2);
+    leftGrid->addWidget(m_polValue, 4, 2);
 
-    leftGrid->addWidget(new QLabel("Relax:"), 2, 0);
+    leftGrid->addWidget(new QLabel("Relax:"), 5, 0);
     m_niterSlider = new QSlider(Qt::Horizontal);
     m_niterSlider->setRange(0, 100);
     m_niterSlider->setValue(0);
     m_niterSlider->setToolTip("Relaxation iterations");
-    leftGrid->addWidget(m_niterSlider, 2, 1);
+    leftGrid->addWidget(m_niterSlider, 5, 1);
     m_niterValue = new QLabel("0");
     m_niterValue->setMinimumWidth(32);
-    leftGrid->addWidget(m_niterValue, 2, 2);
+    leftGrid->addWidget(m_niterValue, 5, 2);
 
-    leftGrid->addWidget(new QLabel("Pctile:"), 3, 0);
+    leftGrid->addWidget(new QLabel("Pctile:"), 6, 0);
     m_percSlider = new QSlider(Qt::Horizontal);
     m_percSlider->setRange(0, 100);
     m_percSlider->setValue(0);
     m_percSlider->setToolTip("Arc-weight percentile threshold");
-    leftGrid->addWidget(m_percSlider, 3, 1);
+    leftGrid->addWidget(m_percSlider, 6, 1);
     m_percValue = new QLabel("0");
     m_percValue->setMinimumWidth(32);
-    leftGrid->addWidget(m_percValue, 3, 2);
+    leftGrid->addWidget(m_percValue, 6, 2);
 
     connect(m_polSlider, &QSlider::valueChanged, [this](int v)
             { m_polValue->setText(QString::number(v / 100.0, 'f', 2)); });
@@ -1190,6 +1224,19 @@ void ManualSeedSelector::setupUi()
         if (m_segmentationModeCombo)
             m_segmentationModeCombo->setEnabled(!on); });
 
+    // Only a choice made while a volume is loaded is remembered; the forced one-slice
+    // values are set with signals blocked.
+    connect(m_scopeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
+            {
+        if (!isPlanarImage())
+            m_volumeScopeIndex = index;
+        updateSegmentationScopeControls(); });
+    connect(m_planeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index)
+            {
+        if (!isPlanarImage())
+            m_volumePlaneIndex = index; });
+    updateSegmentationScopeControls();
+
     segSecLayout->addWidget(optionsGroup);
 
     // Run button
@@ -1198,11 +1245,15 @@ void ManualSeedSelector::setupUi()
 
     m_btnRunSegment = new QPushButton("Run");
     m_btnRunSegment->setObjectName("runButton");
+    m_btnRunSegment->setAccessibleName("Run segmentation");
     m_btnRunSegment->setToolTip("Start ROIFT segmentation (Ctrl+Shift+S)");
     m_btnRunSegment->setShortcut(QKeySequence("Ctrl+Shift+S"));
     connect(m_btnRunSegment, &QPushButton::clicked, [this]()
             {
-        SegmentationRunner::runSegmentation(this); });
+        if (segmentCurrentSliceOnly())
+            segmentCurrentSlice();
+        else
+            SegmentationRunner::runSegmentation(this); });
     runLayout->addWidget(m_btnRunSegment);
 
     segSecLayout->addWidget(runGroup);
@@ -1391,7 +1442,8 @@ void ManualSeedSelector::setupUi()
     QCheckBox *coronalMaskCheck = nullptr;
     QCheckBox *coronalSeedsCheck = nullptr;
 
-    auto createSlicePanel = [](const QString &title, OrthogonalView *view, QLabel *label, QSlider *slider) -> QWidget *
+    auto createSlicePanel = [](const QString &title, OrthogonalView *view, QLabel *label, QSlider *slider,
+                               QWidget **sliderRow = nullptr) -> QWidget *
     {
         QWidget *panel = new QWidget();
         QVBoxLayout *panelLayout = new QVBoxLayout(panel);
@@ -1407,9 +1459,12 @@ void ManualSeedSelector::setupUi()
         slider->setSingleStep(1); // one slice per "-"/"+" click
         slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
+        QWidget *row = makeSliderStepperRow(slider, panel);
         panelLayout->addWidget(view, 1);
         panelLayout->addWidget(label);
-        panelLayout->addWidget(makeSliderStepperRow(slider, panel));
+        panelLayout->addWidget(row);
+        if (sliderRow)
+            *sliderRow = row;
         return panel;
     };
 
@@ -1441,8 +1496,9 @@ void ManualSeedSelector::setupUi()
             *seedsOut = showSeeds;
     };
 
-    m_axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider);
+    m_axialPanel = createSlicePanel("Axial", m_axialView, m_axialLabel, m_axialSlider, &m_axialSliderRow);
     m_axialPanel->setObjectName("axialPanel");
+    m_axialLabel->setObjectName("axialTitle");
     m_sagittalPanel = createSlicePanel("Sagittal", m_sagittalView, m_sagittalLabel, m_sagittalSlider);
     m_sagittalPanel->setObjectName("sagittalPanel");
     m_coronalPanel = createSlicePanel("Coronal", m_coronalView, m_coronalLabel, m_coronalSlider);
@@ -1823,6 +1879,7 @@ void ManualSeedSelector::setupUi()
                 m_statusLabel->setText(reason.isEmpty()
                                            ? QString("Could not read %1; see the log for details.").arg(name)
                                            : QString("Could not read %1: %2").arg(name, reason));
+                applySliceLayout();
             }
         } });
 
@@ -4931,9 +4988,80 @@ void ManualSeedSelector::applySliceLayout()
     m_sagittalPanel->setVisible(!planar);
     m_coronalPanel->setVisible(!planar);
     m_renderPanel->setVisible(!planar);
+    m_axialSliderRow->setVisible(!planar);
     m_viewGrid->setColumnStretch(1, planar ? 0 : 1);
     m_viewGrid->setRowStretch(1, planar ? 0 : 1);
     updateSliceLabels();
+    updateSegmentationScopeControls();
+}
+
+bool ManualSeedSelector::segmentCurrentSliceOnly() const
+{
+    return isPlanarImage() || (m_scopeCombo && m_scopeCombo->currentIndex() == kSliceScope);
+}
+
+planar::Plane ManualSeedSelector::selectedPlane() const
+{
+    if (isPlanarImage() || !m_planeCombo)
+        return planar::Plane::Axial;
+    switch (m_planeCombo->currentIndex())
+    {
+    case kSagittalPlaneItem:
+        return planar::Plane::Sagittal;
+    case kCoronalPlaneItem:
+        return planar::Plane::Coronal;
+    default:
+        return planar::Plane::Axial;
+    }
+}
+
+void ManualSeedSelector::updateSegmentationScopeControls()
+{
+    if (!m_scopeCombo || !m_planeCombo || !m_planeBorderBox || !m_segmentationModeCombo || !m_segmentAllBox ||
+        !m_polSweepBox || !m_useGPUBox || !m_methodCombo)
+        return;
+
+    // A one-slice image has one plane to segment, its axial one.
+    const bool planar = isPlanarImage();
+    {
+        const QSignalBlocker blockScope(m_scopeCombo);
+        const QSignalBlocker blockPlane(m_planeCombo);
+        m_scopeCombo->setCurrentIndex(planar ? kSliceScope : m_volumeScopeIndex);
+        m_planeCombo->setCurrentIndex(planar ? kAxialPlaneItem : m_volumePlaneIndex);
+    }
+    const bool slice = m_scopeCombo->currentIndex() == kSliceScope;
+
+    // A slice run is always multi-label.
+    if (slice != m_sliceScopeApplied)
+    {
+        if (slice)
+        {
+            m_volumeModeIndex = m_segmentationModeCombo->currentIndex();
+            m_segmentationModeCombo->setCurrentIndex(kMultiLabelMode);
+        }
+        else
+        {
+            m_segmentationModeCombo->setCurrentIndex(m_volumeModeIndex);
+        }
+        m_sliceScopeApplied = slice;
+    }
+
+    m_scopeCombo->setEnabled(!planar);
+    m_planeCombo->setEnabled(slice && !planar);
+    m_planeBorderBox->setEnabled(slice);
+    // Outside slice scope, the rules the batch and method handlers apply.
+    const bool batch = m_segmentAllBox->isChecked();
+    m_segmentAllBox->setEnabled(!slice);
+    m_polSweepBox->setEnabled(!slice && !batch);
+    m_segmentationModeCombo->setEnabled(!slice && !batch);
+    m_methodCombo->setEnabled(!slice);
+    m_useGPUBox->setEnabled(!slice && m_methodCombo->currentIndex() == 0);
+}
+
+void ManualSeedSelector::segmentCurrentSlice()
+{
+    if (m_statusLabel)
+        m_statusLabel->setText("Segmenting one slice is not available yet.");
 }
 
 void ManualSeedSelector::updateSliceLabels()

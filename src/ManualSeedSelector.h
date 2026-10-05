@@ -21,6 +21,7 @@
 #include "MaskLayers.h"
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
+#include "PlanarSlice.h"
 #include "RangeSlider.h"
 #include "Seed.h"
 #include "SolverNetwork.h"
@@ -146,6 +147,11 @@ public:
     double getWindowWidth() const { return m_windowWidthSpin ? m_windowWidthSpin->value() : 1.0; }
     double getImageMin() const { return m_image.getGlobalMin(); }
     double getImageMax() const { return m_image.getGlobalMax(); }
+    // Run segments one slice of the selected plane instead of the volume; always for a one-slice image.
+    bool segmentCurrentSliceOnly() const;
+    // Axial for a one-slice image.
+    planar::Plane selectedPlane() const;
+    bool planeBorderBackground() const { return m_planeBorderBox ? m_planeBorderBox->isChecked() : true; }
 
 private slots:
     void openImage();
@@ -405,6 +411,9 @@ private:
     void applySliceLayout();
     // Title each slice panel with its slider position; "Image" for a one-slice image.
     void updateSliceLabels();
+    // Enable the scope, plane and volume-only controls for the scope and the loaded image.
+    void updateSegmentationScopeControls();
+    void segmentCurrentSlice();
 
     // -- Solver network (1D haemodynamic YAML, its maps and geometry) --------
     // See SolverNetworkUi.cpp. Hover state is separate from the selection: it
@@ -488,6 +497,7 @@ private:
     QWidget *m_sagittalPanel = nullptr;
     QWidget *m_coronalPanel = nullptr;
     QWidget *m_renderPanel = nullptr;
+    QWidget *m_axialSliderRow = nullptr;
     QGridLayout *m_viewGrid = nullptr;
     QSpinBox *m_labelSelector;
     QLabel *m_labelColorIndicator;
@@ -579,6 +589,14 @@ private:
     QSlider *m_percSlider = nullptr;
     QLabel *m_percValue = nullptr;
     QComboBox *m_segmentationModeCombo = nullptr;
+    QComboBox *m_scopeCombo = nullptr;
+    QComboBox *m_planeCombo = nullptr;
+    QCheckBox *m_planeBorderBox = nullptr;
+    // The user's volume choices, shown again once a one-slice image or slice scope is left.
+    int m_volumeScopeIndex = 0;
+    int m_volumePlaneIndex = 0;
+    int m_volumeModeIndex = 0;
+    bool m_sliceScopeApplied = false;
     QComboBox *m_methodCombo = nullptr;
     QDoubleSpinBox *m_alphaSpin = nullptr;
     QDoubleSpinBox *m_sigmaSpin = nullptr;

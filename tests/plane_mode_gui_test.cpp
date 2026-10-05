@@ -8,14 +8,18 @@
 #include "SegmentationRunner.h"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
+#include <QSlider>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -148,12 +152,6 @@ double heightShare(const QWidget *panel, const QWidget *container)
     return container->height() > 0 ? double(panel->height()) / container->height() : 0.0;
 }
 
-// The axial panel's title: its only direct QLabel child.
-QString axialTitle(QWidget *axialPanel)
-{
-    const QList<QLabel *> labels = axialPanel->findChildren<QLabel *>(Qt::FindDirectChildrenOnly);
-    return labels.size() == 1 ? labels.front()->text() : QString();
-}
 
 } // namespace
 
@@ -272,9 +270,11 @@ int main(int argc, char **argv)
         QWidget *coronalPanel = shown.findChild<QWidget *>("coronalPanel");
         QWidget *renderPanel = shown.findChild<QWidget *>("renderPanel");
         OrthogonalView *axialView = shown.findChild<OrthogonalView *>("axialView");
+        QLabel *axialTitle = shown.findChild<QLabel *>("axialTitle");
+        QSlider *axialSlider = shown.findChild<QSlider *>("axialSlider");
         const bool found = wroteLayout && list && container && axialPanel && sagittalPanel && coronalPanel &&
-                           renderPanel && axialView;
-        check(found, "view container, four panels and axial view are named");
+                           renderPanel && axialView && axialTitle && axialSlider;
+        check(found, "view container, panels, axial view, title and slider are named");
         if (!found)
             return 1;
 
@@ -282,7 +282,7 @@ int main(int argc, char **argv)
         list->setCurrentRow(rowForPath(list, grayPath));
         settle();
         std::printf("  gray.png: axial panel %dx%d in container %dx%d, title \"%s\"\n", axialPanel->width(),
-                    axialPanel->height(), container->width(), container->height(), qPrintable(axialTitle(axialPanel)));
+                    axialPanel->height(), container->width(), container->height(), qPrintable(axialTitle->text()));
         check(shown.hasImage(), "gray.png opens as the image");
         check(sagittalPanel->isHidden() && coronalPanel->isHidden() && renderPanel->isHidden(),
               "gray.png: sagittal, coronal and 3D panels are hidden");
@@ -290,18 +290,66 @@ int main(int argc, char **argv)
         check(widthShare(axialPanel, container) >= 0.9 && heightShare(axialPanel, container) >= 0.9,
               "gray.png: axial panel fills the view area");
         check(axialView->image().size() == QSize(40, 30), "gray.png: axial view shows the 40 x 30 image");
-        check(axialTitle(axialPanel).startsWith("Image"), "gray.png: axial panel is titled Image");
+        check(axialTitle->text() == "Image", "gray.png: axial panel is titled Image");
+        check(!axialSlider->isVisible(), "gray.png: the axial slider row is hidden");
 
         list->setCurrentRow(rowForPath(list, volumePath));
         settle();
         std::printf("  volume: axial panel %dx%d in container %dx%d, title \"%s\"\n", axialPanel->width(),
-                    axialPanel->height(), container->width(), container->height(), qPrintable(axialTitle(axialPanel)));
+                    axialPanel->height(), container->width(), container->height(), qPrintable(axialTitle->text()));
         check(axialPanel->isVisible() && sagittalPanel->isVisible() && coronalPanel->isVisible() &&
                   renderPanel->isVisible(),
               "12 x 10 x 8 volume: all four panels are shown again");
         const double share = widthShare(axialPanel, container);
         check(share >= 0.35 && share <= 0.65, "12 x 10 x 8 volume: axial panel takes half the width");
-        check(!axialTitle(axialPanel).startsWith("Image"), "12 x 10 x 8 volume: axial panel is not titled Image");
+        check(axialTitle->text().startsWith("Axial: "), "12 x 10 x 8 volume: axial panel is titled Axial");
+        check(axialSlider->isVisible(), "12 x 10 x 8 volume: the axial slider row is shown");
+    }
+
+    // A one-slice image is segmented as a slice; a volume as a whole or one slice at a time,
+    // and a slice run has no batch, sweep, GPU, method or legacy mode.
+    {
+        const QString grayPath = dir.filePath("gray.png");
+        const QString volumePath = dir.filePath("volume.nii.gz");
+        ManualSeedSelector scoped("");
+        scoped.addImagesFromPaths({grayPath, volumePath});
+        QListWidget *list = scoped.findChild<QListWidget *>("imageList");
+        QComboBox *scope = scoped.findChild<QComboBox *>("segmentationScope");
+        QComboBox *plane = scoped.findChild<QComboBox *>("segmentationPlane");
+        QCheckBox *border = scoped.findChild<QCheckBox *>("planeBorderBackground");
+        QComboBox *mode = scoped.findChild<QComboBox *>("segmentationMode");
+        const QList<QWidget *> volumeOnly{scoped.findChild<QWidget *>("segmentAll"),
+                                          scoped.findChild<QWidget *>("polaritySweep"),
+                                          scoped.findChild<QWidget *>("useGpu"),
+                                          scoped.findChild<QWidget *>("segmentationMethod"), mode};
+        const bool found = list && scope && plane && border && !volumeOnly.contains(nullptr);
+        check(found, "scope, plane, border and the five volume controls are named");
+        if (!found)
+            return 1;
+        const auto allEnabled = [&volumeOnly](bool enabled)
+        {
+            return std::all_of(volumeOnly.begin(), volumeOnly.end(),
+                               [enabled](const QWidget *w) { return w->isEnabled() == enabled; });
+        };
+
+        list->setCurrentRow(rowForPath(list, grayPath));
+        check(scoped.hasImage() && scope->currentText() == "Current slice" && !scope->isEnabled(),
+              "gray.png: scope reads Current slice and is disabled");
+        check(plane->currentText() == "Axial" && !plane->isEnabled(), "gray.png: plane reads Axial and is disabled");
+
+        list->setCurrentRow(rowForPath(list, volumePath));
+        check(scope->currentText() == "Volume" && scope->isEnabled(),
+              "volume after gray.png: scope reads Volume and is enabled");
+        mode->setCurrentIndex(mode->findText("Legacy binary"));
+        scope->setCurrentIndex(scope->findText("Current slice"));
+        check(plane->isEnabled() && border->isEnabled(), "volume, Current slice: plane and border enabled");
+        check(allEnabled(false), "volume, Current slice: batch, sweep, GPU, method and mode disabled");
+        check(mode->currentText() == "Multi-label", "volume, Current slice: mode reads Multi-label");
+
+        scope->setCurrentIndex(scope->findText("Volume"));
+        check(allEnabled(true), "back to Volume: batch, sweep, GPU, method and mode enabled");
+        check(mode->currentText() == "Legacy binary", "back to Volume: the mode chosen before is restored");
+        check(!plane->isEnabled() && !border->isEnabled(), "back to Volume: plane and border disabled");
     }
 
     // Slice mode runs only the standard CPU binary, whatever ROIFT_EXECUTABLE names.
