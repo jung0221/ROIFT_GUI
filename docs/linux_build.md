@@ -12,7 +12,7 @@ the dependency set.
 | --- | --- |
 | Qt 6 (Widgets, optionally Svg) | `qt6-main` |
 | VTK 9 with Qt6 support | `vtk` |
-| ITK (NIfTI/DICOM I/O) | `libitk-devel` — conda-forge's `itk` is the *Python* package |
+| ITK (NIfTI, DICOM and raster image I/O) | `libitk-devel`; conda-forge's `itk` is the *Python* package |
 | zlib (`.nii.gz` in the ROIFT tools) | `zlib` |
 | Toolchain | `cmake`, `ninja`, `cxx-compiler`, `binutils` |
 | OpenGL headers | `libgl-devel` |
@@ -56,14 +56,27 @@ extra setup. `ROIFT_EXECUTABLE` overrides the search with an explicit path.
 ctest --test-dir build --output-on-failure
 ```
 
-The eight tests are `ui_paths`, `solver_network`, `wheel_guard`, `mask_overlay`,
-`npz_import`, `oiftrelax_nifti_gz`, `oiftrelax_one_slice` and `oiftrelax_header_2d`. `solver_network` pins the YAML reader and the
+The twelve tests are `ui_paths`, `solver_network`, `planar_slice`,
+`plane_segmentation`, `raster_image`, `wheel_guard`, `mask_overlay`,
+`plane_mode_gui`, `npz_import`, `oiftrelax_nifti_gz`, `oiftrelax_one_slice` and
+`oiftrelax_header_2d`. `solver_network` pins the YAML reader and the
 voxel-to-segment lookup; `mask_overlay` also loads a network into the real window. `oiftrelax_nifti_gz` segments a gzipped NIfTI phantom with the
 built `oiftrelax`; see [packaging.md](packaging.md#regression-test).
 `oiftrelax_one_slice` and `oiftrelax_header_2d` segment a disc in a one-slice volume and in a 2D NIfTI header, at the default stride and blur, and require a Dice coefficient of at least 0.9.
-No display is needed: the two that build widgets set `QT_QPA_PLATFORM=offscreen`
-themselves, so there is no `xvfb-run` in the loop. `npz_import` reports as
-skipped unless numpy and SimpleITK are importable.
+`planar_slice` pins the mapping between a slice of a volume and a plane, as the
+views draw it. `plane_segmentation` runs the built `oiftrelax` on synthetic
+planes through the slice runner. `raster_image` reads PNG, JPEG, BMP and TIFF
+files as images and as masks. `plane_mode_gui` opens raster images in the real
+window, checks the file the external tools are handed and the one-panel layout,
+and, when the tree has an `oiftrelax`, runs a slice segmentation (otherwise it
+skips that part and says so).
+`plane_segmentation` and the three `oiftrelax_*` tests are registered only when
+the `oiftrelax` target exists; `npz_import` and the `oiftrelax_*` tests also
+need a Python interpreter.
+No display is needed: the three that build widgets (`wheel_guard`,
+`mask_overlay` and `plane_mode_gui`) run with `QT_QPA_PLATFORM=offscreen`,
+which CTest sets for them, so there is no `xvfb-run` in the loop. `npz_import`
+reports as skipped unless numpy and SimpleITK are importable.
 
 ## Run
 

@@ -52,18 +52,84 @@
   answered with a size warning before it happens.
 
 ## Mask I/O
-- `Mask Options` dialog exposes load/save. When built with ITK the app saves masks as NIfTI using int16 as the pixel type.
+- The `Save` and `Load` buttons in the `File` group of the `Mask` section open `Save Mask`
+  and `Open Mask`. NIfTI is the default format and is written with int16 samples; a name
+  typed without `.nii` or `.nii.gz` is saved as `.nii.gz`.
+- **PNG label images.** While the image has one slice, `Save Mask` also offers
+  `PNG label image (*.png)`. The file is 8-bit when every label is at most 255 and 16-bit
+  when the largest label is at most 65535. With the PNG filter chosen, a name typed without
+  a suffix is saved as `.png`. A label above 65535, a negative label, or a mask with more
+  than one slice is refused with a message, and nothing is written.
+- `Open Mask` reads PNG, BMP and TIFF label images as well as NIfTI and NumPy; see
+  [Raster images](#raster-images-png-jpeg-bmp-tiff) for how their labels are read.
 - Segmentation outputs from `SegmentationRunner` are merged using ITK when available and then loaded into the GUI as the current mask.
 
 ## Opening images
 - The sidebar panel is `Images` and the toolbar action is `Open` (Ctrl+O). Both take any
-  supported volume, not just NIfTI: `.nii`, `.nii.gz`, DICOM (`.dcm`, `.dicom`, `.ima`) and
-  NumPy (`.npz`, `.npy`). Masks accept everything except DICOM, which carries no labels.
-- The same list drives `Open CSV`/`Add CSV`, so a CSV column may list `.npz` paths, and the
-  mask/seed folder scan, so a `.npz` mask beside an image is picked up like a `.nii.gz` one.
+  supported image, not just NIfTI: `.nii`, `.nii.gz`, DICOM (`.dcm`, `.dicom`, `.ima`),
+  NumPy (`.npz`, `.npy`) and the raster formats `.png`, `.jpg`, `.jpeg`, `.bmp`, `.tif` and
+  `.tiff`, in any letter case. Masks accept NIfTI, NumPy, PNG, BMP and TIFF. DICOM carries no
+  labels, and JPEG is not offered because lossy compression gives label edges values that no
+  label has.
+- The same list of image formats drives `Open CSV`/`Add CSV`, so a CSV column may list `.npz`
+  or `.png` paths. The mask/seed folder scan uses a narrower list: a `.npz` mask beside an
+  image is picked up like a `.nii.gz` one, but a raster file never is (see below).
 - `Export CSV` writes the column header `image_path` (it used to be `nifti_path`). The
   importer accepts both, along with `path`, `file_path` and `filepath`.
-- Saving is still NIfTI only — `Save` and `Save Mask` write `.nii`/`.nii.gz`.
+- `Save` writes the image as NIfTI only. `Save Mask` writes NIfTI, or a PNG label image while
+  the image has one slice; see [Mask I/O](#mask-io).
+
+## Raster images (PNG, JPEG, BMP, TIFF)
+- **One file, one slice.** A raster file opens through ITK's readers as a volume with one
+  slice (Z = 1). A multi-page TIFF opens as a volume whose pages are its slices.
+- **One panel.** An image with one slice, whatever its format, is shown in a single panel
+  labelled `Image`. The sagittal, coronal and 3D panels and the slice slider row are hidden,
+  since one slice has no other plane and no surface to contour. They return when a volume is
+  selected.
+- **Colour.** The loader reduces colour to luminance, 0.2125 R + 0.7154 G + 0.0721 B, and
+  ignores alpha: an RGBA file reads as the luminance of its RGB, a grey + alpha file as its
+  grey. A file with any other number of channels is refused.
+- **Pixels, not millimetres.** A raster image has spacing 1 x 1 x 1 whatever its DPI tags
+  say. DPI describes the printed size, not the imaged object, and the same picture would
+  otherwise measure differently in each format. The ruler, which labels its lengths in
+  millimetres, therefore reports pixels for a raster image.
+- **Stored orientation.** The EXIF orientation tag of a JPEG is ignored, so a photograph
+  appears as its pixels are stored, which may be rotated relative to a photo viewer.
+- **Binary images.** As with NIfTI, an integer raster holding only 0 and 1 is classified as a
+  mask and displayed as one. This affects the display only.
+- **Refusals.** A file that cannot be opened is refused, and the status bar gives the reason
+  as `Could not read <file>: <reason>`. The reasons are integer TIFF samples of 32 bits or
+  wider, which ITK cannot read (save the file with 8-bit, 16-bit or floating-point samples);
+  more than 400 million samples (pixels times channels); a channel count outside one to four;
+  and any error from ITK's reader, of which the first line is shown.
+- **What the external tools receive.** `oiftrelax` in a volume run, LUNAS, the rib runner,
+  super-resolution and the vessel graph read files, and none of them reads PNG or TIFF. The
+  GUI therefore exports the image to a temporary NIfTI (`roift_src_<name>.nii.gz`;
+  `roift_npz_<name>.nii.gz` for a NumPy image) and hands them that path. The exports live in a
+  temporary directory that belongs to the window, with a fresh subdirectory for every export,
+  so an export that a queued run is still reading is never overwritten. The directory is
+  removed when the window closes. An export is reused while the same image stays loaded.
+  LUNAS, super-resolution and the vessel graph write their outputs in the folder of the
+  original image, not in the export directory. LUNAS names its case after the file it reads,
+  so the case of an exported image is `roift_src_<name>` (or `roift_npz_<name>`).
+- **Known limitations**, shared with NumPy images and older than raster support: the rib
+  runner looks for the lung labelmap (`lungs_<case>.nii.gz` or `lung_<case>.nii.gz`) beside
+  the file it is handed, which is the export, so it stops with `Lung labelmap not found`. The
+  masks a volume run of `oiftrelax` produces from an exported image are listed among the
+  unassigned masks rather than under the image, because they are registered against the
+  export's path.
+- **Folder scan.** Raster files are never picked up by the mask/seed folder scan. The scan
+  lists every candidate beside the image, so a folder of photographs would list each one as a
+  mask of the others. Open a raster mask explicitly with `Open Mask`, or with `Add` in
+  `Masks`.
+- **Raster masks.** PNG, BMP and TIFF label images open as masks; JPEG is not offered. The
+  labels are the stored sample values, and for an indexed PNG they are the palette indices,
+  not the colours those indices map to. A label image must have one channel: a colour or
+  grey + alpha file is refused with a message giving its channel count. A TIFF with integer
+  samples of 32 bits or wider is refused as well. A raster mask has spacing 1, as its image
+  does, and must sit on the image's X/Y grid like any other mask.
+- `--input` on the command line opens raster files as well, although `--help` does not yet
+  list them.
 
 ## NumPy volumes (`.npz` / `.npy`)
 - `Open` and `Open Mask` both accept `.npz` and `.npy`. Compressed and
@@ -106,9 +172,72 @@
 
 ## NIfTI Auto-Detection Toggle
 - In the `NIfTI Images` panel, use `Auto-detect masks/seeds` to enable or disable automatic scanning of the image folder for:
-- mask files (`.nii`, `.nii.gz`) associated with the current image
+- mask files (`.nii`, `.nii.gz`, `.npz`, `.npy`; never raster files) associated with the current image
 - seed files (`.txt`)
 - The `Refresh` buttons still trigger a manual rescan.
+
+## Segmenting one slice
+- **Purpose.** A slice run segments the slice on screen instead of the whole volume. It is
+  the only run a one-slice image has, and on a volume it changes one slice of the edited mask
+  and leaves the others untouched.
+- **Controls.** The `Parameters` group of the `Segmentation` section has `Scope` (`Volume`,
+  `Current slice`), `Plane` (`Axial`, `Sagittal`, `Coronal`) and
+  `Background on the plane border`, which is on by default. `Plane` and the border option are
+  enabled only in `Current slice` scope. For a one-slice image the scope is `Current slice` and
+  the plane `Axial`, both fixed; the choices made for volumes return when a volume is
+  selected.
+- **Which slice.** `Run` (Ctrl+Shift+S) segments the slice at the current position of the
+  chosen plane's slider: z for axial, x for sagittal, y for coronal. The plane is oriented as
+  its view draws it: axial `z = k` gives a plane of `(x, y)`, sagittal `x = k` a plane of
+  `(y, z)`, and coronal `y = k` a plane of `(x, z)`.
+- **Seeds.** Only the seeds on that slice take part, and the log reports how many were used
+  and how many on other slices were ignored. Where several seeds share a pixel, the last one
+  placed wins. At least one object seed (label > 0) must lie on the slice; label 0 seeds are
+  background.
+- **Parameters.** `Polarity`, `Relax`, `Pctile` and `Smoothing` apply as in a volume run. When
+  the window has been moved off the full intensity range, the slice is clamped to the window
+  first, as a volume run does, and the log says so.
+- **Volume-only controls.** In slice scope `Batch per label`, `Polarity sweep`, `Use GPU` and
+  `Method` are disabled. A slice run always uses the standard transform, so `Smoothing` stays
+  visible and `Alpha` and `Sigma` are hidden. `Mode` is forced to `Multi-label`, and
+  `Legacy binary` is unavailable. A box ticked before the switch keeps its tick but has no
+  effect on a slice run. All of these return to their previous state when the scope goes
+  back to `Volume`.
+- **Background on the plane border.** When it is on, every pixel on the four edges of the
+  plane that holds no user seed becomes a background seed. The binary's own face seeding is
+  off in a slice run either way. Switch the option off when the structure touches the edge
+  of the plane, which is common on coronal and sagittal CT slices and on cropped
+  photographs, and place background seeds by hand instead. With the option off and no
+  background seed at all, the whole plane is divided among the object labels.
+- **The paste.** The result is written into the edited mask, on that slice only. A pixel takes
+  the result where the result is non-zero. Where the result is zero, a pixel holding a label
+  seeded in this run is cleared and any other label is kept. Nothing outside the slice
+  changes. If no mask is being edited, a blank one is created, and the mask is shown once the
+  run ends. Nothing is written to disk until `Save Mask`. There is no undo: to revert, run
+  again or repaint.
+- **In the background.** The seeds, parameters and pixels are taken when `Run` is clicked.
+  The run then happens in the background, queues behind other runs, and is cancelled when the
+  window closes. If the image or the edited mask changes before the result arrives, the
+  result is discarded.
+- **Failure modes.** Each of the following leaves the mask unchanged and gives the reason in
+  the status bar and the segmentation log:
+  - no image is open;
+  - the plane is narrower than 3 pixels in either direction, which the border seeds would
+    cover entirely;
+  - no object seed lies on the slice;
+  - the edited mask is on a different grid from the image, which is checked when `Run` is
+    clicked if the mask has been read, and otherwise when the result arrives;
+  - no standard CPU `oiftrelax` is found. It is searched for in `ROIFT_EXECUTABLE`, then on
+    `PATH`, then in the build folders around the application and the current directory; set
+    `ROIFT_EXECUTABLE` to its full path;
+  - `ROIFT_EXECUTABLE` names another binary. The GPU and experiment binaries cannot segment
+    one slice, so point it at `oiftrelax` or unset it;
+  - the image or the edited mask changed during the run, so the result is discarded;
+  - `oiftrelax` fails. The first line of the reason is shown in the status bar; the command
+    line and the last lines of the binary's output go to the log.
+- **Binary version.** Slice mode does not depend on how `oiftrelax` seeds the faces of a
+  one-slice volume, a rule that recent builds changed: it passes a boundary stride of 0, which
+  turns that seeding off, and writes the border seeds itself.
 
 ## Mask Heatmap
 - In the `Mask` top tab, use `Advanced -> Heatmap`.
