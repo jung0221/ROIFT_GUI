@@ -128,8 +128,7 @@
   grey + alpha file is refused with a message giving its channel count. A TIFF with integer
   samples of 32 bits or wider is refused as well. A raster mask has spacing 1, as its image
   does, and must sit on the image's X/Y grid like any other mask.
-- `--input` on the command line opens raster files as well, although `--help` does not yet
-  list them.
+- `--input` on the command line opens raster files as well.
 
 ## NumPy volumes (`.npz` / `.npy`)
 - `Open` and `Open Mask` both accept `.npz` and `.npy`. Compressed and
@@ -238,6 +237,29 @@
 - **Binary version.** Slice mode does not depend on how `oiftrelax` seeds the faces of a
   one-slice volume, a rule that recent builds changed: it passes a boundary stride of 0, which
   turns that seeding off, and writes the border seeds itself.
+
+### Practical notes
+Measured on 2026-10-05 by reproducing the slice runner's pipeline with the built
+`oiftrelax`. Each figure comes from one image or one case and is not a target.
+- **Speed and memory.** One slice run took about 0.05 s and 11 MB at 512 x 512, about 0.8 s
+  and 103 MB at 2048 x 2048, and about 2.3 s and 290 MB for a 12-megapixel image
+  (4000 x 3000): roughly 24 bytes per pixel.
+- **Real data.** The scikit-image `coins` image reached a Dice coefficient of 0.977 against
+  a threshold reference. One axial, one coronal and one sagittal CT slice of a chest case
+  reached lung Dice 0.989, 0.953 and 0.993 against the case's lung mask; the coronal
+  shortfall is the main bronchus joining the right lung.
+- **The border at the plane edge.** With the lungs touching the top edge of a cropped coronal
+  plane, Dice was 0.841 with `Background on the plane border` and 0.937 without it.
+- **Seed placement.** A single object seed on a local extremum can remain trapped there when
+  `Smoothing` is `Light (1×)` or `None (sharp)`: one coin reached Dice 0.021 without
+  smoothing and 0.988 with the seed moved by one pixel. Place several seeds per object.
+- **Polarity on photographs.** Colour becomes luminance, so a coloured object may be darker
+  than its surroundings in grey: the orange suit in scikit-image's `astronaut` is mid-grey,
+  between a bright backdrop and a black background. Choose the polarity from the grey
+  picture, or use 0.
+- **Scale.** A raster image is measured in pixels, so the smoothing acts over a fixed number
+  of pixels, and an upscaled copy of the same image segments differently: the result on a
+  512-pixel image and the result on a 2048-pixel copy of it agreed with Dice 0.877.
 
 ## Mask Heatmap
 - In the `Mask` top tab, use `Advanced -> Heatmap`.
