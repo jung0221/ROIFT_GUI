@@ -35,9 +35,12 @@
   Selecting a mask that is already on screen costs nothing at all: it takes the voxels
   from the layer instead of re-reading the file.
 - Click an open eye to hide that mask again and free the memory it held.
-- Three cases open an eye for you, because nobody clicked one and a blank viewer would be
-  a lie: a mask loaded by `Open Mask`, a mask that arrives from a segmentation run or the
-  `--mask` argument, and the mask you are editing when you pick up the mask brush.
+- Some actions open an eye for you, because no eye was clicked and an empty viewer would
+  misrepresent their result: a mask loaded by `Open Mask` or by the `--mask` argument; the
+  result of a slice segmentation, of `Postprocess Mask` and of the vessel graph; the map a
+  placed solver network draws; the first mask added while no image is open; and the mask you
+  are editing when you pick up the mask brush or threshold it. A background volume run only
+  adds its files to the mask list, with their eyes closed.
 - A mask painted from scratch has no row and therefore no eye, so it is always drawn.
 - Colours are picked so masks stay apart: a mask with a single label gets one colour
   from a per-mask palette (shown as the swatch beside the eye), and a multi-label mask
