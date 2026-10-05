@@ -31,9 +31,13 @@ constexpr int kMinPlaneSide = 3;
 // Non-integral planes are mapped onto [0, kIntegerRange] before the int32 export.
 constexpr double kIntegerRange = 10000.0;
 constexpr double kIntegralTolerance = 1e-6;
+// gft allocates a bucket per intensity level times (1 + |pol|) and shifts by -min in int,
+// so a wider range costs memory or overflows.
+constexpr double kMaxUnscaledRange = 65535.0;
 constexpr int kFailureTailLines = 3;
+constexpr int kPollMilliseconds = 100;
 
-QString validate(const RunRequest &r)
+QString validate(const RunRequest &r, const std::vector<Seed> &seeds)
 {
     const Geometry &g = r.geometry;
     if (g.width < kMinPlaneSide || g.height < kMinPlaneSide)
@@ -46,11 +50,11 @@ QString validate(const RunRequest &r)
     if (!(r.spacing[0] > 0.0 && r.spacing[1] > 0.0 && std::isfinite(r.spacing[0]) && std::isfinite(r.spacing[1])))
         return QString("The plane spacing (%1, %2) is not positive and finite.").arg(r.spacing[0]).arg(r.spacing[1]);
     // oiftrelax would skip a seed outside the plane silently.
-    for (const Seed &s : r.seeds)
+    for (const Seed &s : seeds)
         if (s.x < 0 || s.x >= g.width || s.y < 0 || s.y >= g.height || s.z != 0)
             return QString("Seed (%1, %2, %3) lies outside the %4 x %5 plane.")
                 .arg(s.x).arg(s.y).arg(s.z).arg(g.width).arg(g.height);
-    if (std::none_of(r.seeds.begin(), r.seeds.end(), [](const Seed &s) { return s.label > 0; }))
+    if (std::none_of(seeds.begin(), seeds.end(), [](const Seed &s) { return s.label > 0; }))
         return "The plane has no object seed (label > 0).";
     if (r.executablePath.isEmpty() || !QFileInfo(r.executablePath).isFile())
         return QString("oiftrelax not found: \"%1\".").arg(r.executablePath);
@@ -60,15 +64,16 @@ QString validate(const RunRequest &r)
 }
 
 // gft reads int32 as is but rescales float32 by its maximum from 0, which fails for a
-// plane whose maximum is <= 0; so integral planes go as they are and others onto [0, 10000].
+// plane whose maximum is <= 0; so narrow integral planes go as they are, others onto [0, 10000].
 std::vector<int32_t> toInt32(const std::vector<float> &pixels)
 {
     const auto [lo, hi] = std::minmax_element(pixels.begin(), pixels.end());
     const double minimum = *lo, maximum = *hi;
     const bool fitsInt32 = minimum >= double(std::numeric_limits<int32_t>::min()) &&
                            maximum <= double(std::numeric_limits<int32_t>::max());
-    const bool integral = fitsInt32 && std::all_of(pixels.begin(), pixels.end(), [](float v)
-                                                   { return std::fabs(double(v) - std::round(double(v))) < kIntegralTolerance; });
+    const bool narrow = fitsInt32 && maximum - minimum <= kMaxUnscaledRange;
+    const bool integral = narrow && std::all_of(pixels.begin(), pixels.end(), [](float v)
+                                                { return std::fabs(double(v) - std::round(double(v))) < kIntegralTolerance; });
 
     std::vector<int32_t> out(pixels.size(), 0);
     if (integral)
@@ -113,19 +118,18 @@ QString writePlane(const RunRequest &r, const QString &path)
     }
     catch (const itk::ExceptionObject &e)
     {
-        return QString("Could not write the plane to %1: %2").arg(path, e.GetDescription());
+        return QString("Could not write the plane to %1.\n%2").arg(path, e.GetDescription());
     }
     return {};
 }
 
 // Request seeds first, then background on every border pixel no request seed holds.
-std::vector<Seed> runSeeds(const RunRequest &r)
+std::vector<Seed> runSeeds(const RunRequest &r, std::vector<Seed> seeds)
 {
-    std::vector<Seed> seeds = r.seeds;
     if (!r.borderBackground)
         return seeds;
     std::set<std::pair<int, int>> taken;
-    for (const Seed &s : r.seeds)
+    for (const Seed &s : seeds)
         taken.insert({s.x, s.y});
     for (const auto &[u, v] : borderPixels(r.geometry))
         if (!taken.count({u, v}))
@@ -162,7 +166,7 @@ QString readLabels(const QString &path, const Geometry &g, std::vector<int> *lab
     }
     catch (const itk::ExceptionObject &e)
     {
-        return QString("Could not read the label plane %1: %2").arg(path, e.GetDescription());
+        return QString("Could not read the label plane %1.\n%2").arg(path, e.GetDescription());
     }
     const PlaneImage *image = reader->GetOutput();
     const auto size = image->GetLargestPossibleRegion().GetSize();
@@ -179,7 +183,9 @@ QString readLabels(const QString &path, const Geometry &g, std::vector<int> *lab
 RunResult segmentPlane(const RunRequest &request)
 {
     RunResult result;
-    result.message = validate(request);
+    // gft queues a seed voxel once; a repeated voxel unlinks the seeds queued with it.
+    const std::vector<Seed> seeds = dedupeSeedsKeepingLatest(request.seeds);
+    result.message = validate(request, seeds);
     if (!result.message.isEmpty())
         return result;
 
@@ -191,7 +197,7 @@ RunResult segmentPlane(const RunRequest &request)
     result.message = writePlane(request, planePath);
     if (!result.message.isEmpty())
         return result;
-    if (!writeMultilabelSeedFile(seedPath, runSeeds(request)))
+    if (!writeMultilabelSeedFile(seedPath, runSeeds(request, seeds)))
     {
         result.message = QString("Could not write the seed file %1.").arg(seedPath);
         return result;
@@ -220,17 +226,33 @@ RunResult segmentPlane(const RunRequest &request)
     process.setProcessChannelMode(QProcess::MergedChannels);
     process.setWorkingDirectory(work.absolutePath());
     process.start(request.executablePath, args);
-    if (!process.waitForStarted(-1))
+    while (process.state() != QProcess::NotRunning)
+    {
+        if (request.cancelled && request.cancelled())
+        {
+            process.kill();
+            process.waitForFinished(-1);
+            result.message = "Cancelled.";
+            return result;
+        }
+        process.waitForFinished(kPollMilliseconds);
+    }
+    if (process.error() == QProcess::FailedToStart)
     {
         result.message = QString("Could not start %1: %2").arg(request.executablePath, process.errorString());
         return result;
     }
-    process.waitForFinished(-1);
     const QString output = QString::fromLocal8Bit(process.readAll());
 
     if (process.exitStatus() == QProcess::CrashExit)
     {
-        result.message = withOutputTail(QString("oiftrelax crashed (exit code %1).").arg(process.exitCode()), output);
+#if defined(Q_OS_UNIX)
+        // On Unix a crashed process's exit code is the signal that ended it.
+        const QString summary = QString("oiftrelax crashed (signal %1).").arg(process.exitCode());
+#else
+        const QString summary = "oiftrelax crashed.";
+#endif
+        result.message = withOutputTail(summary, output);
         return result;
     }
     if (process.exitCode() != 0)

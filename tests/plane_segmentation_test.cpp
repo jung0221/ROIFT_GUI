@@ -6,6 +6,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QStringList>
@@ -128,6 +129,31 @@ bool readSeedFile(const QString &path, std::vector<SeedRow> *rows)
     return count == int(rows->size());
 }
 
+// Smallest and largest value of the int32 plane file.
+bool readPlaneRange(const QString &path, int32_t *lo, int32_t *hi)
+{
+    auto reader = itk::ImageFileReader<PlaneImage>::New();
+    reader->SetFileName(path.toStdString());
+    try
+    {
+        reader->Update();
+    }
+    catch (const itk::ExceptionObject &e)
+    {
+        std::printf("    %s\n", e.GetDescription());
+        return false;
+    }
+    *lo = INT32_MAX;
+    *hi = INT32_MIN;
+    itk::ImageRegionConstIterator<PlaneImage> it(reader->GetOutput(), reader->GetOutput()->GetLargestPossibleRegion());
+    for (it.GoToBegin(); !it.IsAtEnd(); ++it)
+    {
+        *lo = std::min(*lo, it.Get());
+        *hi = std::max(*hi, it.Get());
+    }
+    return true;
+}
+
 void printFailure(const planar::RunResult &result)
 {
     if (!result.success)
@@ -149,6 +175,7 @@ int main(int argc, char **argv)
     // 1. A bright disc, one object seed, background from the border.
     {
         QTemporaryDir work;
+        check(work.isValid(), "bright disc: temporary directory created");
         const planar::RunResult result = planar::segmentPlane(discRequest(exe, work.path()));
         printFailure(result);
         const double dice = discDice(result.labels, 2);
@@ -184,12 +211,15 @@ int main(int argc, char **argv)
     // 2. Anisotropic pixels: the file carries (du, dv, max(du, dv)).
     {
         QTemporaryDir work;
+        check(work.isValid(), "anisotropic: temporary directory created");
         planar::RunRequest request = discRequest(exe, work.path());
         request.spacing = {0.7, 2.0};
         const planar::RunResult result = planar::segmentPlane(request);
         printFailure(result);
-        std::printf("    anisotropic disc: Dice %.4f\n", discDice(result.labels, 2));
+        const double dice = discDice(result.labels, 2);
+        std::printf("    anisotropic disc: Dice %.4f\n", dice);
         check(result.success, "anisotropic: run succeeds");
+        check(dice >= kMinDice, "anisotropic: Dice >= 0.9");
 
         auto reader = itk::ImageFileReader<PlaneImage>::New();
         reader->SetFileName(QDir(work.path()).filePath("plane.nii.gz").toStdString());
@@ -214,6 +244,7 @@ int main(int argc, char **argv)
     // 3. Non-integral, all negative: the affine int32 export, not gft's float rescale.
     {
         QTemporaryDir work;
+        check(work.isValid(), "negative non-integral: temporary directory created");
         planar::RunRequest request = discRequest(exe, work.path());
         request.pixels = discPlane(-1000.0f, -200.0f, 0.25f);
         const planar::RunResult result = planar::segmentPlane(request);
@@ -223,32 +254,16 @@ int main(int argc, char **argv)
         check(result.success, "negative non-integral: run succeeds");
         check(dice >= kMinDice, "negative non-integral: Dice >= 0.9");
 
-        auto reader = itk::ImageFileReader<PlaneImage>::New();
-        reader->SetFileName(QDir(work.path()).filePath("plane.nii.gz").toStdString());
-        bool mapped = false;
-        try
-        {
-            reader->Update();
-            int32_t lo = INT32_MAX, hi = INT32_MIN;
-            itk::ImageRegionConstIterator<PlaneImage> it(reader->GetOutput(),
-                                                         reader->GetOutput()->GetLargestPossibleRegion());
-            for (it.GoToBegin(); !it.IsAtEnd(); ++it)
-            {
-                lo = std::min(lo, it.Get());
-                hi = std::max(hi, it.Get());
-            }
-            mapped = lo == 0 && hi == 10000;
-        }
-        catch (const itk::ExceptionObject &e)
-        {
-            std::printf("    %s\n", e.GetDescription());
-        }
+        int32_t lo = 0, hi = 0;
+        const bool mapped = readPlaneRange(QDir(work.path()).filePath("plane.nii.gz"), &lo, &hi) && lo == 0 &&
+                            hi == 10000;
         check(mapped, "negative non-integral: plane mapped onto [0, 10000]");
     }
 
     // 4. No border seeds and no background seed: the object takes the plane.
     {
         QTemporaryDir work;
+        check(work.isValid(), "border off: temporary directory created");
         planar::RunRequest request = discRequest(exe, work.path());
         request.borderBackground = false;
         const planar::RunResult result = planar::segmentPlane(request);
@@ -260,6 +275,7 @@ int main(int argc, char **argv)
     // 5. A user seed on the border keeps its label; no background row is added there.
     {
         QTemporaryDir work;
+        check(work.isValid(), "border user seed: temporary directory created");
         planar::RunRequest request = discRequest(exe, work.path());
         request.seeds.push_back(Seed{0, kCentreV, 0, 2, 2});
         const planar::RunResult result = planar::segmentPlane(request);
@@ -294,6 +310,7 @@ int main(int argc, char **argv)
     // 6. A missing executable is named, and nothing runs.
     {
         QTemporaryDir work;
+        check(work.isValid(), "missing executable: temporary directory created");
         const QString missing = "/nonexistent/oiftrelax";
         const planar::RunResult result = planar::segmentPlane(discRequest(missing, work.path()));
         check(!result.success, "missing executable: refused");
@@ -304,6 +321,7 @@ int main(int argc, char **argv)
     // 7. No object seed.
     {
         QTemporaryDir work;
+        check(work.isValid(), "no object seed: temporary directory created");
         planar::RunRequest request = discRequest(exe, work.path());
         request.seeds = {Seed{5, 5, 0, 0, 0}};
         const planar::RunResult result = planar::segmentPlane(request);
@@ -314,6 +332,7 @@ int main(int argc, char **argv)
     // 8. Planes the border would cover entirely, and a pixel buffer of the wrong size.
     {
         QTemporaryDir work;
+        check(work.isValid(), "64 x 2 plane: temporary directory created");
         planar::RunRequest request = discRequest(exe, work.path());
         planar::makeGeometry(planar::Plane::Axial, 0, {kWidth, 2, 1}, &request.geometry);
         request.pixels.assign(std::size_t(kWidth) * 2, 100.0f);
@@ -326,6 +345,59 @@ int main(int argc, char **argv)
         wrongSize.pixels.pop_back();
         check(!planar::segmentPlane(wrongSize).success, "pixel buffer of the wrong size: refused");
         check(QDir(work.path()).isEmpty(), "pixel buffer of the wrong size: nothing written");
+    }
+
+    // 9. Two seeds on one pixel: the later one alone reaches the file.
+    {
+        QTemporaryDir work;
+        check(work.isValid(), "repeated pixel: temporary directory created");
+        planar::RunRequest request = discRequest(exe, work.path());
+        request.seeds = {Seed{kCentreU, kCentreV, 0, 1, 1}, Seed{kCentreU, kCentreV, 0, 2, 2}};
+        const planar::RunResult result = planar::segmentPlane(request);
+        printFailure(result);
+        check(result.success, "repeated pixel: run succeeds");
+        std::vector<SeedRow> rows;
+        int atCentre = 0, labelAtCentre = -1;
+        if (readSeedFile(QDir(work.path()).filePath("seeds.txt"), &rows))
+            for (const SeedRow &r : rows)
+                if (r.x == kCentreU && r.y == kCentreV)
+                {
+                    ++atCentre;
+                    labelAtCentre = r.label;
+                }
+        check(atCentre == 1 && labelAtCentre == 2, "repeated pixel: one row, label 2");
+    }
+
+    // 10. An integral plane too wide for gft's buckets is mapped, not written as is.
+    {
+        QTemporaryDir work;
+        check(work.isValid(), "wide integral range: temporary directory created");
+        planar::RunRequest request = discRequest(exe, work.path());
+        for (int v = 0; v < kHeight; ++v)
+            for (int u = 0; u < kWidth; ++u)
+                request.pixels[std::size_t(v) * kWidth + u] = inDisc(u, v) ? 1000000.0f : 0.0f;
+        const planar::RunResult result = planar::segmentPlane(request);
+        printFailure(result);
+        check(result.success, "wide integral range: run succeeds");
+        int32_t lo = -1, hi = -1;
+        check(readPlaneRange(QDir(work.path()).filePath("plane.nii.gz"), &lo, &hi) && lo >= 0 && hi <= 10000,
+              "wide integral range: plane within [0, 10000]");
+    }
+
+    // 11. Cancelled before the first poll: the process is killed and nothing is read.
+    {
+        QTemporaryDir work;
+        check(work.isValid(), "cancelled: temporary directory created");
+        planar::RunRequest request = discRequest(exe, work.path());
+        request.cancelled = [] { return true; };
+        QElapsedTimer timer;
+        timer.start();
+        const planar::RunResult result = planar::segmentPlane(request);
+        const qint64 elapsed = timer.elapsed();
+        check(!result.success && result.message == "Cancelled.", "cancelled: refused with \"Cancelled.\"");
+        check(elapsed < 5000, "cancelled: returns within 5 s");
+        check(result.labels.empty() && !QFileInfo::exists(QDir(work.path()).filePath("label.nii.gz")),
+              "cancelled: no label plane");
     }
 
     std::printf("%s\n", failures ? "FAILED" : "all passed");

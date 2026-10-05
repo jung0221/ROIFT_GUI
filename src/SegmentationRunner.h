@@ -15,7 +15,8 @@ namespace SegmentationRunner
     // Run segmentation using parameters from the main window UI
     void runSegmentation(ManualSeedSelector *parent);
 
-    // The standard CPU oiftrelax, resolved as a volume run resolves it, or an empty
-    // string when only a GPU binary is found or ROIFT_EXECUTABLE names one.
+    // The standard CPU oiftrelax, searched for where a volume run searches (ROIFT_EXECUTABLE,
+    // PATH, the build and install folders), or an empty string when ROIFT_EXECUTABLE names
+    // another binary or none is found.
     QString resolveCpuRoiftExecutable();
 }

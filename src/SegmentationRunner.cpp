@@ -1843,13 +1843,17 @@ namespace
 
 QString SegmentationRunner::resolveCpuRoiftExecutable()
 {
-    // The CPU names alone: the folder search would otherwise reach roift/gpu before roift.
-    QStringList cpuNames;
-    for (const QString &name : roiftExecutableNames(false))
-        if (!isGpuExecutablePath(name))
-            cpuNames << name;
-    const RoiftExecutable exe = findRoiftExecutable(cpuNames);
-    return exe.gpuBinary ? QString() : exe.path;
+    // Only this name: the folder search would otherwise reach roift/gpu before roift, and
+    // the plane runner relies on the newer CLI (an empty slot 8, --blur).
+#if defined(Q_OS_WIN)
+    const QString name = "oiftrelax.exe";
+    const Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
+#else
+    const QString name = "oiftrelax";
+    const Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
+#endif
+    const RoiftExecutable exe = findRoiftExecutable({name});
+    return QFileInfo(exe.path).fileName().compare(name, sensitivity) == 0 ? exe.path : QString();
 }
 
 void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)

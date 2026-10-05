@@ -304,27 +304,52 @@ int main(int argc, char **argv)
         check(!axialTitle(axialPanel).startsWith("Image"), "12 x 10 x 8 volume: axial panel is not titled Image");
     }
 
-    // Slice mode runs only the CPU binary, so ROIFT_EXECUTABLE naming the GPU one yields none.
+    // Slice mode runs only the standard CPU binary, whatever ROIFT_EXECUTABLE names.
     {
-        const QByteArray saved = qgetenv("ROIFT_EXECUTABLE");
+        const QByteArray savedExecutable = qgetenv("ROIFT_EXECUTABLE");
+        const QByteArray savedPath = qgetenv("PATH");
+#if defined(Q_OS_WIN)
+        const QString suffix = ".exe";
+#else
+        const QString suffix;
+#endif
         auto touch = [](const QString &path)
         {
             QFile file(path);
             return file.open(QIODevice::WriteOnly) && file.write("#") > 0;
         };
-        const QString gpuPath = dir.filePath("oiftrelax_gpu");
-        const QString cpuPath = dir.filePath("oiftrelax");
-        const bool made = touch(gpuPath) && touch(cpuPath);
+        const QString gpuPath = dir.filePath("oiftrelax_gpu" + suffix);
+        const QString parallelPath = dir.filePath("oiftrelax_parallel" + suffix);
+        const QString cpuPath = dir.filePath("oiftrelax" + suffix);
+        const bool made = touch(gpuPath) && touch(parallelPath) && touch(cpuPath);
         qputenv("ROIFT_EXECUTABLE", QFile::encodeName(gpuPath));
         check(made && SegmentationRunner::resolveCpuRoiftExecutable().isEmpty(),
               "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax_gpu yields none");
+        qputenv("ROIFT_EXECUTABLE", QFile::encodeName(parallelPath));
+        check(SegmentationRunner::resolveCpuRoiftExecutable().isEmpty(),
+              "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax_parallel yields none");
         qputenv("ROIFT_EXECUTABLE", QFile::encodeName(cpuPath));
         check(SegmentationRunner::resolveCpuRoiftExecutable() == QFileInfo(cpuPath).absoluteFilePath(),
               "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax is used");
-        if (saved.isEmpty())
+
+        // CTest names the built oiftrelax only when the tree has one; roift/gpu/oiftrelax_gpu
+        // sits ahead of roift/oiftrelax in the folder search.
+        if (!savedExecutable.isEmpty())
+        {
+            QTemporaryDir emptyPathDir;
+            qunsetenv("ROIFT_EXECUTABLE");
+            qputenv("PATH", QFile::encodeName(emptyPathDir.path()));
+            const QString found = SegmentationRunner::resolveCpuRoiftExecutable();
+            std::printf("  CPU resolver, folder search: \"%s\"\n", qPrintable(found));
+            check(emptyPathDir.isValid() && QFileInfo(found).fileName() == "oiftrelax" + suffix,
+                  "CPU resolver: folder search finds oiftrelax, not oiftrelax_gpu");
+        }
+
+        if (savedExecutable.isEmpty())
             qunsetenv("ROIFT_EXECUTABLE");
         else
-            qputenv("ROIFT_EXECUTABLE", saved);
+            qputenv("ROIFT_EXECUTABLE", savedExecutable);
+        qputenv("PATH", savedPath);
     }
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
