@@ -53,13 +53,18 @@
 
 ## Mask I/O
 - The `Save` and `Load` buttons in the `File` group of the `Mask` section open `Save Mask`
-  and `Open Mask`. NIfTI is the default format and is written with int16 samples; a name
-  typed without `.nii` or `.nii.gz` is saved as `.nii.gz`.
+  and `Open Mask`. NIfTI is the default format and is written with int16 samples; a label
+  outside -32768 to 32767 is clamped to that range without a warning. A name that does not
+  end in `.nii` or `.nii.gz` gets `.nii.gz` appended. The test is case-sensitive, so
+  `mask.NII.GZ` is saved as `mask.NII.GZ.nii.gz`.
 - **PNG label images.** While the image has one slice, `Save Mask` also offers
   `PNG label image (*.png)`. The file is 8-bit when every label is at most 255 and 16-bit
-  when the largest label is at most 65535. With the PNG filter chosen, a name typed without
-  a suffix is saved as `.png`. A label above 65535, a negative label, or a mask with more
-  than one slice is refused with a message, and nothing is written.
+  when the largest label is at most 65535. A label above 65535, a negative label, or a mask
+  with more than one slice is refused with a message, and nothing is written.
+- **Which writer a name selects.** A name ending in `.png`, in any letter case, goes to the
+  PNG writer whichever filter is chosen, so for a mask with more than one slice it is
+  refused. With the PNG filter chosen, a name typed without a suffix gets `.png`, but a name
+  with any other suffix is saved as NIfTI under the rule above.
 - `Open Mask` reads PNG, BMP and TIFF label images as well as NIfTI and NumPy; see
   [Raster images](#raster-images-png-jpeg-bmp-tiff) for how their labels are read.
 - Segmentation outputs from `SegmentationRunner` are merged using ITK when available and then loaded into the GUI as the current mask.
@@ -68,9 +73,10 @@
 - The sidebar panel is `Images` and the toolbar action is `Open` (Ctrl+O). Both take any
   supported image, not just NIfTI: `.nii`, `.nii.gz`, DICOM (`.dcm`, `.dicom`, `.ima`),
   NumPy (`.npz`, `.npy`) and the raster formats `.png`, `.jpg`, `.jpeg`, `.bmp`, `.tif` and
-  `.tiff`, in any letter case. Masks accept NIfTI, NumPy, PNG, BMP and TIFF. DICOM carries no
-  labels, and JPEG is not offered because lossy compression gives label edges values that no
-  label has.
+  `.tiff`, in any letter case. The mask dialogs offer NIfTI, NumPy, PNG, BMP and TIFF. DICOM
+  carries no labels. JPEG is left out of the filter because lossy compression gives label
+  edges values that no label has, but a one-channel JPEG chosen through `All files` still
+  opens as a mask.
 - The same list of image formats drives `Open CSV`/`Add CSV`, so a CSV column may list `.npz`
   or `.png` paths. The mask/seed folder scan uses a narrower list: a `.npz` mask beside an
   image is picked up like a `.nii.gz` one, but a raster file never is (see below).
@@ -95,8 +101,12 @@
   millimetres, therefore reports pixels for a raster image.
 - **Stored orientation.** The EXIF orientation tag of a JPEG is ignored, so a photograph
   appears as its pixels are stored, which may be rotated relative to a photo viewer.
-- **Binary images.** As with NIfTI, an integer raster holding only 0 and 1 is classified as a
-  mask and displayed as one. This affects the display only.
+- **Images classified as masks.** As with NIfTI, an image with integer samples whose values
+  span at most 1.5 is classified as a mask and drawn as one. That covers a 0/1 image, but
+  also `{254, 255}` and a uniform image, so a blank white PNG is shown as a mask. A colour
+  raster is judged by the integer sample type of the file, not by its luminance values. The
+  classification changes how the image is drawn and sets its window range to 0 to 1; the
+  pixel values are unchanged.
 - **Refusals.** A file that cannot be opened is refused, and the status bar gives the reason
   as `Could not read <file>: <reason>`. The reasons are integer TIFF samples of 32 bits or
   wider, which ITK cannot read (save the file with 8-bit, 16-bit or floating-point samples);
@@ -109,9 +119,12 @@
   temporary directory that belongs to the window, with a fresh subdirectory for every export,
   so an export that a queued run is still reading is never overwritten. The directory is
   removed when the window closes. An export is reused while the same image stays loaded.
-  LUNAS, super-resolution and the vessel graph write their outputs in the folder of the
-  original image, not in the export directory. LUNAS names its case after the file it reads,
-  so the case of an exported image is `roift_src_<name>` (or `roift_npz_<name>`).
+- **Where outputs go.** LUNAS writes into `<folder>/<case>/`, where `<folder>` is the folder
+  of the original image, or its parent when that folder is named after the image, and
+  `<case>` is named after the file LUNAS reads: `roift_src_<name>` (or `roift_npz_<name>`) for
+  an exported image. The vessel graph writes beside the original image. Super-resolution and
+  a volume run of `oiftrelax` only open their save dialogs in the folder of the original
+  image. The rib runner works beside the export (see below).
 - **Known limitations**, shared with NumPy images and older than raster support: the rib
   runner looks for the lung labelmap (`lungs_<case>.nii.gz` or `lung_<case>.nii.gz`) beside
   the file it is handed, which is the export, so it stops with `Lung labelmap not found`. The
@@ -122,8 +135,9 @@
   lists every candidate beside the image, so a folder of photographs would list each one as a
   mask of the others. Open a raster mask explicitly with `Open Mask`, or with `Add` in
   `Masks`.
-- **Raster masks.** PNG, BMP and TIFF label images open as masks; JPEG is not offered. The
-  labels are the stored sample values, and for an indexed PNG they are the palette indices,
+- **Raster masks.** PNG, BMP and TIFF label images open as masks. JPEG is not in the filter,
+  but a one-channel JPEG chosen through `All files` opens as one, with whatever values its
+  compression left at the label edges. The labels are the stored sample values, and for an indexed PNG they are the palette indices,
   not the colours those indices map to. A label image must have one channel: a colour or
   grey + alpha file is refused with a message giving its channel count. A TIFF with integer
   samples of 32 bits or wider is refused as well. A raster mask has spacing 1, as its image
@@ -170,7 +184,7 @@
   `image`, `volume`, `ct`, `seg`, `label`, then the first usable 3D array.
 
 ## NIfTI Auto-Detection Toggle
-- In the `NIfTI Images` panel, use `Auto-detect masks/seeds` to enable or disable automatic scanning of the image folder for:
+- In the `Images` panel, use `Auto-detect masks/seeds` to enable or disable automatic scanning of the image folder for:
 - mask files (`.nii`, `.nii.gz`, `.npz`, `.npy`; never raster files) associated with the current image
 - seed files (`.txt`)
 - The `Refresh` buttons still trigger a manual rescan.
@@ -197,8 +211,10 @@
   the window has been moved off the full intensity range, the slice is clamped to the window
   first, as a volume run does, and the log says so.
 - **Volume-only controls.** In slice scope `Batch per label`, `Polarity sweep`, `Use GPU` and
-  `Method` are disabled. A slice run always uses the standard transform, so `Smoothing` stays
-  visible and `Alpha` and `Sigma` are hidden. `Mode` is forced to `Multi-label`, and
+  `Method` are disabled. `Batch per label` and `Polarity sweep` write several output files
+  chosen through dialogs, whereas a slice result goes into the edited mask. `Use GPU` and
+  `Method` select binaries that cannot segment one slice: a slice run always uses the
+  standard transform, so `Smoothing` stays visible and `Alpha` and `Sigma` are hidden. `Mode` is forced to `Multi-label`, and
   `Legacy binary` is unavailable. A box ticked before the switch keeps its tick but has no
   effect on a slice run. All of these return to their previous state when the scope goes
   back to `Volume`.
@@ -209,21 +225,24 @@
   photographs, and place background seeds by hand instead. With the option off and no
   background seed at all, the whole plane is divided among the object labels.
 - **The paste.** The result is written into the edited mask, on that slice only. A pixel takes
-  the result where the result is non-zero. Where the result is zero, a pixel holding a label
-  seeded in this run is cleared and any other label is kept. Nothing outside the slice
-  changes. If no mask is being edited, a blank one is created, and the mask is shown once the
-  run ends. Nothing is written to disk until `Save Mask`. There is no undo: to revert, run
-  again or repaint.
+  the result where the result is positive. Elsewhere, a pixel holding a label seeded in this
+  run is cleared and any other label is kept. Nothing outside the slice changes. If no mask
+  is being edited, a blank one is created. The edited mask is shown after every successful
+  paste. Nothing is written to disk until `Save Mask`. There is no undo: to revert, run again
+  or repaint.
 - **In the background.** The seeds, parameters and pixels are taken when `Run` is clicked.
   The run then happens in the background, queues behind other runs, and is cancelled when the
-  window closes. If the image or the edited mask changes before the result arrives, the
-  result is discarded.
+  window closes. If a different image, or a different mask for editing, is selected before
+  the result arrives, the result is discarded. Painting the edited mask during the run does
+  not discard it; the paste is then applied over the painted pixels of that slice.
 - **Failure modes.** Each of the following leaves the mask unchanged and gives the reason in
   the status bar and the segmentation log:
   - no image is open;
   - the plane is narrower than 3 pixels in either direction, which the border seeds would
     cover entirely;
   - no object seed lies on the slice;
+  - the slice holds a pixel that is not a finite number, such as a NaN in a floating-point
+    NIfTI;
   - the edited mask is on a different grid from the image, which is checked when `Run` is
     clicked if the mask has been read, and otherwise when the result arrives;
   - no standard CPU `oiftrelax` is found. It is searched for in `ROIFT_EXECUTABLE`, then on
@@ -231,7 +250,10 @@
     `ROIFT_EXECUTABLE` to its full path;
   - `ROIFT_EXECUTABLE` names another binary. The GPU and experiment binaries cannot segment
     one slice, so point it at `oiftrelax` or unset it;
-  - the image or the edited mask changed during the run, so the result is discarded;
+  - a different image, or a different mask for editing, was selected during the run, so the
+    result is discarded;
+  - the edited mask, selected but not yet read, could not be read when the result arrived;
+  - the temporary directory for the run could not be created;
   - `oiftrelax` fails. The first line of the reason is shown in the status bar; the command
     line and the last lines of the binary's output go to the log.
 - **Binary version.** Slice mode does not depend on how `oiftrelax` seeds the faces of a
@@ -243,16 +265,20 @@ Measured on 2026-10-05 by reproducing the slice runner's pipeline with the built
 `oiftrelax`. Each figure comes from one image or one case and is not a target.
 - **Speed and memory.** One slice run took about 0.05 s and 11 MB at 512 x 512, about 0.8 s
   and 103 MB at 2048 x 2048, and about 2.3 s and 290 MB for a 12-megapixel image
-  (4000 x 3000): roughly 24 bytes per pixel.
+  (4000 x 3000): about 24 bytes per pixel for the larger images (the 512 x 512 run is about
+  42).
 - **Real data.** The scikit-image `coins` image reached a Dice coefficient of 0.977 against
-  a threshold reference. One axial, one coronal and one sagittal CT slice of a chest case
-  reached lung Dice 0.989, 0.953 and 0.993 against the case's lung mask; the coronal
-  shortfall is the main bronchus joining the right lung.
+  a reference made by an Otsu threshold (106.4) with holes filled, components of 100 pixels
+  or fewer removed and components touching the edge dropped, which keeps 23 of the 24 coins.
+  On the chest CT case `Stage1-0015ceb851d7251b8f399e39779d1e7d` (512 x 512 x 195), the axial
+  slice z = 104, the coronal slice y = 228 and the sagittal slice x = 164 reached lung Dice
+  0.989, 0.953 and 0.993 against the case's lung mask (labels 1 and 2); the coronal shortfall
+  is the main bronchus joining the right lung.
 - **The border at the plane edge.** With the lungs touching the top edge of a cropped coronal
   plane, Dice was 0.841 with `Background on the plane border` and 0.937 without it.
 - **Seed placement.** A single object seed on a local extremum can remain trapped there when
-  `Smoothing` is `Light (1×)` or `None (sharp)`: one coin reached Dice 0.021 without
-  smoothing and 0.988 with the seed moved by one pixel. Place several seeds per object.
+  `Smoothing` is `None (sharp)`: one coin reached Dice 0.021 without smoothing and 0.988 with
+  the seed moved by one pixel. `Light (1×)` was not measured. Place several seeds per object.
 - **Polarity on photographs.** Colour becomes luminance, so a coloured object may be darker
   than its surroundings in grey: the orange suit in scikit-image's `astronaut` is mid-grey,
   between a bright backdrop and a black background. Choose the polarity from the grey
@@ -337,5 +363,8 @@ Measured on 2026-10-05 by reproducing the slice runner's pipeline with the built
   3D graph are cleared. The files are not touched. Loading another network unloads the first.
 
 ## Example workflows
-- Place seeds for two labels, open the Segmentation dialog, choose "Segment all", and select an output directory; the per-label outputs will be merged into a multilabel NIfTI and loaded automatically.
-- Save seeds to a `.txt` file from the Segmentation dialog to reproduce or share seed sets.
+- Place seeds for two labels, tick `Batch per label` in the `Segmentation` section, click
+  `Run`, and select an output directory. The per-label outputs are merged into
+  `segmentation_multilabel.nii.gz` in that directory, which is added to the image's mask list.
+- Save seeds to a `.txt` file with `Save` in the `File` group of the `Seeds` section to
+  reproduce or share seed sets.

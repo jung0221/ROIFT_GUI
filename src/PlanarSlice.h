@@ -35,7 +35,7 @@ std::array<double, 2> planeSpacing(const Geometry &g, const std::array<double, 3
 std::vector<float> extractPlane(const Geometry &g, const float *volume, std::size_t volumeSize);
 // Every pixel of the four edges, once.
 std::vector<std::pair<int, int>> borderPixels(const Geometry &g);
-// A pixel takes the result where it is non-zero; where it is zero, a pixel holding one of
+// A pixel takes the result where it is positive; elsewhere, a pixel holding one of
 // runLabels is cleared and any other label is kept. Returns false, writing nothing, when
 // either buffer does not match g.
 bool pastePlaneLabels(const Geometry &g, const std::vector<int> &planeLabels,
