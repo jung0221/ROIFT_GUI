@@ -7,7 +7,9 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QLabel>
 #include <QListWidget>
 #include <QTemporaryDir>
 
@@ -152,19 +154,24 @@ int main(int argc, char **argv)
     dir.mkdir("b");
     const QString firstPath = dir.filePath("a/image.png");
     const QString secondPath = dir.filePath("b/image.png");
+    const QString badPath = dir.filePath("bad.png");
+    QFile bad(badPath);
+    const bool wroteBad = bad.open(QIODevice::WriteOnly) && bad.write("not a picture") > 0;
+    bad.close();
     const bool wrote = writeImage<3>(tifPath, stackSize, stackValue) && writeImage<2>(pngPath, planeSize, planeValue) &&
                        writeImage<2>(firstPath, planeSize, firstValue) &&
-                       writeImage<2>(secondPath, planeSize, secondValue);
+                       writeImage<2>(secondPath, planeSize, secondValue) && wroteBad;
     check(wrote, "fixtures written");
     if (!wrote)
         return 1;
 
     auto window = std::make_unique<ManualSeedSelector>("");
-    window->addImagesFromPaths({tifPath, pngPath, firstPath, secondPath});
+    window->addImagesFromPaths({tifPath, pngPath, firstPath, secondPath, badPath});
     check(window->hasImage(), "stack.tif opens as the image");
     QListWidget *images = window->findChild<QListWidget *>("imageList");
-    check(images != nullptr && images->count() == 4, "image list holds the four files");
-    if (!images || images->count() != 4)
+    QLabel *status = window->findChild<QLabel *>("statusLabel");
+    check(images != nullptr && images->count() == 5 && status != nullptr, "image list holds the five files");
+    if (!images || images->count() != 5 || !status)
         return 1;
 
     const std::string native = window->nativeImagePath();
@@ -174,19 +181,25 @@ int main(int argc, char **argv)
     check(nativePath.endsWith(".nii.gz") && QFileInfo::exists(nativePath), "stack.tif: export is an existing .nii.gz");
     check(exportHolds(native, stackSize, stackValue), "stack.tif: export is 8 x 6 x 3 with the .tif voxels");
 
+    // <temp>/<window directory>/<n>/roift_src_<base>.nii.gz: a fresh <n> per export.
     const QString exportDir = QFileInfo(nativePath).absolutePath();
+    const QString windowDir = QFileInfo(exportDir).absolutePath();
     const QString tempRoot = QDir::cleanPath(QDir::temp().absolutePath());
-    check(QDir::cleanPath(exportDir) != tempRoot && QDir::cleanPath(QFileInfo(exportDir).absolutePath()) == tempRoot,
+    check(QDir::cleanPath(windowDir) != tempRoot && QDir::cleanPath(QFileInfo(windowDir).absolutePath()) == tempRoot,
           "export lives in a per-window directory under temp, not in temp");
+    check(QFileInfo(nativePath).fileName() == "roift_src_stack.nii.gz", "export keeps the name roift_src_<base>.nii.gz");
 
     const std::string planeExport = selectAndExport(*window, images, pngPath);
     check(QString::fromStdString(planeExport).endsWith(".nii.gz") && exportHolds(planeExport, planeSize, planeValue),
           "plane.png: export is 40 x 30 x 1 with the .png values");
 
+    // A queued run may still be reading an earlier export, so none is ever overwritten.
     const std::string first = selectAndExport(*window, images, firstPath);
     check(exportHolds(first, planeSize, firstValue), "a/image.png: export holds a/image.png");
     const std::string second = selectAndExport(*window, images, secondPath);
     check(exportHolds(second, planeSize, secondValue), "b/image.png (same name): export holds b/image.png");
+    check(first != second, "a/image.png and b/image.png export to different paths");
+    check(exportHolds(first, planeSize, firstValue), "the export of a/image.png survives exporting b/image.png");
     const std::string firstAgain = selectAndExport(*window, images, firstPath);
     check(exportHolds(firstAgain, planeSize, firstValue), "a/image.png reselected: export holds a/image.png again");
 
@@ -196,9 +209,18 @@ int main(int argc, char **argv)
     const std::string changed = selectAndExport(*window, images, firstPath);
     check(rewrote && exportHolds(changed, planeSize, changedValue),
           "a/image.png rewritten: reselected export holds the new file");
+    check(changed != firstAgain && exportHolds(first, planeSize, firstValue) &&
+              exportHolds(firstAgain, planeSize, firstValue),
+          "re-exporting a/image.png leaves its earlier exports unchanged");
+
+    images->setCurrentRow(rowForPath(images, badPath));
+    std::printf("  status: %s\n", qPrintable(status->text()));
+    check(status->text().startsWith("Could not read bad.png: ") && !status->text().endsWith(": "),
+          "an unreadable file shows its reason in the status bar");
+    check(!status->text().contains("Tried to create"), "the reason is ITK's first line, not its list of readers");
 
     window.reset();
-    check(!QFileInfo::exists(nativePath) && !QFileInfo::exists(exportDir),
+    check(!QFileInfo::exists(nativePath) && !QFileInfo::exists(windowDir),
           "closing the window removes its export directory");
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");

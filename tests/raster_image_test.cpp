@@ -381,6 +381,9 @@ void checkImages(const std::filesystem::path &dir)
 
     NiftiImage refused;
     check(!refused.load((dir / "uint32.tif").string()), "uint32.tif (32-bit integer samples) is refused");
+    std::printf("  uint32.tif lastError: %s\n", refused.lastError().c_str());
+    check(refused.lastError().find("32-bit") != std::string::npos, "the refusal sets lastError, naming the 32-bit samples");
+    check(refused.load((dir / "gray.png").string()) && refused.lastError().empty(), "a successful load clears lastError");
     NiftiImage kept;
     const bool keptLoaded = kept.load((dir / "gray16.tif").string());
     const bool keptAfterRefusal = keptLoaded && !kept.load((dir / "uint32.tif").string()) &&

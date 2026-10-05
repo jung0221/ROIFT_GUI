@@ -1800,8 +1800,12 @@ void ManualSeedSelector::setupUi()
                     m_mask3DView->restoreCameraState(preservedCamera, true);
                 m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(path)));
             } else {
-                m_statusLabel->setText(QString("Could not read %1; see the log for details.")
-                                           .arg(QFileInfo(QString::fromStdString(path)).fileName()));
+                // Windows GUI builds keep no stderr, so the reason has to reach the window.
+                const QString name = QFileInfo(QString::fromStdString(path)).fileName();
+                const QString reason = QString::fromStdString(m_image.lastError());
+                m_statusLabel->setText(reason.isEmpty()
+                                           ? QString("Could not read %1; see the log for details.").arg(name)
+                                           : QString("Could not read %1: %2").arg(name, reason));
             }
         } });
 
@@ -2735,9 +2739,16 @@ std::string ManualSeedSelector::nativeImagePath()
         m_exportDir = std::make_unique<QTemporaryDir>();
     const QString baseName = stripImageSuffix(QFileInfo(QString::fromStdString(m_path)).fileName());
     const QString prefix = numpy ? QStringLiteral("roift_npz_") : QStringLiteral("roift_src_");
-    const QString exportPath = m_exportDir->isValid()
-                                   ? QDir(m_exportDir->path()).filePath(QString("%1%2.nii.gz").arg(prefix, baseName))
-                                   : QString();
+    // A fresh subdirectory per export: a queued run may still be reading an earlier one,
+    // and the file name stays roift_*_<base> because LUNAS names its case after it.
+    QString exportPath;
+    const QString subdir = QString::number(++m_exportCount);
+    if (m_exportDir->isValid())
+    {
+        const QDir root(m_exportDir->path());
+        if (root.mkpath(subdir))
+            exportPath = QDir(root.filePath(subdir)).filePath(QString("%1%2.nii.gz").arg(prefix, baseName));
+    }
     if (exportPath.isEmpty() || !m_image.save(exportPath.toStdString()))
     {
         QMessageBox::warning(this, "Export image",

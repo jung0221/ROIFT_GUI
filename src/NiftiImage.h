@@ -122,6 +122,10 @@ public:
 
     bool isMask() const { return m_isMask; }
 
+    // Why the last load()/loadNumpy() failed, on one line; empty after a success or
+    // when the failing reader gave no reason (NIfTI and DICOM report to stderr only).
+    const std::string &lastError() const { return m_lastError; }
+
 private:
     // Loads a DICOM volume from a directory of slices or a single DICOM file.
     bool loadDicomSeries(const std::string &path);
@@ -140,5 +144,6 @@ private:
     double m_spacingY = 1.0;
     double m_spacingZ = 1.0;
     bool m_isMask = false;
+    std::string m_lastError;
     itk::ImageIOBase::IOComponentType m_component = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
 };

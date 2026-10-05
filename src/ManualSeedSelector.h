@@ -104,8 +104,9 @@ public:
     // A path the native binaries and Python helpers can actually read. Those
     // consume files, not the in-memory volume, and none of them reads numpy or
     // raster files, so a .npz/.npy or PNG/JPEG/BMP/TIFF image is exported, once
-    // per load, to a NIfTI in a directory removed with the window. Name outputs
-    // after getImagePath(), not after this. Other formats pass through.
+    // per load, to a NIfTI in a directory removed with the window. An export is
+    // never overwritten. Name outputs after getImagePath(), not after this. Other
+    // formats pass through.
     std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
@@ -619,10 +620,12 @@ private:
     NpzImportOptions numpyOptionsForMask() const;
 
     // Cached NIfTI export of a numpy or raster image, and the image it was made
-    // from; cleared on every load. The directory is created on first export.
+    // from; cleared on every load. The directory is created on first export, and
+    // export n goes in its subdirectory n.
     std::string m_nativeImagePath;
     std::string m_nativeImageSource;
     std::unique_ptr<QTemporaryDir> m_exportDir;
+    int m_exportCount = 0;
 
     QListWidget *m_niftiList = nullptr;
     QListWidget *m_maskList = nullptr;
