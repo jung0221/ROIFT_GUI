@@ -23,7 +23,6 @@
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
 #include "PlanarSlice.h"
-#include "PlaneSegmentation.h"
 #include "RangeSlider.h"
 #include "Seed.h"
 #include "SolverNetwork.h"
@@ -55,6 +54,10 @@ class QGridLayout;
 class CollapsibleSection;
 
 class Mask3DView;
+namespace planar
+{
+struct RunResult;
+}
 
 class ManualSeedSelector : public QMainWindow
 {

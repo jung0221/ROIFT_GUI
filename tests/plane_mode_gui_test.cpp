@@ -501,8 +501,8 @@ int main(int argc, char **argv)
         check(SegmentationRunner::resolveCpuRoiftExecutable() == QFileInfo(cpuPath).absoluteFilePath(),
               "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax is used");
 
-        // CTest names the built oiftrelax only when the tree has one; roift/gpu/oiftrelax_gpu
-        // sits ahead of roift/oiftrelax in the folder search.
+        // CTest names the built oiftrelax only when the tree has one, so only then is there a
+        // build folder to search.
         if (!savedExecutable.isEmpty())
         {
             QTemporaryDir emptyPathDir;
@@ -511,7 +511,7 @@ int main(int argc, char **argv)
             const QString found = SegmentationRunner::resolveCpuRoiftExecutable();
             std::printf("  CPU resolver, folder search: \"%s\"\n", qPrintable(found));
             check(emptyPathDir.isValid() && QFileInfo(found).fileName() == "oiftrelax" + suffix,
-                  "CPU resolver: folder search finds oiftrelax, not oiftrelax_gpu");
+                  "CPU resolver: folder search finds a binary named oiftrelax");
         }
 
         if (savedExecutable.isEmpty())

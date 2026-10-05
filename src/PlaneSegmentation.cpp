@@ -26,7 +26,7 @@ namespace
 
 using PlaneImage = itk::Image<int32_t, 3>;
 
-// The border seeds would cover a plane thinner than this, leaving nothing to segment.
+// Border seeds would cover a thinner plane; enforced with the border off as well.
 constexpr int kMinPlaneSide = 3;
 // Non-integral planes are mapped onto [0, kIntegerRange] before the int32 export.
 constexpr double kIntegerRange = 10000.0;
@@ -41,7 +41,7 @@ QString validate(const RunRequest &r, const std::vector<Seed> &seeds)
 {
     const Geometry &g = r.geometry;
     if (g.width < kMinPlaneSide || g.height < kMinPlaneSide)
-        return QString("The plane is %1 x %2 pixels; segmenting one needs at least %3 x %3.")
+        return QString("The plane is %1 x %2 pixels; a plane must be at least %3 pixels in each direction.")
             .arg(g.width).arg(g.height).arg(kMinPlaneSide);
     if (r.pixels.size() != std::size_t(g.width) * std::size_t(g.height))
         return QString("The plane holds %1 pixels, not %2 x %3.").arg(r.pixels.size()).arg(g.width).arg(g.height);

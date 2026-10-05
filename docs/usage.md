@@ -245,8 +245,8 @@
 - **Failure modes.** Each of the following leaves the mask unchanged and gives the reason in
   the status bar and the segmentation log:
   - no image is open;
-  - the plane is narrower than 3 pixels in either direction, which the border seeds would
-    cover entirely;
+  - the plane is narrower than 3 pixels in either direction, whether or not
+    `Background on the plane border` is on;
   - no object seed lies on the slice;
   - the slice holds a pixel that is not a finite number, such as a NaN in a floating-point
     NIfTI;

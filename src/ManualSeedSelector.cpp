@@ -14,6 +14,7 @@
 #include "ColorUtils.h"
 #include "Mask3DView.h"
 #include "MaskListDelegate.h"
+#include "PlaneSegmentation.h"
 #include "RangeSlider.h"
 
 #include <QColorDialog>
