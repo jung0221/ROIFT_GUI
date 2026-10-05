@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QString>
 #include <string>
 
 class ManualSeedSelector;
@@ -13,4 +14,8 @@ namespace SegmentationRunner
 
     // Run segmentation using parameters from the main window UI
     void runSegmentation(ManualSeedSelector *parent);
+
+    // The standard CPU oiftrelax, resolved as a volume run resolves it, or an empty
+    // string when only a GPU binary is found or ROIFT_EXECUTABLE names one.
+    QString resolveCpuRoiftExecutable();
 }

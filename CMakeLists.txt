@@ -200,6 +200,18 @@ if(BUILD_ROIFT_TESTS)
   target_include_directories(planar_slice_test PRIVATE src)
   add_test(NAME planar_slice COMMAND planar_slice_test)
 
+  # Runs the real oiftrelax on synthetic planes; no display.
+  if(TARGET oiftrelax)
+    add_executable(plane_segmentation_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/plane_segmentation_test.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/PlaneSegmentation.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/PlanarSlice.cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/SeedFiles.cpp)
+    target_include_directories(plane_segmentation_test PRIVATE src)
+    target_link_libraries(plane_segmentation_test PRIVATE Qt6::Core ${ITK_LIBRARIES})
+    add_test(NAME plane_segmentation COMMAND plane_segmentation_test $<TARGET_FILE:oiftrelax>)
+  endif()
+
   # Reads PNG/JPEG/BMP/TIFF as images (NiftiImage, the plane mapping) and as masks
   # (readMaskVolume, hence Qt Gui for QColor); no display.
   add_executable(raster_image_test

@@ -5,6 +5,7 @@
 // voxels of the image now selected, in a directory that goes away with the window.
 // A one-slice image has no sagittal, coronal or 3D picture, so it fills the view area.
 #include "ManualSeedSelector.h"
+#include "SegmentationRunner.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -301,6 +302,29 @@ int main(int argc, char **argv)
         const double share = widthShare(axialPanel, container);
         check(share >= 0.35 && share <= 0.65, "12 x 10 x 8 volume: axial panel takes half the width");
         check(!axialTitle(axialPanel).startsWith("Image"), "12 x 10 x 8 volume: axial panel is not titled Image");
+    }
+
+    // Slice mode runs only the CPU binary, so ROIFT_EXECUTABLE naming the GPU one yields none.
+    {
+        const QByteArray saved = qgetenv("ROIFT_EXECUTABLE");
+        auto touch = [](const QString &path)
+        {
+            QFile file(path);
+            return file.open(QIODevice::WriteOnly) && file.write("#") > 0;
+        };
+        const QString gpuPath = dir.filePath("oiftrelax_gpu");
+        const QString cpuPath = dir.filePath("oiftrelax");
+        const bool made = touch(gpuPath) && touch(cpuPath);
+        qputenv("ROIFT_EXECUTABLE", QFile::encodeName(gpuPath));
+        check(made && SegmentationRunner::resolveCpuRoiftExecutable().isEmpty(),
+              "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax_gpu yields none");
+        qputenv("ROIFT_EXECUTABLE", QFile::encodeName(cpuPath));
+        check(SegmentationRunner::resolveCpuRoiftExecutable() == QFileInfo(cpuPath).absoluteFilePath(),
+              "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax is used");
+        if (saved.isEmpty())
+            qunsetenv("ROIFT_EXECUTABLE");
+        else
+            qputenv("ROIFT_EXECUTABLE", saved);
     }
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");

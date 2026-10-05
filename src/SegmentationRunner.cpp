@@ -69,7 +69,9 @@ namespace
         return QFileInfo(path).fileName().startsWith("oiftrelax_gpu", Qt::CaseInsensitive);
     }
 
-    RoiftExecutable resolveRoiftExecutable(bool preferGpu)
+    // ROIFT_EXECUTABLE when it names an existing file, else the first of names on PATH,
+    // else in the build folders around the application and the current directory.
+    RoiftExecutable findRoiftExecutable(const QStringList &names)
     {
         RoiftExecutable resolved;
 
@@ -85,7 +87,6 @@ namespace
             }
         }
 
-        const QStringList names = roiftExecutableNames(preferGpu);
         for (const QString &name : names)
         {
             const QString inPath = QStandardPaths::findExecutable(name);
@@ -173,6 +174,11 @@ namespace
         }
 
         return resolved;
+    }
+
+    RoiftExecutable resolveRoiftExecutable(bool preferGpu)
+    {
+        return findRoiftExecutable(roiftExecutableNames(preferGpu));
     }
 
     QString roiftNotFoundMessage(bool preferGpu)
@@ -1833,6 +1839,17 @@ namespace
                                   },
                                   Qt::QueuedConnection);
     }
+}
+
+QString SegmentationRunner::resolveCpuRoiftExecutable()
+{
+    // The CPU names alone: the folder search would otherwise reach roift/gpu before roift.
+    QStringList cpuNames;
+    for (const QString &name : roiftExecutableNames(false))
+        if (!isGpuExecutablePath(name))
+            cpuNames << name;
+    const RoiftExecutable exe = findRoiftExecutable(cpuNames);
+    return exe.gpuBinary ? QString() : exe.path;
 }
 
 void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)
