@@ -6,6 +6,7 @@
 #include "SolverNetwork.h"
 
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -89,7 +90,9 @@ int main(int argc, char **argv)
           "a segment without L/R0/tn is refused, by name");
     check(!parseSolverNetwork("project_name: x\n", bad, &error), "no network is refused");
 
-    check(solverSegmentMapPath("/d/case_artery_solver.yaml") == "/d/case_artery_solver_segments.nii.gz",
+    // Absolute on the platform's terms: on Windows "/d" resolves onto the current drive.
+    check(solverSegmentMapPath("/d/case_artery_solver.yaml") ==
+              QFileInfo(QStringLiteral("/d/case_artery_solver_segments.nii.gz")).absoluteFilePath(),
           "segment map beside the yaml");
 
     // 4x3x2 volume: segment 1 along x at y=0,z=0; segment 2 a single voxel.
