@@ -64,8 +64,8 @@ int main()
     // Paste policy: the run owns the labels it seeded.
     std::vector<int> labels(volume.size(), 0);
     const std::size_t onA = volumeIndex(axial, 0, 0), onB = volumeIndex(axial, 1, 0),
-                 onC = volumeIndex(axial, 2, 0), onD = volumeIndex(axial, 3, 0),
-                 off = 0 + 5 * (0 + 7 * 4);
+                      onC = volumeIndex(axial, 2, 0), onD = volumeIndex(axial, 3, 0),
+                      off = 0 + 5 * (0 + 7 * 4);
     labels[onB] = 1; labels[onC] = 3; labels[onD] = 3; labels[off] = 1;
     std::vector<int> result(std::size_t(axial.width) * axial.height, 0);
     result[0] = 1; // pixel A

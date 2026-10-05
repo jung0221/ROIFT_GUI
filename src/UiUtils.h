@@ -106,7 +106,10 @@ QString normalizeCsvCell(QString value);
 /// True when the path's extension is one the GUI can open as a volume.
 bool isSupportedImagePath(const QString &path);
 
-/// QFileDialog filter for opening images (NIfTI, DICOM and NumPy).
+/// True when the path's extension is a 2D raster format (PNG, JPEG, BMP, TIFF).
+bool isRasterImagePath(const QString &path);
+
+/// QFileDialog filter for opening images (NIfTI, DICOM, NumPy and raster images).
 QString imageOpenFileFilter();
 
 /// QFileDialog filter for opening masks (NIfTI and NumPy; DICOM holds no labels).

@@ -3186,7 +3186,7 @@ QStringList ManualSeedSelector::extractNiftiPathsFromCsv(const QString &csvPath,
     if (pathColumn < 0)
     {
         if (errorMessage)
-            *errorMessage = "Could not find a column containing image paths (.nii, .nii.gz, .npz, .npy, DICOM).";
+            *errorMessage = "Could not find a column containing image paths (.nii, .nii.gz, .npz, .npy, DICOM, .png, .jpg, .bmp, .tif).";
         return {};
     }
 

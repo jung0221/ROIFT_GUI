@@ -20,8 +20,8 @@
 #include "MaskLayers.h"
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
-#include "Seed.h"
 #include "RangeSlider.h"
+#include "Seed.h"
 #include "SolverNetwork.h"
 
 class QDoubleSpinBox;
