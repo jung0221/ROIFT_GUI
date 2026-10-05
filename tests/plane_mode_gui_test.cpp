@@ -671,6 +671,86 @@ int main(int argc, char **argv)
               "a 40 x 48 x 16 edited mask: refused at once");
     }
 
+    // A one-slice mask saves as a PNG label image and reads back voxel for voxel; a volume's does not.
+    {
+        const QString grayPath = dir.filePath("gray.png");
+        const QString volumePath = dir.filePath("volume.nii.gz");
+        const unsigned int volumeSize[3] = {12, 10, 8};
+        const int small[4] = {0, 1, 2, 7};
+        const int wide[4] = {0, 300, 65535, 1};
+        const int huge[4] = {0, 1, 70000, 2};
+        const auto pattern = [](const int (&labels)[4])
+        {
+            return [&labels](unsigned int x, unsigned int y, unsigned int z)
+            { return static_cast<float>(labels[(x * 3 + y + z) % 4]); };
+        };
+        const QString smallPath = dir.filePath("png_small.nii.gz");
+        const QString widePath = dir.filePath("png_wide.nii.gz");
+        const QString hugePath = dir.filePath("png_huge.nii.gz");
+        const QString stackMaskPath = dir.filePath("png_stack.nii.gz");
+        const bool wrote = writeImage<3, std::int16_t>(smallPath, planeSize, pattern(small)) &&
+                           writeImage<3, std::int32_t>(widePath, planeSize, pattern(wide)) &&
+                           writeImage<3, std::int32_t>(hugePath, planeSize, pattern(huge)) &&
+                           writeImage<3, std::int16_t>(stackMaskPath, volumeSize, pattern(small));
+        check(wrote, "PNG save fixtures written");
+
+        const auto selectImage = [](ManualSeedSelector &w, const QString &path)
+        {
+            w.addImagesFromPaths({path});
+            QListWidget *list = w.findChild<QListWidget *>("imageList");
+            if (list)
+                list->setCurrentRow(rowForPath(list, path));
+        };
+        const auto expected = [&](const int (&labels)[4])
+        {
+            std::vector<int> v;
+            for (unsigned int y = 0; y < 30; ++y)
+                for (unsigned int x = 0; x < 40; ++x)
+                    v.push_back(labels[(x * 3 + y) % 4]);
+            return v;
+        };
+
+        const auto roundTrip = [&](const QString &maskPath, const char *name, const int (&labels)[4])
+        {
+            ManualSeedSelector w("");
+            selectImage(w, grayPath);
+            const QString png = dir.filePath(QString("%1.png").arg(name));
+            QString err;
+            const bool loaded = w.applyMaskFromPath(maskPath.toStdString());
+            const bool saved = loaded && w.saveActiveMaskTo(png.toStdString(), &err);
+            const bool reloaded = saved && w.applyMaskFromPath(png.toStdString());
+            const bool same = reloaded && w.activeMaskLabels() == expected(labels);
+            std::printf("  %s: loaded %d saved %d reloaded %d, error \"%s\"\n", name, loaded, saved, reloaded,
+                        qPrintable(err));
+            return same;
+        };
+        check(wrote && roundTrip(smallPath, "small", small), "labels {0,1,2,7} round-trip through an 8-bit PNG");
+        check(wrote && roundTrip(widePath, "wide", wide), "labels up to 65535 round-trip through a 16-bit PNG");
+
+        {
+            ManualSeedSelector w("");
+            selectImage(w, grayPath);
+            QString err;
+            w.applyMaskFromPath(hugePath.toStdString());
+            check(!w.saveActiveMaskTo(dir.filePath("huge.png").toStdString(), &err) && err.contains("65535") &&
+                      !QFileInfo::exists(dir.filePath("huge.png")),
+                  "label 70000: PNG save refused, 65535 named, no file");
+        }
+        {
+            ManualSeedSelector w("");
+            selectImage(w, volumePath);
+            QString err;
+            w.applyMaskFromPath(stackMaskPath.toStdString());
+            check(!w.saveActiveMaskTo(dir.filePath("stack.png").toStdString(), &err) && err.contains("one-slice") &&
+                      !QFileInfo::exists(dir.filePath("stack.png")),
+                  "volume mask: PNG save refused, one-slice requirement named");
+            const QString nii = dir.filePath("stack_saved");
+            err.clear();
+            check(w.saveActiveMaskTo(nii.toStdString(), &err) && QFileInfo::exists(nii + ".nii.gz"),
+                  "volume mask: NIfTI save still appends .nii.gz");
+        }
+    }
+
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }

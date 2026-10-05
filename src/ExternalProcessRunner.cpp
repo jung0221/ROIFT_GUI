@@ -857,8 +857,12 @@ void ManualSeedSelector::runVesselGraph()
     if (!segmentFromCt)
     {
         tmpMask = QDir(tmpDir.path()).filePath("vessel_graph_domain.nii.gz");
-        if (!saveMaskToFile(tmpMask.toStdString()))
+        QString saveError;
+        if (!saveActiveMaskTo(tmpMask.toStdString(), &saveError))
+        {
+            QMessageBox::critical(this, "Save Mask", saveError);
             return;
+        }
     }
 
     // Output names follow the image the user opened; the payload path may be

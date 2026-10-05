@@ -117,6 +117,9 @@ public:
     std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
+    // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
+    // 8-bit or 16-bit label image. Returns false and sets *error on failure; shows no dialog.
+    bool saveActiveMaskTo(const std::string &path, QString *error);
     // refresh mask/seed associations from disk for current image
     void refreshAssociatedFilesForCurrentImage(bool forceDetect = false);
     // add multiple NIfTI images to the list (used by CLI startup)
@@ -190,7 +193,8 @@ private slots:
     void setMaskMode(int mode);
     void setSeedMode(int mode);
     void cleanMask();
-    bool saveMaskToFile(const std::string &path);
+    void saveMaskToFile();
+    bool savePngLabels(const std::string &path, QString *error);
     bool loadMaskFromFile(const std::string &path);
     void paintAxialMask(int x, int y);
     void paintSagittalMask(int x, int y);

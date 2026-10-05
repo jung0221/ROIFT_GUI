@@ -951,12 +951,10 @@ void ManualSeedSelector::setupUi()
     QHBoxLayout *maskFileLayout = new QHBoxLayout(maskFileGroup);
 
     QPushButton *btnMaskSave = new QPushButton("Save");
-    btnMaskSave->setToolTip("Save mask to NIfTI");
+    btnMaskSave->setToolTip("Save mask to NIfTI, or to a PNG label image for a one-slice image");
     connect(btnMaskSave, &QPushButton::clicked, [this]()
             {
-        QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", "NIfTI files (*.nii *.nii.gz)");
-        if (!f.isEmpty())
-            saveMaskToFile(f.toStdString()); });
+        saveMaskToFile(); });
     maskFileLayout->addWidget(btnMaskSave);
 
     QPushButton *btnMaskLoad = new QPushButton("Load");
@@ -6502,15 +6500,96 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     }
 }
 
-bool ManualSeedSelector::saveMaskToFile(const std::string &path)
+namespace
+{
+bool isPngPath(const std::string &path)
+{
+    return QString::fromStdString(path).endsWith(".png", Qt::CaseInsensitive);
+}
+} // namespace
+
+// The edited mask as a PNG: 8-bit up to label 255, 16-bit up to 65535, refused beyond.
+bool ManualSeedSelector::savePngLabels(const std::string &path, QString *error)
+{
+    const auto fail = [error](const QString &message)
+    {
+        if (error)
+            *error = message;
+        return false;
+    };
+    if (m_maskData.empty() && isPlanarImage())
+    {
+        m_maskDimX = m_image.getSizeX();
+        m_maskDimY = m_image.getSizeY();
+        m_maskDimZ = 1;
+        m_maskData.assign(size_t(m_maskDimX) * m_maskDimY, 0);
+    }
+    if (m_maskDimZ != 1)
+        return fail("A PNG label image holds one slice; this mask has " + QString::number(m_maskDimZ) +
+                    " slices. Save a one-slice mask as PNG, or save as NIfTI.");
+    int largest = 0;
+    for (const int v : m_maskData)
+    {
+        if (v < 0)
+            return fail("A PNG label image cannot hold negative labels.");
+        largest = std::max(largest, v);
+    }
+    if (largest > std::numeric_limits<uint16_t>::max())
+        return fail(QString("Label %1 exceeds the 65535 limit of a PNG label image.").arg(largest));
+
+    const auto write = [&](auto pixelTag)
+    {
+        using PixelType = decltype(pixelTag);
+        using ImageType = itk::Image<PixelType, 2>;
+        typename ImageType::Pointer out = ImageType::New();
+        typename ImageType::SizeType size;
+        size[0] = m_maskDimX;
+        size[1] = m_maskDimY;
+        typename ImageType::RegionType region;
+        region.SetSize(size);
+        out->SetRegions(region);
+        out->Allocate();
+        PixelType *buffer = out->GetBufferPointer();
+        for (size_t i = 0; i < m_maskData.size(); ++i)
+            buffer[i] = static_cast<PixelType>(m_maskData[i]);
+        auto writer = itk::ImageFileWriter<ImageType>::New();
+        writer->SetFileName(path);
+        writer->SetInput(out);
+        writer->Update();
+    };
+    try
+    {
+        if (largest <= std::numeric_limits<uint8_t>::max())
+            write(uint8_t{});
+        else
+            write(uint16_t{});
+    }
+    catch (const std::exception &e)
+    {
+        return fail(QString("Failed: %1").arg(e.what()));
+    }
+    return true;
+}
+
+bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *error)
 {
     // Writing before the deferred read would save a blank volume over a mask
     // the user only meant to select.
     if (activeMaskPending())
         ensureActiveMaskLoaded();
 
+    const auto fail = [error](const QString &message)
+    {
+        if (error)
+            *error = message;
+        return false;
+    };
+
     try
     {
+        if (isPngPath(path))
+            return savePngLabels(path, error);
+
         using PixelType = int16_t;
         using ImageType = itk::Image<PixelType, 3>;
         using WriterType = itk::ImageFileWriter<ImageType>;
@@ -6525,8 +6604,7 @@ bool ManualSeedSelector::saveMaskToFile(const std::string &path)
         unsigned int sz = m_image.getSizeZ();
         if (sx == 0 || sy == 0 || sz == 0)
         {
-            QMessageBox::warning(this, "Save Mask", "No image loaded.");
-            return false;
+            return fail("No image loaded.");
         }
         size[0] = static_cast<ImageType::SizeValueType>(sx);
         size[1] = static_cast<ImageType::SizeValueType>(sy);
@@ -6597,9 +6675,21 @@ bool ManualSeedSelector::saveMaskToFile(const std::string &path)
     }
     catch (const std::exception &e)
     {
-        QMessageBox::critical(this, "Save Mask", QString("Failed: %1").arg(e.what()));
-        return false;
+        return fail(QString("Failed: %1").arg(e.what()));
     }
+}
+
+void ManualSeedSelector::saveMaskToFile()
+{
+    const QString niftiFilter = "NIfTI files (*.nii *.nii.gz)";
+    const QString pngFilter = "PNG label image (*.png)";
+    const QString filters = isPlanarImage() ? niftiFilter + ";;" + pngFilter : niftiFilter;
+    const QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", filters);
+    if (f.isEmpty())
+        return;
+    QString error;
+    if (!saveActiveMaskTo(f.toStdString(), &error))
+        QMessageBox::critical(this, "Save Mask", error);
 }
 
 bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
