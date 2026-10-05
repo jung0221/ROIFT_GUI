@@ -193,6 +193,13 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(solver_network_test PRIVATE Qt6::Gui ${ITK_LIBRARIES})
   add_test(NAME solver_network COMMAND solver_network_test)
 
+  add_executable(planar_slice_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/planar_slice_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/PlanarSlice.cpp
+  )
+  target_include_directories(planar_slice_test PRIVATE src)
+  add_test(NAME planar_slice COMMAND planar_slice_test)
+
   add_executable(wheel_guard_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/wheel_guard_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Theme.cpp
