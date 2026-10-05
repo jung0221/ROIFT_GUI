@@ -10,6 +10,7 @@
 #include "ManualSeedSelector.h"
 #include "SectionGroup.h"
 #include "SegmentationRunner.h"
+#include "SeedFiles.h"
 #include "ColorUtils.h"
 #include "Mask3DView.h"
 #include "MaskListDelegate.h"
@@ -124,6 +125,20 @@ constexpr int kAxialPlaneItem = 0;
 constexpr int kSagittalPlaneItem = 1;
 constexpr int kCoronalPlaneItem = 2;
 constexpr int kMultiLabelMode = 0;
+
+QString planeName(planar::Plane plane)
+{
+    switch (plane)
+    {
+    case planar::Plane::Sagittal:
+        return "sagittal";
+    case planar::Plane::Coronal:
+        return "coronal";
+    case planar::Plane::Axial:
+    default:
+        return "axial";
+    }
+}
 } // namespace
 
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
@@ -240,6 +255,7 @@ void ManualSeedSelector::launchSegmentationTask(PendingSegmentationTask &&task)
 {
     if (m_segmentationWorker.joinable())
         m_segmentationWorker.join();
+    m_segmentationStopRequested.store(false);
 
     m_segmentationWorkerActive.store(true);
 
@@ -415,6 +431,7 @@ void ManualSeedSelector::completeSegmentationTask(bool success,
 
 void ManualSeedSelector::stopSegmentationWorker(bool waitForJoin)
 {
+    m_segmentationStopRequested.store(true);
     if (waitForJoin && m_segmentationWorker.joinable())
         m_segmentationWorker.join();
 
@@ -5060,8 +5077,231 @@ void ManualSeedSelector::updateSegmentationScopeControls()
 
 void ManualSeedSelector::segmentCurrentSlice()
 {
-    if (m_statusLabel)
-        m_statusLabel->setText("Segmenting one slice is not available yet.");
+    const auto refuse = [this](const QString &reason)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(reason);
+        appendSegmentationLog(reason);
+        emit planeSegmentationFinished(false, reason);
+    };
+    if (!hasImage())
+    {
+        refuse("Open an image before segmenting a slice.");
+        return;
+    }
+
+    const planar::Plane plane = selectedPlane();
+    const QSlider *slider = m_axialSlider;
+    switch (plane)
+    {
+    case planar::Plane::Axial:
+        slider = m_axialSlider;
+        break;
+    case planar::Plane::Sagittal:
+        slider = m_sagittalSlider;
+        break;
+    case planar::Plane::Coronal:
+        slider = m_coronalSlider;
+        break;
+    }
+    const std::array<int, 3> dims{static_cast<int>(m_image.getSizeX()), static_cast<int>(m_image.getSizeY()),
+                                  static_cast<int>(m_image.getSizeZ())};
+    planar::Geometry geometry;
+    if (!planar::makeGeometry(plane, slider->value(), dims, &geometry))
+    {
+        refuse(QString("Slice %1 is not a %2 slice of the image.").arg(slider->value()).arg(planeName(plane)));
+        return;
+    }
+    const QString where = QString("%1 slice %2").arg(planeName(plane)).arg(geometry.index);
+
+    const std::vector<Seed> seeds = dedupeSeedsKeepingLatest(m_seeds);
+    std::vector<Seed> planeSeeds;
+    std::set<int> runLabels;
+    for (const Seed &s : seeds)
+    {
+        int u = 0, v = 0;
+        if (!planar::toPlane(geometry, {s.x, s.y, s.z}, &u, &v))
+            continue;
+        planeSeeds.push_back(Seed{u, v, 0, s.label, s.internal});
+        if (s.label > 0)
+            runLabels.insert(s.label);
+    }
+    const std::size_t ignored = seeds.size() - planeSeeds.size();
+    appendSegmentationLog(QString("Slice run on %1: %2 seed(s) used, %3 on other slices ignored.")
+                              .arg(where)
+                              .arg(planeSeeds.size())
+                              .arg(ignored));
+    if (runLabels.empty())
+    {
+        refuse(QString("No object seed (label > 0) on %1.").arg(where));
+        return;
+    }
+
+    const std::size_t voxelCount = std::size_t(dims[0]) * std::size_t(dims[1]) * std::size_t(dims[2]);
+    std::vector<float> pixels = planar::extractPlane(geometry, m_image.buffer(), voxelCount);
+    if (pixels.empty())
+    {
+        refuse(QString("Could not read the pixels of %1.").arg(where));
+        return;
+    }
+    // The volume run's test: only a window moved off the full range is applied.
+    const double level = getWindowLevel();
+    const double width = getWindowWidth();
+    const double imageMin = getImageMin();
+    const double imageMax = getImageMax();
+    if ((std::abs(level - (imageMax + imageMin) / 2.0) > 1.0 || std::abs(width - (imageMax - imageMin)) > 1.0) &&
+        width > 0.0)
+    {
+        const float low = static_cast<float>(level - width / 2.0);
+        const float high = static_cast<float>(level + width / 2.0);
+        for (float &p : pixels)
+            p = std::clamp(p, low, high);
+        appendSegmentationLog(QString("Applying current window/level before segmentation (WL=%1, WW=%2).")
+                                  .arg(level, 0, 'f', 1)
+                                  .arg(width, 0, 'f', 1));
+    }
+
+    const QString executable = SegmentationRunner::resolveCpuRoiftExecutable();
+    if (executable.isEmpty())
+    {
+        refuse("Slice mode needs the standard CPU oiftrelax: ROIFT_EXECUTABLE must name a file called oiftrelax, "
+               "and the GPU and experiment binaries cannot run one slice.");
+        return;
+    }
+
+    planar::RunRequest request;
+    request.geometry = geometry;
+    request.pixels = std::move(pixels);
+    request.spacing = planar::planeSpacing(geometry, {m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ()});
+    request.seeds = std::move(planeSeeds);
+    request.borderBackground = planeBorderBackground();
+    request.pol = getPolarity();
+    request.niter = getNiter();
+    request.percentile = getPercentile();
+    request.blurPasses = getBlurPasses();
+    request.executablePath = executable;
+    request.cancelled = [this]() { return m_segmentationStopRequested.load(); };
+    const PlaneRunPins pins{QString::fromStdString(m_path), activeMaskPath(), geometry};
+
+    // The destructor joins the worker before members go, so the task may use this; the
+    // result is posted, and dropped by Qt if the window is gone by then.
+    startSegmentationTask([this, request, pins, runLabels]() mutable
+                          {
+        planar::RunResult result;
+        try
+        {
+            QTemporaryDir work(QDir::temp().filePath("roift_plane_XXXXXX"));
+            if (!work.isValid())
+            {
+                result.message = "Could not create a temporary directory for the slice run.";
+            }
+            else
+            {
+                request.workDir = work.path();
+                result = planar::segmentPlane(request);
+            }
+        }
+        catch (const std::exception &e)
+        {
+            result = planar::RunResult();
+            result.message = QString("The slice run failed with an unexpected error: %1").arg(e.what());
+        }
+        catch (...)
+        {
+            result = planar::RunResult();
+            result.message = "The slice run failed with an unknown error.";
+        }
+        QMetaObject::invokeMethod(this,
+                                  [this, pins, runLabels, result]()
+                                  { applyPlaneSegmentationResult(pins, runLabels, result); },
+                                  Qt::QueuedConnection); },
+                          QString("Slice segmentation of %1 started in background.").arg(where),
+                          {QString("Executable: %1").arg(executable)},
+                          "Slice segmentation");
+}
+
+void ManualSeedSelector::applyPlaneSegmentationResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                                                      const planar::RunResult &result)
+{
+    const auto discard = [this](const QString &reason, const QString &details)
+    {
+        completeSegmentationTask(false, reason);
+        appendSegmentationLog(details);
+        emit planeSegmentationFinished(false, reason);
+    };
+    if (!result.commandLine.isEmpty())
+        appendSegmentationLog(QString("Command: %1").arg(result.commandLine));
+    if (!result.success)
+    {
+        discard(QString("Slice segmentation failed: %1").arg(result.message.section('\n', 0, 0)),
+                result.message.section('\n', 1));
+        return;
+    }
+    const std::array<int, 3> dims{static_cast<int>(m_image.getSizeX()), static_cast<int>(m_image.getSizeY()),
+                                  static_cast<int>(m_image.getSizeZ())};
+    if (QString::fromStdString(m_path) != pins.imagePath || dims != pins.geometry.dims)
+    {
+        discard("Slice result discarded: the image changed during the run.", QString());
+        return;
+    }
+    if (activeMaskPath() != pins.maskPath)
+    {
+        discard("Slice result discarded: the edited mask changed during the run.", QString());
+        return;
+    }
+
+    // As the brush: read a mask that is only selected, and paint a blank one when there is none.
+    if (activeMaskPending() && !ensureActiveMaskLoaded())
+    {
+        discard("Slice result discarded: the edited mask could not be read.", QString());
+        return;
+    }
+    if (m_maskData.empty())
+    {
+        m_maskData.assign(std::size_t(dims[0]) * std::size_t(dims[1]) * std::size_t(dims[2]), 0);
+        m_maskDimX = m_image.getSizeX();
+        m_maskDimY = m_image.getSizeY();
+        m_maskDimZ = m_image.getSizeZ();
+    }
+    if (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() || m_maskDimZ != m_image.getSizeZ())
+    {
+        discard(QString("Slice result discarded: the edited mask is %1 x %2 x %3 and the image %4 x %5 x %6.")
+                    .arg(m_maskDimX)
+                    .arg(m_maskDimY)
+                    .arg(m_maskDimZ)
+                    .arg(dims[0])
+                    .arg(dims[1])
+                    .arg(dims[2]),
+                QString());
+        return;
+    }
+    if (!planar::pastePlaneLabels(pins.geometry, result.labels, runLabels, m_maskData))
+    {
+        discard("Slice result discarded: the label plane does not fit the slice.", QString());
+        return;
+    }
+
+    const std::set<int> written(result.labels.begin(), result.labels.end());
+    QStringList writtenNames;
+    for (int label : written)
+    {
+        if (label <= 0)
+            continue;
+        noteActiveMaskLabel(label);
+        writtenNames << QString::number(label);
+    }
+    rebuildMaskLabelFilter(); // the paste can clear a label from the whole mask
+    m_mask3DDirty = true;
+    setActiveMaskVisible();
+    updateViews();
+
+    const QString summary =
+        QString("Segmented %1 slice %2: %3.")
+            .arg(planeName(pins.geometry.plane))
+            .arg(pins.geometry.index)
+            .arg(writtenNames.isEmpty() ? QString("no label") : QString("label(s) %1").arg(writtenNames.join(", ")));
+    completeSegmentationTask(true, summary);
+    emit planeSegmentationFinished(true, summary);
 }
 
 void ManualSeedSelector::updateSliceLabels()
@@ -5562,6 +5802,13 @@ bool ManualSeedSelector::ensureActiveMaskLoaded()
         }
     }
     return ok && !m_maskData.empty();
+}
+
+const std::vector<int> &ManualSeedSelector::activeMaskLabels()
+{
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
+    return m_maskData;
 }
 
 bool ManualSeedSelector::setActiveMaskVisible()

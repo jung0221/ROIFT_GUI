@@ -16,12 +16,14 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 #include "MaskLayers.h"
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
 #include "PlanarSlice.h"
+#include "PlaneSegmentation.h"
 #include "RangeSlider.h"
 #include "Seed.h"
 #include "SolverNetwork.h"
@@ -102,6 +104,9 @@ public:
     // True while that mask has been chosen but not read. Selecting a mask does
     // no file I/O; the read happens on the first operation that needs voxels.
     bool activeMaskPending() const { return !m_pendingActiveMaskPath.empty(); }
+    // The edited mask's voxels, x-fastest, read first when pending; empty when there is none.
+    const std::vector<int> &activeMaskLabels();
+    std::array<unsigned, 3> activeMaskDims() const { return {m_maskDimX, m_maskDimY, m_maskDimZ}; }
 
     // A path the native binaries and Python helpers can actually read. Those
     // consume files, not the in-memory volume, and none of them reads numpy or
@@ -152,6 +157,10 @@ public:
     // Axial for a one-slice image.
     planar::Plane selectedPlane() const;
     bool planeBorderBackground() const { return m_planeBorderBox ? m_planeBorderBox->isChecked() : true; }
+
+signals:
+    // A slice run ended: pasted into the edited mask, refused, failed or discarded.
+    void planeSegmentationFinished(bool success, QString message);
 
 private slots:
     void openImage();
@@ -413,7 +422,18 @@ private:
     void updateSliceLabels();
     // Enable the scope, plane and volume-only controls for the scope and the loaded image.
     void updateSegmentationScopeControls();
+    // Run oiftrelax on the current slice of the selected plane in the background.
     void segmentCurrentSlice();
+    // What a slice run started on; a result that comes back to anything else is discarded.
+    struct PlaneRunPins
+    {
+        QString imagePath;
+        QString maskPath;
+        planar::Geometry geometry;
+    };
+    // Paste a slice run's labels into that slice of the edited mask, on the GUI thread.
+    void applyPlaneSegmentationResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                                      const planar::RunResult &result);
 
     // -- Solver network (1D haemodynamic YAML, its maps and geometry) --------
     // See SolverNetworkUi.cpp. Hover state is separate from the selection: it
@@ -621,6 +641,8 @@ private:
     std::deque<PendingSegmentationTask> m_pendingSegmentationTasks;
     std::thread m_segmentationWorker;
     std::atomic<bool> m_segmentationWorkerActive{false};
+    // Set by stopSegmentationWorker() for tasks that poll it; cleared when the next task launches.
+    std::atomic<bool> m_segmentationStopRequested{false};
     QString m_segmentationProgressLabel;
     int m_segmentationProgressDone = -1;
     int m_segmentationProgressTotal = -1;
