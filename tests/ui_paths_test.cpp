@@ -1,9 +1,12 @@
 // Checks on the helpers that decide what counts as an openable image.
 // They gate the file dialogs, the CSV importer and the folder scan, so a
 // regression here silently makes a supported format unopenable.
+#include "RasterFormats.h"
 #include "UiUtils.h"
 
 #include <QCoreApplication>
+#include <QRegularExpression>
+#include <QSet>
 #include <cstdio>
 #include <string>
 
@@ -19,6 +22,16 @@ void check(bool condition, const char *what)
     std::printf("%-58s %s\n", what, condition ? "ok" : "FAIL");
     if (!condition)
         ++failures;
+}
+
+// The extensions a file-dialog filter offers, from its *.<ext> patterns.
+QSet<QString> filterExtensions(const QString &filter)
+{
+    QSet<QString> extensions;
+    static const QRegularExpression pattern(R"(\*(\.[A-Za-z0-9.]+))");
+    for (const QRegularExpressionMatch &match : pattern.globalMatch(filter))
+        extensions.insert(match.captured(1));
+    return extensions;
 }
 
 } // namespace
@@ -71,6 +84,18 @@ int main(int argc, char **argv)
           "mask filter offers raster images");
     check(!maskOpenFileFilter().contains("*.jpg") && !maskOpenFileFilter().contains("*.jpeg"),
           "mask filter omits JPEG (lossy, labels would blur)");
+
+    // The filters are literal strings; the shared raster list must not outgrow them.
+    const QSet<QString> openOffers = filterExtensions(imageOpenFileFilter());
+    const QSet<QString> maskOffers = filterExtensions(maskOpenFileFilter());
+    for (std::string_view extension : raster::kExtensions)
+    {
+        const QString ext = QString::fromLatin1(extension.data(), static_cast<qsizetype>(extension.size()));
+        const bool jpeg = ext == ".jpg" || ext == ".jpeg";
+        check(openOffers.contains(ext), qPrintable("open filter offers *" + ext));
+        check(maskOffers.contains(ext) != jpeg,
+              qPrintable(jpeg ? "mask filter omits *" + ext : "mask filter offers *" + ext));
+    }
 
     std::printf("\n%s\n", failures ? "FAILURES" : "all path-helper checks passed");
     return failures ? 1 : 0;

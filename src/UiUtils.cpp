@@ -6,6 +6,7 @@
 
 #include "UiUtils.h"
 #include "RangeSlider.h"
+#include "RasterFormats.h"
 #include "Theme.h"
 #include "Version.h"
 
@@ -423,7 +424,13 @@ const QStringList &dicomExtensions()
 
 const QStringList &rasterExtensions()
 {
-    static const QStringList extensions{".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"};
+    static const QStringList extensions = []
+    {
+        QStringList list;
+        for (std::string_view extension : raster::kExtensions)
+            list << QString::fromLatin1(extension.data(), static_cast<qsizetype>(extension.size()));
+        return list;
+    }();
     return extensions;
 }
 

@@ -1,4 +1,5 @@
 #include "NiftiImage.h"
+#include "RasterFormats.h"
 #include <itkImageFileReader.h>
 #include <itkImageSeriesReader.h>
 #include <itkMinimumMaximumImageCalculator.h>
@@ -772,15 +773,7 @@ bool NiftiImage::isNumpyPath(const std::string &path)
 
 bool NiftiImage::isRasterPath(const std::string &path)
 {
-    // Matches rasterExtensions() in UiUtils, which this Qt-free class cannot include.
-    static const char *const kExtensions[] = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"};
-    std::string ext = std::filesystem::path(path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    for (const char *candidate : kExtensions)
-        if (ext == candidate)
-            return true;
-    return false;
+    return raster::hasRasterExtension(std::filesystem::path(path).extension().string());
 }
 
 bool NiftiImage::inspectNumpy(const std::string &path, std::vector<npz::ArrayInfo> &arrays, std::string *error)
