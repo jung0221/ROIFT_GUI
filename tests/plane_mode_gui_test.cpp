@@ -5,6 +5,7 @@
 // voxels of the image now selected, in a directory that goes away with the window.
 // A one-slice image has no sagittal, coronal or 3D picture, so it fills the view area.
 // A slice run writes oiftrelax's labels into one plane of the edited mask and nowhere else.
+// A PNG opened with no mask is segmented into a blank mask that saves as a PNG and reads back.
 #include "ManualSeedSelector.h"
 #include "SegmentationRunner.h"
 
@@ -13,6 +14,7 @@
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
@@ -65,19 +67,24 @@ std::size_t sliceIndex(unsigned int x, unsigned int y, unsigned int z)
     return x + std::size_t(kSliceX) * (y + std::size_t(kSliceY) * z);
 }
 
-// Dice of label 1 against the disc of radius 10 around (cu, cv) on a width x height plane,
-// whose pixel (u, v) is labels[voxelAt(u, v)].
-double discDice(const std::vector<int> &labels, unsigned int width, unsigned int height, int cu, int cv,
-                const char *name, const std::function<std::size_t(unsigned int, unsigned int)> &voxelAt)
+struct Disc
 {
-    if (labels.size() != kSliceVoxels)
+    int cu, cv, radius;
+};
+
+// Dice of label 1 against disc on a width x height plane, whose pixel (u, v) is
+// labels[voxelAt(u, v)]; 0 unless labels holds exactly voxels values.
+double discDice(const std::vector<int> &labels, std::size_t voxels, unsigned int width, unsigned int height,
+                Disc d, const char *name, const std::function<std::size_t(unsigned int, unsigned int)> &voxelAt)
+{
+    if (labels.size() != voxels)
         return 0.0;
     int both = 0, labelled = 0, inDisc = 0;
     for (unsigned int v = 0; v < height; ++v)
         for (unsigned int u = 0; u < width; ++u)
         {
-            const int du = int(u) - cu, dv = int(v) - cv;
-            const bool disc = du * du + dv * dv <= 100;
+            const int du = int(u) - d.cu, dv = int(v) - d.cv;
+            const bool disc = du * du + dv * dv <= d.radius * d.radius;
             const bool one = labels[voxelAt(u, v)] == 1;
             both += disc && one;
             labelled += one;
@@ -192,6 +199,55 @@ double widthShare(const QWidget *panel, const QWidget *container)
 double heightShare(const QWidget *panel, const QWidget *container)
 {
     return container->height() > 0 ? double(panel->height()) / container->height() : 0.0;
+}
+
+QPushButton *runButton(const ManualSeedSelector &window)
+{
+    for (QPushButton *button : window.findChildren<QPushButton *>())
+        if (button->accessibleName() == "Run segmentation")
+            return button;
+    return nullptr;
+}
+
+bool writeText(const QString &path, const char *text)
+{
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::Text) && file.write(text) > 0;
+}
+
+struct Outcome
+{
+    bool arrived = false;
+    bool success = false;
+    QString message;
+};
+
+// Clicks Run, calls meanwhile before any event is processed, then waits up to 30 s for the result.
+Outcome runAndWait(ManualSeedSelector &window, QPushButton *run, const std::function<void()> &meanwhile)
+{
+    Outcome outcome;
+    QEventLoop loop;
+    QObject::connect(&window, &ManualSeedSelector::planeSegmentationFinished, &loop,
+                     [&outcome, &loop](bool success, const QString &message)
+                     {
+                         outcome = {true, success, message};
+                         loop.quit();
+                     });
+    run->click();
+    if (meanwhile)
+        meanwhile();
+    if (!outcome.arrived)
+    {
+        QTimer::singleShot(30000, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+    std::printf("  slice run: %s\n", qPrintable(outcome.message));
+    return outcome;
+}
+
+QStringList planeWorkDirs()
+{
+    return QDir::temp().entryList({"roift_plane_*"}, QDir::Dirs | QDir::NoDotAndDotDot);
 }
 
 
@@ -514,10 +570,7 @@ int main(int argc, char **argv)
         const QString thinMaskPath = dir.filePath("thin_mask.nii.gz");
         const unsigned int thinSize[3] = {kSliceX, kSliceY, kSliceZ / 2};
         const QString seedPath = dir.filePath("ball_seeds.txt");
-        QFile seedFile(seedPath);
-        const bool wroteSeeds = seedFile.open(QIODevice::WriteOnly | QIODevice::Text) &&
-                                seedFile.write("3\n20 24 16 1 1\n20 30 16 1 1\n5 24 5 2 2\n") > 0;
-        seedFile.close();
+        const bool wroteSeeds = writeText(seedPath, "3\n20 24 16 1 1\n20 30 16 1 1\n5 24 5 2 2\n");
         const bool wroteSlice = wroteSeeds && writeImage<3, std::int16_t>(ballPath, size, ballValue) &&
                                 writeImage<3, std::int16_t>(otherPath, size, otherValue) &&
                                 writeImage<3, std::int16_t>(maskAPath, size, maskAValue) &&
@@ -534,10 +587,7 @@ int main(int argc, char **argv)
         QComboBox *plane = slice.findChild<QComboBox *>("segmentationPlane");
         QSlider *coronal = slice.findChild<QSlider *>("coronalSlider");
         QPlainTextEdit *log = slice.findChild<QPlainTextEdit *>("logConsole");
-        QPushButton *run = nullptr;
-        for (QPushButton *button : slice.findChildren<QPushButton *>())
-            if (button->accessibleName() == "Run segmentation")
-                run = button;
+        QPushButton *run = runButton(slice);
         const bool found = wroteSlice && list && masks && scope && plane && coronal && log && run;
         check(found, "image and mask lists, scope, plane, slider, log and Run are found");
         if (!found)
@@ -553,34 +603,7 @@ int main(int argc, char **argv)
             plane->setCurrentIndex(plane->findText("Coronal"));
             coronal->setValue(24);
         };
-        struct Outcome
-        {
-            bool arrived = false;
-            bool success = false;
-            QString message;
-        };
-        // Clicks Run, calls meanwhile before any event is processed, then waits for the result.
-        const auto runSlice = [&](const std::function<void()> &meanwhile)
-        {
-            Outcome outcome;
-            QEventLoop loop;
-            QObject::connect(&slice, &ManualSeedSelector::planeSegmentationFinished, &loop,
-                             [&outcome, &loop](bool success, const QString &message)
-                             {
-                                 outcome = {true, success, message};
-                                 loop.quit();
-                             });
-            run->click();
-            if (meanwhile)
-                meanwhile();
-            if (!outcome.arrived)
-            {
-                QTimer::singleShot(30000, &loop, &QEventLoop::quit);
-                loop.exec();
-            }
-            std::printf("  slice run: %s\n", qPrintable(outcome.message));
-            return outcome;
-        };
+        const auto runSlice = [&](const std::function<void()> &meanwhile) { return runAndWait(slice, run, meanwhile); };
 
         prepare();
         const std::vector<int> before = slice.activeMaskLabels();
@@ -590,7 +613,7 @@ int main(int argc, char **argv)
         const Outcome done = runSlice(nullptr);
         check(done.arrived && done.success, "coronal 24: the run succeeds");
         const std::vector<int> &after = slice.activeMaskLabels();
-        const double dice = discDice(after, kSliceX, kSliceZ, 20, 16, "coronal 24",
+        const double dice = discDice(after, kSliceVoxels, kSliceX, kSliceZ, {20, 16, 10}, "coronal 24",
                                      [](unsigned int u, unsigned int v) { return sliceIndex(u, 24, v); });
         check(dice >= 0.9, "coronal 24: label 1 matches the ball's section, Dice >= 0.9");
         const bool sized = after.size() == kSliceVoxels;
@@ -660,7 +683,7 @@ int main(int argc, char **argv)
             axial->setValue(16);
         const Outcome axialDone = runSlice(nullptr);
         check(axial && axialDone.arrived && axialDone.success, "axial 16: the run succeeds");
-        const double axialDice = discDice(slice.activeMaskLabels(), kSliceX, kSliceY, 20, 24, "axial 16",
+        const double axialDice = discDice(slice.activeMaskLabels(), kSliceVoxels, kSliceX, kSliceY, {20, 24, 10}, "axial 16",
                                           [](unsigned int u, unsigned int v) { return sliceIndex(u, v, 16); });
         check(axialDice >= 0.9, "axial 16: label 1 matches the ball's section, Dice >= 0.9");
 
@@ -670,6 +693,107 @@ int main(int argc, char **argv)
         check(slice.activeMaskDims() == std::array<unsigned, 3>{kSliceX, kSliceY, kSliceZ / 2} && thin.arrived &&
                   !thin.success && thin.message.contains("40 x 48 x 16") && !slice.isSegmentationTaskRunning(),
               "a 40 x 48 x 16 edited mask: refused at once");
+    }
+
+    // A PNG opened with no mask: the run paints a blank mask, which saves as a PNG and reads back.
+    // Closing the window with a run active and one queued returns and leaves no work directory.
+    if (qEnvironmentVariableIsEmpty("ROIFT_EXECUTABLE"))
+    {
+        std::printf("2D image run checks skipped: CTest names no built oiftrelax\n");
+    }
+    else
+    {
+        constexpr unsigned int kDiscX = 64, kDiscY = 48;
+        constexpr std::size_t kDiscPixels = std::size_t(kDiscX) * kDiscY;
+        const Disc disc{30, 20, 12};
+        const unsigned int discSize[3] = {kDiscX, kDiscY, 1};
+        std::mt19937 rng(20261006);
+        std::uniform_int_distribution<int> noise(-10, 10);
+        std::vector<float> discPixels(kDiscPixels);
+        for (unsigned int y = 0; y < kDiscY; ++y)
+            for (unsigned int x = 0; x < kDiscX; ++x)
+            {
+                const int dx = int(x) - disc.cu, dy = int(y) - disc.cv;
+                const bool inside = dx * dx + dy * dy <= disc.radius * disc.radius;
+                discPixels[x + std::size_t(kDiscX) * y] = float((inside ? 200 : 50) + noise(rng));
+            }
+        const ValueAt discValue = [&discPixels](unsigned int x, unsigned int y, unsigned int)
+        { return discPixels[x + std::size_t(kDiscX) * y]; };
+        // Its own folder, so the folder scan finds no mask beside it.
+        dir.mkdir("disc");
+        const QString discPath = dir.filePath("disc/disc.png");
+        const QString discSeedPath = dir.filePath("disc/disc_seeds.txt");
+        const QString discMaskPath = dir.filePath("disc/disc_mask.png");
+        const bool wroteDisc = writeImage<2>(discPath, discSize, discValue) && writeText(discSeedPath, "1\n30 20 0 1 1\n");
+        check(wroteDisc, "2D image fixtures written");
+
+        const auto open = [&](ManualSeedSelector &w)
+        {
+            w.addImagesFromPaths({discPath});
+            QListWidget *list = w.findChild<QListWidget *>("imageList");
+            if (list)
+                list->setCurrentRow(rowForPath(list, discPath));
+            return list && w.loadSeedsFromFile(discSeedPath.toStdString());
+        };
+
+        ManualSeedSelector flat("");
+        QComboBox *scope = flat.findChild<QComboBox *>("segmentationScope");
+        QComboBox *plane = flat.findChild<QComboBox *>("segmentationPlane");
+        QPushButton *run = runButton(flat);
+        const bool opened = wroteDisc && open(flat) && scope && plane && run;
+        check(opened, "disc.png opens with its seed file; scope, plane and Run found");
+        if (!opened)
+            return 1;
+        check(scope->currentText() == "Current slice" && plane->currentText() == "Axial",
+              "disc.png: scope reads Current slice, plane Axial");
+        check(flat.activeMaskPath().isEmpty() && flat.activeMaskLabels().empty(), "disc.png: no mask before the run");
+
+        const Outcome done = runAndWait(flat, run, nullptr);
+        check(done.arrived && done.success, "disc.png: the run succeeds");
+        check(flat.activeMaskDims() == std::array<unsigned, 3>{kDiscX, kDiscY, 1}, "disc.png: the mask is 64 x 48 x 1");
+        const std::vector<int> painted = flat.activeMaskLabels();
+        const double dice = discDice(painted, kDiscPixels, kDiscX, kDiscY, disc, "disc.png",
+                                     [](unsigned int u, unsigned int v) { return u + std::size_t(kDiscX) * v; });
+        check(dice >= 0.9, "disc.png: label 1 matches the disc, Dice >= 0.9");
+
+        QString saveError;
+        const bool saved = flat.saveActiveMaskTo(discMaskPath.toStdString(), &saveError);
+        std::printf("  disc_mask.png: saved %d, error \"%s\"\n", saved, qPrintable(saveError));
+        check(saved && QFileInfo::exists(discMaskPath), "disc.png: the mask saves as disc_mask.png");
+        check(saved && flat.applyMaskFromPath(discMaskPath.toStdString()) && flat.activeMaskLabels() == painted,
+              "disc_mask.png reads back with the same labels");
+
+        const QStringList dirsBefore = planeWorkDirs();
+        auto *closing = new ManualSeedSelector("");
+        QPushButton *closingRun = runButton(*closing);
+        const bool ready = open(*closing) && closingRun;
+        check(ready, "a second window opens disc.png with its seeds");
+        if (ready)
+        {
+            closingRun->click();
+            closingRun->click();
+            const bool busy = closing->isSegmentationTaskRunning();
+            QElapsedTimer timer;
+            timer.start();
+            delete closing;
+            const qint64 elapsed = timer.elapsed();
+            for (int i = 0; i < 5; ++i)
+                QCoreApplication::processEvents();
+            QStringList left;
+            for (const QString &name : planeWorkDirs())
+                if (!dirsBefore.contains(name))
+                    left << name;
+            std::printf("  closed with a task %s and one queued: %lld ms, %lld roift_plane_* left\n",
+                        busy ? "active" : "not active", static_cast<long long>(elapsed),
+                        static_cast<long long>(left.size()));
+            check(busy, "closing: a slice task was active when the window was deleted");
+            check(elapsed < 15000, "closing during a run returns within 15 s");
+            check(left.isEmpty(), "closing during a run leaves no roift_plane_* directory");
+        }
+        else
+        {
+            delete closing;
+        }
     }
 
     // A one-slice mask saves as a PNG label image and reads back voxel for voxel; a volume's does not.
