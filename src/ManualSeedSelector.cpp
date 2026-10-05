@@ -6517,6 +6517,8 @@ bool ManualSeedSelector::savePngLabels(const std::string &path, QString *error)
             *error = message;
         return false;
     };
+    if (m_image.getSizeX() == 0 || m_image.getSizeY() == 0 || m_image.getSizeZ() == 0)
+        return fail("No image loaded.");
     if (m_maskData.empty() && isPlanarImage())
     {
         m_maskDimX = m_image.getSizeX();
@@ -6527,6 +6529,8 @@ bool ManualSeedSelector::savePngLabels(const std::string &path, QString *error)
     if (m_maskDimZ != 1)
         return fail("A PNG label image holds one slice; this mask has " + QString::number(m_maskDimZ) +
                     " slices. Save a one-slice mask as PNG, or save as NIfTI.");
+    if (m_maskData.size() != size_t(m_maskDimX) * m_maskDimY)
+        return fail("The mask size does not match its dimensions.");
     int largest = 0;
     for (const int v : m_maskData)
     {
@@ -6684,9 +6688,12 @@ void ManualSeedSelector::saveMaskToFile()
     const QString niftiFilter = "NIfTI files (*.nii *.nii.gz)";
     const QString pngFilter = "PNG label image (*.png)";
     const QString filters = isPlanarImage() ? niftiFilter + ";;" + pngFilter : niftiFilter;
-    const QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", filters);
+    QString selected = niftiFilter;
+    QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", filters, &selected);
     if (f.isEmpty())
         return;
+    if (selected == pngFilter && QFileInfo(f).suffix().isEmpty())
+        f += ".png";
     QString error;
     if (!saveActiveMaskTo(f.toStdString(), &error))
         QMessageBox::critical(this, "Save Mask", error);

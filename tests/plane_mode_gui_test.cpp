@@ -38,6 +38,7 @@
 #include <itkImage.h>
 #include <itkImageFileReader.h>
 #include <itkImageFileWriter.h>
+#include <itkImageIOFactory.h>
 #include <itkImageRegionIteratorWithIndex.h>
 #include <itkNiftiImageIO.h>
 
@@ -710,7 +711,8 @@ int main(int argc, char **argv)
             return v;
         };
 
-        const auto roundTrip = [&](const QString &maskPath, const char *name, const int (&labels)[4])
+        const auto roundTrip = [&](const QString &maskPath, const char *name, const int (&labels)[4],
+                                    itk::CommonEnums::IOComponent component)
         {
             ManualSeedSelector w("");
             selectImage(w, grayPath);
@@ -719,13 +721,24 @@ int main(int argc, char **argv)
             const bool loaded = w.applyMaskFromPath(maskPath.toStdString());
             const bool saved = loaded && w.saveActiveMaskTo(png.toStdString(), &err);
             const bool reloaded = saved && w.applyMaskFromPath(png.toStdString());
-            const bool same = reloaded && w.activeMaskLabels() == expected(labels);
+            const auto pixelType = [&png]()
+            {
+                auto io = itk::ImageIOFactory::CreateImageIO(png.toStdString().c_str(),
+                                                             itk::CommonEnums::IOFileMode::ReadMode);
+                if (!io)
+                    return itk::CommonEnums::IOComponent::UNKNOWNCOMPONENTTYPE;
+                io->SetFileName(png.toStdString());
+                io->ReadImageInformation();
+                return io->GetComponentType();
+            };
+            const bool depthOk = saved && pixelType() == component;
+            const bool same = reloaded && depthOk && w.activeMaskLabels() == expected(labels);
             std::printf("  %s: loaded %d saved %d reloaded %d, error \"%s\"\n", name, loaded, saved, reloaded,
                         qPrintable(err));
             return same;
         };
-        check(wrote && roundTrip(smallPath, "small", small), "labels {0,1,2,7} round-trip through an 8-bit PNG");
-        check(wrote && roundTrip(widePath, "wide", wide), "labels up to 65535 round-trip through a 16-bit PNG");
+        check(wrote && roundTrip(smallPath, "small", small, itk::CommonEnums::IOComponent::UCHAR), "labels {0,1,2,7} round-trip through an 8-bit (UCHAR) PNG");
+        check(wrote && roundTrip(widePath, "wide", wide, itk::CommonEnums::IOComponent::USHORT), "labels up to 65535 round-trip through a 16-bit (USHORT) PNG");
 
         {
             ManualSeedSelector w("");
@@ -740,7 +753,7 @@ int main(int argc, char **argv)
             ManualSeedSelector w("");
             selectImage(w, volumePath);
             QString err;
-            w.applyMaskFromPath(stackMaskPath.toStdString());
+            check(w.applyMaskFromPath(stackMaskPath.toStdString()), "volume mask loads");
             check(!w.saveActiveMaskTo(dir.filePath("stack.png").toStdString(), &err) && err.contains("one-slice") &&
                       !QFileInfo::exists(dir.filePath("stack.png")),
                   "volume mask: PNG save refused, one-slice requirement named");

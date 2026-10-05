@@ -118,7 +118,8 @@ public:
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
     // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
-    // 8-bit or 16-bit label image. Returns false and sets *error on failure; shows no dialog.
+    // 8-bit or 16-bit label image. Returns false and sets *error on failure. A deferred mask that
+    // cannot be read still raises the Load Mask dialog.
     bool saveActiveMaskTo(const std::string &path, QString *error);
     // refresh mask/seed associations from disk for current image
     void refreshAssociatedFilesForCurrentImage(bool forceDetect = false);
