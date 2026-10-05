@@ -17,6 +17,6 @@ namespace SegmentationRunner
 
     // The standard CPU oiftrelax, searched for where a volume run searches (ROIFT_EXECUTABLE,
     // PATH, the build and install folders), or an empty string when ROIFT_EXECUTABLE names
-    // another binary or none is found.
-    QString resolveCpuRoiftExecutable();
+    // another binary or none is found; whyNot then says which, in one line.
+    QString resolveCpuRoiftExecutable(QString *whyNot = nullptr);
 }

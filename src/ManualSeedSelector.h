@@ -422,6 +422,8 @@ private:
     void updateSliceLabels();
     // Enable the scope, plane and volume-only controls for the scope and the loaded image.
     void updateSegmentationScopeControls();
+    // Show the Alpha, Sigma and Smoothing rows of the method a run will use.
+    void updateMethodParamRows();
     // Run oiftrelax on the current slice of the selected plane in the background.
     void segmentCurrentSlice();
     // What a slice run started on; a result that comes back to anything else is discarded.
@@ -434,6 +436,9 @@ private:
     // Paste a slice run's labels into that slice of the edited mask, on the GUI thread.
     void applyPlaneSegmentationResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
                                       const planar::RunResult &result);
+    // The reason the labels were not pasted, or empty with *summary set.
+    QString pastePlaneResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                             const std::vector<int> &labels, QString *summary);
 
     // -- Solver network (1D haemodynamic YAML, its maps and geometry) --------
     // See SolverNetworkUi.cpp. Hover state is separate from the selection: it
@@ -641,7 +646,7 @@ private:
     std::deque<PendingSegmentationTask> m_pendingSegmentationTasks;
     std::thread m_segmentationWorker;
     std::atomic<bool> m_segmentationWorkerActive{false};
-    // Set by stopSegmentationWorker() for tasks that poll it; cleared when the next task launches.
+    // Set only by stopSegmentationWorker(), which joins; results carry no task id, so a Cancel that does not join must add one.
     std::atomic<bool> m_segmentationStopRequested{false};
     QString m_segmentationProgressLabel;
     int m_segmentationProgressDone = -1;

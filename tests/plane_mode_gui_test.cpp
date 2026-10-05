@@ -64,6 +64,29 @@ std::size_t sliceIndex(unsigned int x, unsigned int y, unsigned int z)
     return x + std::size_t(kSliceX) * (y + std::size_t(kSliceY) * z);
 }
 
+// Dice of label 1 against the disc of radius 10 around (cu, cv) on a width x height plane,
+// whose pixel (u, v) is labels[voxelAt(u, v)].
+double discDice(const std::vector<int> &labels, unsigned int width, unsigned int height, int cu, int cv,
+                const char *name, const std::function<std::size_t(unsigned int, unsigned int)> &voxelAt)
+{
+    if (labels.size() != kSliceVoxels)
+        return 0.0;
+    int both = 0, labelled = 0, inDisc = 0;
+    for (unsigned int v = 0; v < height; ++v)
+        for (unsigned int u = 0; u < width; ++u)
+        {
+            const int du = int(u) - cu, dv = int(v) - cv;
+            const bool disc = du * du + dv * dv <= 100;
+            const bool one = labels[voxelAt(u, v)] == 1;
+            both += disc && one;
+            labelled += one;
+            inDisc += disc;
+        }
+    const double dice = labelled + inDisc > 0 ? 2.0 * both / (labelled + inDisc) : 0.0;
+    std::printf("  %s: Dice %.3f (%d label-1 pixels, %d in the disc)\n", name, dice, labelled, inDisc);
+    return dice;
+}
+
 // Write an image of the given size, 8-bit unless told otherwise; 2D when sizeZ is 1.
 template <unsigned int Dimension, typename PixelT = unsigned char>
 bool writeImage(const QString &path, const unsigned int (&size)[3], const ValueAt &valueAt)
@@ -368,6 +391,25 @@ int main(int argc, char **argv)
         check(allEnabled(true), "back to Volume: batch, sweep, GPU, method and mode enabled");
         check(mode->currentText() == "Legacy binary", "back to Volume: the mode chosen before is restored");
         check(!plane->isEnabled() && !border->isEnabled(), "back to Volume: plane and border disabled");
+
+        // A slice run is Standard OIFT whatever Method shows, so its Smoothing row is the one shown.
+        QComboBox *method = scoped.findChild<QComboBox *>("segmentationMethod");
+        QWidget *alpha = scoped.findChild<QWidget *>("segmentationAlpha");
+        QWidget *sigma = scoped.findChild<QWidget *>("segmentationSigma");
+        QWidget *smoothing = scoped.findChild<QWidget *>("segmentationSmoothing");
+        const bool rowsFound = method && alpha && sigma && smoothing;
+        check(rowsFound, "method, alpha, sigma and smoothing are named");
+        if (!rowsFound)
+            return 1;
+        method->setCurrentIndex(method->findText("Gradient Weight (1A)"));
+        check(!alpha->isHidden() && sigma->isHidden() && smoothing->isHidden(),
+              "Volume, Gradient Weight: alpha shown, sigma and smoothing hidden");
+        scope->setCurrentIndex(scope->findText("Current slice"));
+        check(!smoothing->isHidden() && smoothing->isEnabled() && alpha->isHidden() && sigma->isHidden(),
+              "Current slice, Gradient Weight kept: smoothing shown and enabled, alpha and sigma hidden");
+        scope->setCurrentIndex(scope->findText("Volume"));
+        check(!alpha->isHidden() && sigma->isHidden() && smoothing->isHidden(),
+              "back to Volume: Gradient Weight's rows again");
     }
 
     // Slice mode runs only the standard CPU binary, whatever ROIFT_EXECUTABLE names.
@@ -389,8 +431,12 @@ int main(int argc, char **argv)
         const QString cpuPath = dir.filePath("oiftrelax" + suffix);
         const bool made = touch(gpuPath) && touch(parallelPath) && touch(cpuPath);
         qputenv("ROIFT_EXECUTABLE", QFile::encodeName(gpuPath));
-        check(made && SegmentationRunner::resolveCpuRoiftExecutable().isEmpty(),
+        QString whyNot;
+        check(made && SegmentationRunner::resolveCpuRoiftExecutable(&whyNot).isEmpty(),
               "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax_gpu yields none");
+        std::printf("  CPU resolver, oiftrelax_gpu: %s\n", qPrintable(whyNot));
+        check(whyNot.startsWith("ROIFT_EXECUTABLE names oiftrelax_gpu"),
+              "CPU resolver: the reason names the binary ROIFT_EXECUTABLE names");
         qputenv("ROIFT_EXECUTABLE", QFile::encodeName(parallelPath));
         check(SegmentationRunner::resolveCpuRoiftExecutable().isEmpty(),
               "CPU resolver: ROIFT_EXECUTABLE naming oiftrelax_parallel yields none");
@@ -444,9 +490,16 @@ int main(int argc, char **argv)
         { return ballVoxels[sliceIndex(x, y, z)]; };
         const ValueAt otherValue = [&otherVoxels](unsigned int x, unsigned int y, unsigned int z)
         { return otherVoxels[sliceIndex(x, y, z)]; };
-        // Label 3 on an edge pixel of the plane, a border background seed; label 1 off the plane.
+        // On edge pixels of the plane, which take border background seeds: label 3, not a run
+        // label, and label 1, a run label. Label 1 also off the plane.
         const ValueAt maskAValue = [](unsigned int x, unsigned int y, unsigned int z)
-        { return (x == 0 && y == 24 && z == 0) ? 3.0f : (x == 20 && y == 10 && z == 16) ? 1.0f : 0.0f; };
+        {
+            if (x == 0 && y == 24 && z == 0)
+                return 3.0f;
+            if ((x == 39 && y == 24 && z == 0) || (x == 20 && y == 10 && z == 16))
+                return 1.0f;
+            return 0.0f;
+        };
         const ValueAt maskBValue = [](unsigned int x, unsigned int y, unsigned int z)
         { return (x == 20 && y == 24 && z == 16) ? 7.0f : 0.0f; };
         const ValueAt otherMaskValue = [](unsigned int x, unsigned int y, unsigned int z)
@@ -457,6 +510,8 @@ int main(int argc, char **argv)
         const QString maskAPath = dir.filePath("mask_a.nii.gz");
         const QString maskBPath = dir.filePath("mask_b.nii.gz");
         const QString otherMaskPath = dir.filePath("other_mask.nii.gz");
+        const QString thinMaskPath = dir.filePath("thin_mask.nii.gz");
+        const unsigned int thinSize[3] = {kSliceX, kSliceY, kSliceZ / 2};
         const QString seedPath = dir.filePath("ball_seeds.txt");
         QFile seedFile(seedPath);
         const bool wroteSeeds = seedFile.open(QIODevice::WriteOnly | QIODevice::Text) &&
@@ -466,7 +521,8 @@ int main(int argc, char **argv)
                                 writeImage<3, std::int16_t>(otherPath, size, otherValue) &&
                                 writeImage<3, std::int16_t>(maskAPath, size, maskAValue) &&
                                 writeImage<3, std::int16_t>(maskBPath, size, maskBValue) &&
-                                writeImage<3, std::int16_t>(otherMaskPath, size, otherMaskValue);
+                                writeImage<3, std::int16_t>(otherMaskPath, size, otherMaskValue) &&
+                                writeImage<3, std::int16_t>(thinMaskPath, thinSize, maskBValue);
         check(wroteSlice, "slice run fixtures written");
 
         ManualSeedSelector slice("");
@@ -533,23 +589,14 @@ int main(int argc, char **argv)
         const Outcome done = runSlice(nullptr);
         check(done.arrived && done.success, "coronal 24: the run succeeds");
         const std::vector<int> &after = slice.activeMaskLabels();
-        int both = 0, inResult = 0, inDisc = 0;
-        for (unsigned int z = 0; z < kSliceZ; ++z)
-            for (unsigned int x = 0; x < kSliceX; ++x)
-            {
-                const int dx = int(x) - 20, dz = int(z) - 16;
-                const bool disc = dx * dx + dz * dz <= 100;
-                const bool labelled = after.size() == kSliceVoxels && after[sliceIndex(x, 24, z)] == 1;
-                both += disc && labelled;
-                inResult += labelled;
-                inDisc += disc;
-            }
-        const double dice = inResult + inDisc > 0 ? 2.0 * both / (inResult + inDisc) : 0.0;
-        std::printf("  coronal 24: Dice %.3f (%d label-1 pixels, %d in the disc)\n", dice, inResult, inDisc);
+        const double dice = discDice(after, kSliceX, kSliceZ, 20, 16, "coronal 24",
+                                     [](unsigned int u, unsigned int v) { return sliceIndex(u, 24, v); });
         check(dice >= 0.9, "coronal 24: label 1 matches the ball's section, Dice >= 0.9");
         const bool sized = after.size() == kSliceVoxels;
         check(sized && after[sliceIndex(5, 24, 5)] == 2, "coronal 24: the label-2 seed's pixel holds 2");
         check(sized && after[sliceIndex(0, 24, 0)] == 3, "coronal 24: label 3 under a background result is kept");
+        check(sized && before[sliceIndex(39, 24, 0)] == 1 && after[sliceIndex(39, 24, 0)] == 0,
+              "coronal 24: label 1 under a background result is cleared");
         bool offPlaneKept = sized;
         for (unsigned int z = 0; z < kSliceZ && offPlaneKept; ++z)
             for (unsigned int y = 0; y < kSliceY && offPlaneKept; ++y)
@@ -559,6 +606,16 @@ int main(int argc, char **argv)
         check(offPlaneKept && after[sliceIndex(20, 10, 16)] == 1, "every voxel off plane y = 24 is unchanged");
         check(log->toPlainText().contains("2 seed(s) used, 1 on other slices ignored"),
               "the log counts 2 seeds used and 1 ignored");
+
+        // Plane y = 10 holds no seed; the refusal comes before any task.
+        const std::vector<int> beforeRefusal = slice.activeMaskLabels();
+        coronal->setValue(10);
+        const Outcome refused = runSlice(nullptr);
+        check(refused.arrived && !refused.success && refused.message.contains("No object seed") &&
+                  !slice.isSegmentationTaskRunning(),
+              "coronal 10, no seed on it: refused at once");
+        check(slice.activeMaskLabels() == beforeRefusal, "coronal 10: the refusal changes nothing");
+        coronal->setValue(24);
 
         const auto voxelsOf = [](const ValueAt &valueAt)
         {
@@ -593,6 +650,25 @@ int main(int argc, char **argv)
         check(QFileInfo(slice.activeMaskPath()) == QFileInfo(maskBPath) &&
                   slice.activeMaskLabels() == voxelsOf(maskBValue),
               "mask switched: mask_b, now edited, is untouched");
+
+        // Axial slice z = 16 is the axial slider's value; u = x, v = y.
+        prepare();
+        QSlider *axial = slice.findChild<QSlider *>("axialSlider");
+        plane->setCurrentIndex(plane->findText("Axial"));
+        if (axial)
+            axial->setValue(16);
+        const Outcome axialDone = runSlice(nullptr);
+        check(axial && axialDone.arrived && axialDone.success, "axial 16: the run succeeds");
+        const double axialDice = discDice(slice.activeMaskLabels(), kSliceX, kSliceY, 20, 24, "axial 16",
+                                          [](unsigned int u, unsigned int v) { return sliceIndex(u, v, 16); });
+        check(axialDice >= 0.9, "axial 16: label 1 matches the ball's section, Dice >= 0.9");
+
+        // A mask whose depth is only mapped onto the image's is refused before the run.
+        slice.applyMaskFromPath(thinMaskPath.toStdString());
+        const Outcome thin = runSlice(nullptr);
+        check(slice.activeMaskDims() == std::array<unsigned, 3>{kSliceX, kSliceY, kSliceZ / 2} && thin.arrived &&
+                  !thin.success && thin.message.contains("40 x 48 x 16") && !slice.isSegmentationTaskRunning(),
+              "a 40 x 48 x 16 edited mask: refused at once");
     }
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");

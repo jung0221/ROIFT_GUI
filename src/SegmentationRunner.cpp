@@ -1841,7 +1841,7 @@ namespace
     }
 }
 
-QString SegmentationRunner::resolveCpuRoiftExecutable()
+QString SegmentationRunner::resolveCpuRoiftExecutable(QString *whyNot)
 {
     // Only this name: the folder search would otherwise reach roift/gpu before roift, and
     // the plane runner relies on the newer CLI (an empty slot 8, --blur).
@@ -1853,7 +1853,18 @@ QString SegmentationRunner::resolveCpuRoiftExecutable()
     const Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
 #endif
     const RoiftExecutable exe = findRoiftExecutable({name});
-    return QFileInfo(exe.path).fileName().compare(name, sensitivity) == 0 ? exe.path : QString();
+    if (QFileInfo(exe.path).fileName().compare(name, sensitivity) == 0)
+        return exe.path;
+    // The search looks for this name only, so any other file came from ROIFT_EXECUTABLE.
+    if (whyNot)
+        *whyNot = exe.path.isEmpty()
+                      ? QString("Could not find %1: searched ROIFT_EXECUTABLE, PATH and the build folders around the "
+                                "application and the current directory. Set ROIFT_EXECUTABLE to its full path.")
+                            .arg(name)
+                      : QString("ROIFT_EXECUTABLE names %1, but one slice runs only on the standard CPU %2; "
+                                "the GPU and experiment binaries cannot. Point ROIFT_EXECUTABLE at %2 or unset it.")
+                            .arg(QFileInfo(exe.path).fileName(), name);
+    return QString();
 }
 
 void SegmentationRunner::runSegmentation(ManualSeedSelector *parent)

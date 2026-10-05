@@ -119,12 +119,13 @@ using namespace UiUtils;
 
 namespace
 {
-// Item order of the Scope (Volume first), Plane and Mode combos.
+// Item order of the Scope (Volume first), Plane, Mode and Method combos.
 constexpr int kSliceScope = 1;
 constexpr int kAxialPlaneItem = 0;
 constexpr int kSagittalPlaneItem = 1;
 constexpr int kCoronalPlaneItem = 2;
 constexpr int kMultiLabelMode = 0;
+constexpr int kStandardMethod = 0;
 
 QString planeName(planar::Plane plane)
 {
@@ -1147,6 +1148,7 @@ void ManualSeedSelector::setupUi()
     m_alphaLabel = new QLabel("Alpha:");
     rightGrid->addWidget(m_alphaLabel, 1, 0);
     m_alphaSpin = new QDoubleSpinBox();
+    m_alphaSpin->setObjectName("segmentationAlpha");
     m_alphaSpin->setRange(0.0, 1.0);
     m_alphaSpin->setSingleStep(0.05);
     m_alphaSpin->setValue(0.5);
@@ -1157,6 +1159,7 @@ void ManualSeedSelector::setupUi()
     m_sigmaLabel = new QLabel("Sigma:");
     rightGrid->addWidget(m_sigmaLabel, 2, 0);
     m_sigmaSpin = new QDoubleSpinBox();
+    m_sigmaSpin->setObjectName("segmentationSigma");
     m_sigmaSpin->setRange(0.0, 10000.0);
     m_sigmaSpin->setSingleStep(1.0);
     m_sigmaSpin->setValue(0.0);
@@ -1169,6 +1172,7 @@ void ManualSeedSelector::setupUi()
     m_blurLabel = new QLabel("Smoothing:");
     rightGrid->addWidget(m_blurLabel, 3, 0);
     m_blurCombo = new QComboBox();
+    m_blurCombo->setObjectName("segmentationSmoothing");
     m_blurCombo->addItem("Default (2×)", QVariant(2)); // index 0 -> 2 passes (historical)
     m_blurCombo->addItem("Light (1×)", QVariant(1));   // index 1 -> 1 pass
     m_blurCombo->addItem("None (sharp)", QVariant(0));      // index 2 -> 0 passes
@@ -1182,21 +1186,9 @@ void ManualSeedSelector::setupUi()
     rightGrid->setRowStretch(4, 1); // push content up
 
     // Show/hide alpha/sigma and disable GPU based on method selection
-    auto updateMethodParams = [this]() {
-        int method = m_methodCombo->currentIndex();
-        bool showAlpha = (method == 1); // Gradient Weight
-        bool showSigma = (method == 2); // Gaussian RBF
-        bool showBlur = (method == 0);  // Standard OIFT (only path that parses --blur)
-        m_alphaLabel->setVisible(showAlpha);
-        m_alphaSpin->setVisible(showAlpha);
-        m_sigmaLabel->setVisible(showSigma);
-        m_sigmaSpin->setVisible(showSigma);
-        m_blurLabel->setVisible(showBlur);
-        m_blurCombo->setVisible(showBlur);
-    };
     connect(m_methodCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            [this, updateMethodParams](int idx) {
-                updateMethodParams();
+            [this](int idx) {
+                updateMethodParamRows();
                 if (m_useGPUBox) {
                     if (idx > 0) {
                         m_useGPUBox->setChecked(false);
@@ -1206,7 +1198,7 @@ void ManualSeedSelector::setupUi()
                     }
                 }
             });
-    updateMethodParams(); // set initial visibility
+    updateMethodParamRows(); // set initial visibility
 
     paramsColumns->addLayout(rightGrid, 1);
 
@@ -5032,6 +5024,24 @@ planar::Plane ManualSeedSelector::selectedPlane() const
     }
 }
 
+void ManualSeedSelector::updateMethodParamRows()
+{
+    if (!m_methodCombo || !m_alphaLabel || !m_alphaSpin || !m_sigmaLabel || !m_sigmaSpin || !m_blurLabel || !m_blurCombo)
+        return;
+    // A slice run is always Standard OIFT, whatever the disabled Method combo still shows.
+    const bool slice = m_scopeCombo && m_scopeCombo->currentIndex() == kSliceScope;
+    const int method = slice ? kStandardMethod : m_methodCombo->currentIndex();
+    const bool showAlpha = (method == 1); // Gradient Weight
+    const bool showSigma = (method == 2); // Gaussian RBF
+    const bool showBlur = (method == kStandardMethod); // the only path that parses --blur
+    m_alphaLabel->setVisible(showAlpha);
+    m_alphaSpin->setVisible(showAlpha);
+    m_sigmaLabel->setVisible(showSigma);
+    m_sigmaSpin->setVisible(showSigma);
+    m_blurLabel->setVisible(showBlur);
+    m_blurCombo->setVisible(showBlur);
+}
+
 void ManualSeedSelector::updateSegmentationScopeControls()
 {
     if (!m_scopeCombo || !m_planeCombo || !m_planeBorderBox || !m_segmentationModeCombo || !m_segmentAllBox ||
@@ -5072,7 +5082,8 @@ void ManualSeedSelector::updateSegmentationScopeControls()
     m_polSweepBox->setEnabled(!slice && !batch);
     m_segmentationModeCombo->setEnabled(!slice && !batch);
     m_methodCombo->setEnabled(!slice);
-    m_useGPUBox->setEnabled(!slice && m_methodCombo->currentIndex() == 0);
+    m_useGPUBox->setEnabled(!slice && m_methodCombo->currentIndex() == kStandardMethod);
+    updateMethodParamRows();
 }
 
 void ManualSeedSelector::segmentCurrentSlice()
@@ -5087,6 +5098,19 @@ void ManualSeedSelector::segmentCurrentSlice()
     if (!hasImage())
     {
         refuse("Open an image before segmenting a slice.");
+        return;
+    }
+    // The paste needs the image's grid; a mask whose depth is only mapped onto it would be refused after the run.
+    if (!activeMaskPending() && !m_maskData.empty() &&
+        (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() || m_maskDimZ != m_image.getSizeZ()))
+    {
+        refuse(QString("The edited mask is %1 x %2 x %3 and the image %4 x %5 x %6; a slice run needs the same grid.")
+                   .arg(m_maskDimX)
+                   .arg(m_maskDimY)
+                   .arg(m_maskDimZ)
+                   .arg(m_image.getSizeX())
+                   .arg(m_image.getSizeY())
+                   .arg(m_image.getSizeZ()));
         return;
     }
 
@@ -5161,11 +5185,11 @@ void ManualSeedSelector::segmentCurrentSlice()
                                   .arg(width, 0, 'f', 1));
     }
 
-    const QString executable = SegmentationRunner::resolveCpuRoiftExecutable();
+    QString executableProblem;
+    const QString executable = SegmentationRunner::resolveCpuRoiftExecutable(&executableProblem);
     if (executable.isEmpty())
     {
-        refuse("Slice mode needs the standard CPU oiftrelax: ROIFT_EXECUTABLE must name a file called oiftrelax, "
-               "and the GPU and experiment binaries cannot run one slice.");
+        refuse(executableProblem);
         return;
     }
 
@@ -5183,9 +5207,10 @@ void ManualSeedSelector::segmentCurrentSlice()
     request.cancelled = [this]() { return m_segmentationStopRequested.load(); };
     const PlaneRunPins pins{QString::fromStdString(m_path), activeMaskPath(), geometry};
 
+    const QString initialMessage = QString("Slice segmentation of %1 started in background.").arg(where);
     // The destructor joins the worker before members go, so the task may use this; the
     // result is posted, and dropped by Qt if the window is gone by then.
-    startSegmentationTask([this, request, pins, runLabels]() mutable
+    startSegmentationTask([this, request = std::move(request), pins, runLabels]() mutable
                           {
         planar::RunResult result;
         try
@@ -5212,10 +5237,10 @@ void ManualSeedSelector::segmentCurrentSlice()
             result.message = "The slice run failed with an unknown error.";
         }
         QMetaObject::invokeMethod(this,
-                                  [this, pins, runLabels, result]()
+                                  [this, pins, runLabels, result = std::move(result)]()
                                   { applyPlaneSegmentationResult(pins, runLabels, result); },
                                   Qt::QueuedConnection); },
-                          QString("Slice segmentation of %1 started in background.").arg(where),
+                          initialMessage,
                           {QString("Executable: %1").arg(executable)},
                           "Slice segmentation");
 }
@@ -5223,39 +5248,59 @@ void ManualSeedSelector::segmentCurrentSlice()
 void ManualSeedSelector::applyPlaneSegmentationResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
                                                       const planar::RunResult &result)
 {
-    const auto discard = [this](const QString &reason, const QString &details)
-    {
-        completeSegmentationTask(false, reason);
-        appendSegmentationLog(details);
-        emit planeSegmentationFinished(false, reason);
-    };
     if (!result.commandLine.isEmpty())
         appendSegmentationLog(QString("Command: %1").arg(result.commandLine));
+
+    QString reason;
+    QString details;
+    QString summary;
     if (!result.success)
     {
-        discard(QString("Slice segmentation failed: %1").arg(result.message.section('\n', 0, 0)),
-                result.message.section('\n', 1));
+        reason = QString("Slice segmentation failed: %1").arg(result.message.section('\n', 0, 0));
+        details = result.message.section('\n', 1);
+    }
+    else
+    {
+        // Whatever happens here, the task must still be completed, or every later run queues behind it.
+        try
+        {
+            reason = pastePlaneResult(pins, runLabels, result.labels, &summary);
+        }
+        catch (const std::exception &e)
+        {
+            reason = QString("Slice result could not be pasted: %1").arg(e.what());
+        }
+        catch (...)
+        {
+            reason = "Slice result could not be pasted: unknown error.";
+        }
+    }
+
+    if (!reason.isEmpty())
+    {
+        // Before completing: completion may start the next queued task, which logs too.
+        appendSegmentationLog(details);
+        completeSegmentationTask(false, reason);
+        emit planeSegmentationFinished(false, reason);
         return;
     }
+    completeSegmentationTask(true, summary);
+    emit planeSegmentationFinished(true, summary);
+}
+
+QString ManualSeedSelector::pastePlaneResult(const PlaneRunPins &pins, const std::set<int> &runLabels,
+                                             const std::vector<int> &labels, QString *summary)
+{
     const std::array<int, 3> dims{static_cast<int>(m_image.getSizeX()), static_cast<int>(m_image.getSizeY()),
                                   static_cast<int>(m_image.getSizeZ())};
     if (QString::fromStdString(m_path) != pins.imagePath || dims != pins.geometry.dims)
-    {
-        discard("Slice result discarded: the image changed during the run.", QString());
-        return;
-    }
+        return "Slice result discarded: the image changed during the run.";
     if (activeMaskPath() != pins.maskPath)
-    {
-        discard("Slice result discarded: the edited mask changed during the run.", QString());
-        return;
-    }
+        return "Slice result discarded: the edited mask changed during the run.";
 
     // As the brush: read a mask that is only selected, and paint a blank one when there is none.
     if (activeMaskPending() && !ensureActiveMaskLoaded())
-    {
-        discard("Slice result discarded: the edited mask could not be read.", QString());
-        return;
-    }
+        return "Slice result discarded: the edited mask could not be read.";
     if (m_maskData.empty())
     {
         m_maskData.assign(std::size_t(dims[0]) * std::size_t(dims[1]) * std::size_t(dims[2]), 0);
@@ -5264,24 +5309,17 @@ void ManualSeedSelector::applyPlaneSegmentationResult(const PlaneRunPins &pins, 
         m_maskDimZ = m_image.getSizeZ();
     }
     if (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() || m_maskDimZ != m_image.getSizeZ())
-    {
-        discard(QString("Slice result discarded: the edited mask is %1 x %2 x %3 and the image %4 x %5 x %6.")
-                    .arg(m_maskDimX)
-                    .arg(m_maskDimY)
-                    .arg(m_maskDimZ)
-                    .arg(dims[0])
-                    .arg(dims[1])
-                    .arg(dims[2]),
-                QString());
-        return;
-    }
-    if (!planar::pastePlaneLabels(pins.geometry, result.labels, runLabels, m_maskData))
-    {
-        discard("Slice result discarded: the label plane does not fit the slice.", QString());
-        return;
-    }
+        return QString("Slice result discarded: the edited mask is %1 x %2 x %3 and the image %4 x %5 x %6.")
+            .arg(m_maskDimX)
+            .arg(m_maskDimY)
+            .arg(m_maskDimZ)
+            .arg(dims[0])
+            .arg(dims[1])
+            .arg(dims[2]);
+    if (!planar::pastePlaneLabels(pins.geometry, labels, runLabels, m_maskData))
+        return "Slice result discarded: the label plane does not fit the slice.";
 
-    const std::set<int> written(result.labels.begin(), result.labels.end());
+    const std::set<int> written(labels.begin(), labels.end());
     QStringList writtenNames;
     for (int label : written)
     {
@@ -5295,13 +5333,12 @@ void ManualSeedSelector::applyPlaneSegmentationResult(const PlaneRunPins &pins, 
     setActiveMaskVisible();
     updateViews();
 
-    const QString summary =
-        QString("Segmented %1 slice %2: %3.")
-            .arg(planeName(pins.geometry.plane))
-            .arg(pins.geometry.index)
-            .arg(writtenNames.isEmpty() ? QString("no label") : QString("label(s) %1").arg(writtenNames.join(", ")));
-    completeSegmentationTask(true, summary);
-    emit planeSegmentationFinished(true, summary);
+    *summary = QString("Segmented %1 slice %2: %3.")
+                   .arg(planeName(pins.geometry.plane))
+                   .arg(pins.geometry.index)
+                   .arg(writtenNames.isEmpty() ? QString("no label")
+                                               : QString("label(s) %1").arg(writtenNames.join(", ")));
+    return QString();
 }
 
 void ManualSeedSelector::updateSliceLabels()
