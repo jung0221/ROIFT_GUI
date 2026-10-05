@@ -20,16 +20,18 @@ RADIUS = 16       # bright disc radius, pixels
 MIN_DICE = 0.9
 
 DTYPES = {2: "B", 4: "h", 8: "i", 16: "f", 512: "H", 768: "I"}
-# case -> (dim[0], pixdim[3]); the 2D header leaves pixdim[3] = 0, which nifti2_io keeps.
-CASES = {"one_slice": (3, 1.0), "header_2d": (2, 0.0)}
+# case -> dim[0]; a 2D header zeroes dim[3:] and pixdim[3:], which nifti2_io keeps, so the reader must set nz = 1.
+CASES = {"one_slice": 3, "header_2d": 2}
 
 
-def write_nifti_gz(path, values, ndim, pixdim_z):
+def write_nifti_gz(path, values, ndim):
     hdr = bytearray(348)
     struct.pack_into("<i", hdr, 0, 348)
-    struct.pack_into("<8h", hdr, 40, ndim, N, N, 1, 1, 1, 1, 1)
+    dims = (ndim, N, N, 1, 1, 1, 1, 1) if ndim == 3 else (ndim, N, N, 0, 0, 0, 0, 0)
+    struct.pack_into("<8h", hdr, 40, *dims)
     struct.pack_into("<hh", hdr, 70, 4, 16)                              # int16
-    struct.pack_into("<8f", hdr, 76, 1, 1, 1, pixdim_z, 1, 1, 1, 1)
+    pix = (1, 1, 1, 1, 1, 1, 1, 1) if ndim == 3 else (1, 1, 1, 0, 0, 0, 0, 0)
+    struct.pack_into("<8f", hdr, 76, *pix)
     struct.pack_into("<f", hdr, 108, 352.0)
     struct.pack_into("<f", hdr, 112, 1.0)
     hdr[344:348] = b"n+1\0"
@@ -38,7 +40,8 @@ def write_nifti_gz(path, values, ndim, pixdim_z):
 
 
 def read_nifti_gz(path):
-    raw = gzip.open(path, "rb").read()
+    with gzip.open(path, "rb") as f:
+        raw = f.read()
     dim = struct.unpack_from("<8h", raw, 40)
     dtype = struct.unpack_from("<h", raw, 70)[0]
     offset = int(struct.unpack_from("<f", raw, 108)[0])
@@ -53,14 +56,14 @@ def main():
     if len(sys.argv) != 3 or sys.argv[2] not in CASES:
         sys.exit(__doc__)
     oiftrelax, case = os.path.abspath(sys.argv[1]), sys.argv[2]
-    ndim, pixdim_z = CASES[case]
+    ndim = CASES[case]
     # x fastest: pixel (x, y) is index x + N*y.
     inside = [(x - 32) ** 2 + (y - 32) ** 2 <= RADIUS ** 2 for y in range(N) for x in range(N)]
     with tempfile.TemporaryDirectory() as work:
         volume = os.path.join(work, "plane.nii.gz")
         seeds = os.path.join(work, "seeds.txt")
         output = os.path.join(work, "mask.nii.gz")
-        write_nifti_gz(volume, [1000 if v else 0 for v in inside], ndim, pixdim_z)
+        write_nifti_gz(volume, [1000 if v else 0 for v in inside], ndim)
         with open(seeds, "w") as f:
             f.write("1\n32 32 0 1 1\n")
         # Default stride (8) and default blur (2): the defaults are what failed.

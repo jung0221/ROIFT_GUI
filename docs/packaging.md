@@ -170,6 +170,12 @@ guards the failure in which a standalone build compiled `gft` without zlib and
 `find_package(ZLIB)` before adding `roift`, whose own test for zlib runs before
 its own `find_package`.
 
+`tests/oiftrelax_single_slice_test.py` (CTest `oiftrelax_one_slice` and
+`oiftrelax_header_2d`) segments a disc in a one-slice volume and in a 2D NIfTI
+header, at the default boundary stride and blur, and requires a Dice coefficient
+of at least 0.9. It guards face seeding that tiled a single plane with
+background and a reader that refused `dim[0] = 2`.
+
 ## Windows packages
 
 CPack builds both from the install tree:
