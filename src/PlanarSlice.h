@@ -13,8 +13,8 @@ namespace planar
 enum class Plane
 {
     Axial,    // z = index; u = x, v = y
-    Coronal,  // y = index; u = x, v = z
-    Sagittal  // x = index; u = y, v = z
+    Sagittal, // x = index; u = y, v = z
+    Coronal   // y = index; u = x, v = z
 };
 
 struct Geometry
@@ -30,13 +30,15 @@ bool makeGeometry(Plane plane, int index, const std::array<int, 3> &dims, Geomet
 std::size_t volumeIndex(const Geometry &g, int u, int v);
 bool toPlane(const Geometry &g, const std::array<int, 3> &voxel, int *u, int *v);
 std::array<double, 2> planeSpacing(const Geometry &g, const std::array<double, 3> &spacing);
-// Row-major in (u, v): pixel (u, v) at v * width + u, which is also x-fastest in a (U, V, 1) file.
-std::vector<float> extractPlane(const Geometry &g, const float *volume);
+// u-fastest: pixel (u, v) at v * width + u, which is also x-fastest in a (U, V, 1) file.
+// Empty unless volume is non-null and volumeSize is the voxel count of g.dims.
+std::vector<float> extractPlane(const Geometry &g, const float *volume, std::size_t volumeSize);
 // Every pixel of the four edges, once.
 std::vector<std::pair<int, int>> borderPixels(const Geometry &g);
 // A pixel takes the result where it is non-zero; where it is zero, a pixel holding one of
-// runLabels is cleared and any other label is kept.
-void pastePlaneLabels(const Geometry &g, const std::vector<int> &planeLabels,
+// runLabels is cleared and any other label is kept. Returns false, writing nothing, when
+// either buffer does not match g.
+bool pastePlaneLabels(const Geometry &g, const std::vector<int> &planeLabels,
                       const std::set<int> &runLabels, std::vector<int> &volumeLabels);
 
 } // namespace planar

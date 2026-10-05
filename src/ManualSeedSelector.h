@@ -20,6 +20,7 @@
 #include "MaskLayers.h"
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
+#include "Seed.h"
 #include "RangeSlider.h"
 #include "SolverNetwork.h"
 
@@ -47,7 +48,6 @@ class QPainter;
 class QSplitter;
 class CollapsibleSection;
 
-#include "Seed.h"
 class Mask3DView;
 
 class ManualSeedSelector : public QMainWindow

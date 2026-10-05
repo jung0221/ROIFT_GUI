@@ -12,8 +12,8 @@ bool makeGeometry(Plane plane, int index, const std::array<int, 3> &dims, Geomet
     switch (plane)
     {
     case Plane::Axial:    g.uAxis = 0; g.vAxis = 1; g.normalAxis = 2; break;
-    case Plane::Coronal:  g.uAxis = 0; g.vAxis = 2; g.normalAxis = 1; break;
     case Plane::Sagittal: g.uAxis = 1; g.vAxis = 2; g.normalAxis = 0; break;
+    case Plane::Coronal:  g.uAxis = 0; g.vAxis = 2; g.normalAxis = 1; break;
     }
     if (dims[0] <= 0 || dims[1] <= 0 || dims[2] <= 0 || index < 0 || index >= dims[g.normalAxis])
         return false;
@@ -36,9 +36,13 @@ bool toPlane(const Geometry &g, const std::array<int, 3> &voxel, int *u, int *v)
 {
     if (voxel[g.normalAxis] != g.index)
         return false;
-    *u = voxel[g.uAxis];
-    *v = voxel[g.vAxis];
-    return *u >= 0 && *u < g.width && *v >= 0 && *v < g.height;
+    const int pu = voxel[g.uAxis];
+    const int pv = voxel[g.vAxis];
+    if (pu < 0 || pu >= g.width || pv < 0 || pv >= g.height)
+        return false;
+    *u = pu;
+    *v = pv;
+    return true;
 }
 
 std::array<double, 2> planeSpacing(const Geometry &g, const std::array<double, 3> &spacing)
@@ -46,8 +50,15 @@ std::array<double, 2> planeSpacing(const Geometry &g, const std::array<double, 3
     return {spacing[g.uAxis], spacing[g.vAxis]};
 }
 
-std::vector<float> extractPlane(const Geometry &g, const float *volume)
+static std::size_t voxelCount(const Geometry &g)
 {
+    return std::size_t(g.dims[0]) * std::size_t(g.dims[1]) * std::size_t(g.dims[2]);
+}
+
+std::vector<float> extractPlane(const Geometry &g, const float *volume, std::size_t volumeSize)
+{
+    if (volume == nullptr || volumeSize != voxelCount(g))
+        return {};
     std::vector<float> plane(std::size_t(g.width) * std::size_t(g.height));
     for (int v = 0; v < g.height; ++v)
         for (int u = 0; u < g.width; ++u)
@@ -74,9 +85,12 @@ std::vector<std::pair<int, int>> borderPixels(const Geometry &g)
     return pixels;
 }
 
-void pastePlaneLabels(const Geometry &g, const std::vector<int> &planeLabels,
+bool pastePlaneLabels(const Geometry &g, const std::vector<int> &planeLabels,
                       const std::set<int> &runLabels, std::vector<int> &volumeLabels)
 {
+    if (planeLabels.size() != std::size_t(g.width) * std::size_t(g.height) ||
+        volumeLabels.size() != voxelCount(g))
+        return false;
     for (int v = 0; v < g.height; ++v)
         for (int u = 0; u < g.width; ++u)
         {
@@ -87,6 +101,7 @@ void pastePlaneLabels(const Geometry &g, const std::vector<int> &planeLabels,
             else if (runLabels.count(current))
                 current = 0;
         }
+    return true;
 }
 
 } // namespace planar
