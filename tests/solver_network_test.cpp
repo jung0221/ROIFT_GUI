@@ -55,7 +55,8 @@ network:
     R1: 1.500000e+08
 )";
 
-bool near(double a, double b) { return std::fabs(a - b) <= 1e-12 * std::max(1.0, std::fabs(b)); }
+// Not "near": windef.h defines near as an empty macro on MSVC.
+bool approxEqual(double a, double b) { return std::fabs(a - b) <= 1e-12 * std::max(1.0, std::fabs(b)); }
 
 } // namespace
 
@@ -74,8 +75,8 @@ int main(int argc, char **argv)
     const SolverSegment &trunk = net.segments[0];
     check(trunk.index == 1 && trunk.label == "PulmonaryTrunk", "index is the 1-based file position");
     check(trunk.sn == 1 && trunk.tn == 2, "nodes");
-    check(near(trunk.lengthM, 0.0186) && near(trunk.radiusM, 0.00713), "L and R0 in metres");
-    check(near(trunk.youngPa, 4.0e5), "E");
+    check(approxEqual(trunk.lengthM, 0.0186) && approxEqual(trunk.radiusM, 0.00713), "L and R0 in metres");
+    check(approxEqual(trunk.youngPa, 4.0e5), "E");
     check(!trunk.outlet && net.segments[1].outlet, "outlet = has R1");
     check(net.parentOf(0) == -1 && net.parentOf(1) == 0, "parent by node");
     check(net.daughtersOf(0) == std::vector<int>({1, 2}), "daughters by node");
