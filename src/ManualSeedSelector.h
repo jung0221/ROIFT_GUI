@@ -128,6 +128,17 @@ public:
     void refreshAssociatedFilesForCurrentImage(bool forceDetect = false);
     // add multiple NIfTI images to the list (used by CLI startup)
     int addImagesFromPaths(const QStringList &paths);
+    // Read the image a list row selects on a worker thread, so the window keeps
+    // painting and answering while a large volume is read. Off by default: a
+    // programmatic selection then has its image loaded when it returns, which the
+    // command line and the tests rely on. main() switches it on once the window
+    // holds its command-line images.
+    void setBackgroundImageLoading(bool enabled);
+    bool backgroundImageLoading() const { return m_backgroundImageLoading; }
+    // True while a background read is in progress.
+    bool imageLoadPending() const { return m_imageLoad != nullptr; }
+    // Run the event loop until no background read is pending.
+    void waitForImageLoad();
     bool isSegmentationTaskRunning() const { return m_segmentationWorkerActive.load(); }
     bool startSegmentationTask(std::function<void()> task,
                                const QString &initialMessage,
@@ -676,10 +687,29 @@ private:
         NpzImportOptions npzOptions;
     };
 
-    // Load a list entry, honouring its numpy import options when it has any.
-    // Writes back what an automatic axis order resolved to, so masks opened
-    // afterwards can be read exactly the same way.
-    bool loadImageData(ImageData &data);
+    // Read a list entry's image into @p image, honouring its numpy import
+    // options when it has any. Touches nothing of the window, so it may run on
+    // the worker thread. False with @p error set on failure.
+    static bool readImageData(const ImageData &data, NiftiImage &image, NpzImportReport &report, std::string &error);
+    // Load the image of list row @p row: inline, or on the worker when
+    // background loading is on. A row selected while a read is in progress is
+    // picked up when that read completes.
+    void selectImageRow(int row);
+    // Make @p image the one on screen for list row @p row and set every control
+    // up for it. @p numpyReport, when given, pins the axis order an automatic
+    // import resolved to, so masks opened afterwards read the same way.
+    void applyLoadedImage(int row, NiftiImage &&image, const NpzImportReport *numpyReport);
+    void reportImageLoadFailure(const std::string &path, const std::string &reason);
+    // One background read: the entry it was started for and what came back.
+    struct ImageLoadJob;
+    void beginBackgroundImageLoad(int row);
+    void finishBackgroundImageLoad(const std::shared_ptr<ImageLoadJob> &job);
+    // Show "Loading <file>..." in the status bar, or hide it for an empty name.
+    void setImageLoadIndicator(const QString &fileName);
+    bool m_backgroundImageLoading = false;
+    std::shared_ptr<ImageLoadJob> m_imageLoad; // the read in progress, if any
+    std::thread m_imageLoadWorker;
+    QProgressBar *m_imageLoadProgressBar = nullptr;
 
     // Numpy import options for a mask of the current image: the image's own
     // axis order and mirroring, so both land on the same voxel grid.

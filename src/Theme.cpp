@@ -513,7 +513,7 @@ QLabel#statusLabel {
     font-family: 'JetBrains Mono', 'Consolas', 'DejaVu Sans Mono', monospace;
     font-size: @labelpx;
 }
-QProgressBar#progressBar {
+QProgressBar#progressBar, QProgressBar#imageLoadProgressBar {
     background-color: @well;
     border: none;
     border-radius: @capr;
@@ -524,7 +524,7 @@ QProgressBar#progressBar {
     max-height: 18px;
     text-align: center;
 }
-QProgressBar#progressBar::chunk {
+QProgressBar#progressBar::chunk, QProgressBar#imageLoadProgressBar::chunk {
     background-color: @moss;
     border-radius: @capr;
 }

@@ -188,6 +188,11 @@ int main(int argc, char **argv)
                 std::cerr << "Warning: failed to load mask or seeds from " << seedsPath << "\n";
         }
     }
+    // From here on, images chosen in the window are read on a worker thread so
+    // the window stays responsive; the command-line ones above were read inline
+    // so that --mask/--seeds had an image to apply to.
+    w.setBackgroundImageLoading(true);
+
     QScreen *screen = QGuiApplication::primaryScreen();
     if (startFullscreen)
     {
