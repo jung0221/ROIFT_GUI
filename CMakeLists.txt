@@ -3,6 +3,16 @@ cmake_minimum_required(VERSION 3.16)
 # .github/workflows/release.yml bumps the patch here on every merge to main.
 project(roift_gui VERSION 1.1.7 LANGUAGES C CXX)
 
+# A configure that names no build type compiles without optimisation, and every
+# per-voxel loop in the viewer is then several times slower. CI and the release
+# packages pass Release explicitly; this covers a plain local configure. A parent
+# project that sets the type first keeps its choice.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING
+      "Build type: Release, RelWithDebInfo, Debug or MinSizeRel" FORCE)
+  message(STATUS "CMAKE_BUILD_TYPE was not set; defaulting to Release")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
