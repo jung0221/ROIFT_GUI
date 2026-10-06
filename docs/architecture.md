@@ -71,6 +71,7 @@
 
  - `OrthogonalView` (src/OrthogonalView.*)
    - Custom Qt widget that renders a `QImage` slice, supports panning/zoom, mouse events, and accepts an overlay callback for drawing seeds, crosshairs, or mask previews.
+   - `paintEvent()` scales the slice while drawing it, so a paint costs the widget's pixels whatever the zoom; building the zoomed slice first (`QImage::scaled()`) cost 150 MB and several milliseconds per view per frame at 10x on a 704 x 704 slice.
    - Slice updates: `ManualSeedSelector::updateViews(planes)` recomposes only the views named in its `PlaneMask`, and a slice slider asks for its own plane alone (the other two only when a 3D locate marker has to be dropped). The sliders and the brush go through `requestViewUpdate()`, which draws at once when the views have been still for one 16 ms interval and otherwise coalesces into one draw when the interval ends; so a single step is never delayed, and a pointer moving at 1 kHz cannot queue more recompositions than frames. Direct `updateViews()` calls bypass the hold. Before this a drag on a 704 x 704 x 640 volume recomposed all three views (3 ms) per pointer event and reached 20 repaints per second.
 
 - Dialogs
