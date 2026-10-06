@@ -102,6 +102,27 @@ Keep the environment you built in active when you run the build-tree binary. If
 you want something that runs anywhere, build a package instead — the AppImage
 and `.deb` bundle every non-system library. See [packaging.md](packaging.md).
 
+An active conda environment can also make the viewer slow without any error.
+Some conda packages install an activation hook that exports
+`__EGL_VENDOR_LIBRARY_DIRS=$CONDA_PREFIX/share/glvnd/egl_vendor.d`, a vendor list
+that names Mesa only. The system `libEGL` then never loads the NVIDIA driver;
+Mesa has no driver for the card and falls back to `llvmpipe`, so the 3D surface,
+and the window it is composited into, are drawn on the CPU. The symptom is a
+window that lags as soon as a large mask is shown in 3D, and `llvmpipe-N`
+threads in `top -H`.
+
+`roift_gui` therefore removes the variable at startup when every directory it
+lists lies in a conda prefix (a directory holding `conda-meta/`), and reports it
+on stderr (`main: ignoring __EGL_VENDOR_LIBRARY_DIRS=...`). A value that names any
+other directory is kept, so a vendor chosen deliberately still applies. The
+variable is removed for the whole process: helper processes started from the
+window do not inherit it either. A build older than this check needs
+`env -u __EGL_VENDOR_LIBRARY_DIRS ./build/roift_gui` instead.
+
+The renderer actually in use is logged once the 3D view has drawn
+(`Mask3DView: OpenGL renderer: ...`); a software renderer is also named in the
+3D panel's status line.
+
 ## Packaging
 
 ```bash
