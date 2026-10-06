@@ -63,12 +63,14 @@ void OrthogonalView::paintEvent(QPaintEvent *event) {
                                                  m_pixelAspect, size(), m_userZoom, m_pan);
         const int w = std::max(1, static_cast<int>(std::lround(r.dispW)));
         const int h = std::max(1, static_cast<int>(std::lround(r.dispH)));
-        QImage scaled = m_image.scaled(w, h, Qt::IgnoreAspectRatio, Qt::FastTransformation);
-        const float scaleX = float(scaled.width()) / float(m_image.width());
-        const float scaleY = float(scaled.height()) / float(m_image.height());
+        const float scaleX = float(w) / float(m_image.width());
+        const float scaleY = float(h) / float(m_image.height());
         const int x = r.xoff;
         const int y = r.yoff;
-        p.drawImage(QRect(x, y, scaled.width(), scaled.height()), scaled);
+        // Scaled while drawn, nearest neighbour, so only the pixels inside the widget are
+        // touched; QImage::scaled() built the whole zoomed slice per paint (150 MB at 10x
+        // on a 704 x 704 slice), per view, per frame.
+        p.drawImage(QRect(x, y, w, h), m_image);
         p.translate(x, y);
         if (m_overlay) m_overlay(p, scaleX, scaleY);
         p.translate(-x, -y);

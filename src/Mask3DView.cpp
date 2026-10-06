@@ -876,20 +876,28 @@ void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
         m_renderWindow->Render();
 }
 
+// Both are called on every slice change; a render for an unchanged flag would redraw
+// the 3D panel once per slice for nothing.
 void Mask3DView::setMaskVisible(bool visible)
 {
+    const int shown = (visible && !m_activeLabels.empty()) ? 1 : 0;
+    if (visible == m_maskVisible && (!m_actor || m_actor->GetVisibility() == shown))
+        return;
     m_maskVisible = visible;
     if (m_actor)
-        m_actor->SetVisibility(m_maskVisible && !m_activeLabels.empty());
+        m_actor->SetVisibility(shown);
     if (m_renderWindow)
         m_renderWindow->Render();
 }
 
 void Mask3DView::setSeedsVisible(bool visible)
 {
+    const int shown = (visible && !m_seedRenderData.empty()) ? 1 : 0;
+    if (visible == m_seedsVisible && (!m_seedActor || m_seedActor->GetVisibility() == shown))
+        return;
     m_seedsVisible = visible;
     if (m_seedActor)
-        m_seedActor->SetVisibility(m_seedsVisible && !m_seedRenderData.empty());
+        m_seedActor->SetVisibility(shown);
     if (m_renderWindow)
         m_renderWindow->Render();
 }

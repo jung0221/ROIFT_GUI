@@ -123,6 +123,10 @@ namespace
 {
 // Item order of the Scope (Volume first), Plane, Mode and Method combos.
 constexpr int kSliceScope = 1;
+// One 60 Hz frame. Input that arrives faster than this (a pointer at 1 kHz dragging a
+// slider) is drawn once per interval instead of once per event: on a 704 x 704 x 640
+// volume each recomposition took 3 ms and a drag was starving the paint loop.
+constexpr int kViewUpdateIntervalMs = 16;
 constexpr int kAxialPlaneItem = 0;
 constexpr int kSagittalPlaneItem = 1;
 constexpr int kCoronalPlaneItem = 2;
@@ -2341,34 +2345,31 @@ void ManualSeedSelector::setupUi()
 
     m_viewUpdateTimer = new QTimer(this);
     m_viewUpdateTimer->setSingleShot(true);
-    m_viewUpdateTimer->setInterval(33); // ~30 FPS for interactive drawing
+    m_viewUpdateTimer->setInterval(kViewUpdateIntervalMs);
     connect(m_viewUpdateTimer, &QTimer::timeout, this, [this]()
             {
-        if (!m_viewUpdatePending)
+        if (m_pendingPlanes == 0)
             return;
-        m_viewUpdatePending = false;
-        updateViews(); });
+        // Input is still arriving: draw what accumulated and hold for one more interval.
+        m_viewUpdateTimer->start();
+        updateViews(std::exchange(m_pendingPlanes, 0u)); });
 
     // =====================================================
     // SIGNAL CONNECTIONS
     // =====================================================
 
-    // Slice sliders update labels and views; any move drops the 3D locate marker.
-    connect(m_axialSlider, &QSlider::valueChanged, [this]()
-            {
+    // A slice slider recomposes its own view, through the hold timer; the other two
+    // only when they have a 3D locate marker to drop, since any move drops it.
+    const auto onSliceChanged = [this](unsigned plane)
+    {
         updateSliceLabels();
+        const bool hadMarker = m_locatedPoint.valid;
         m_locatedPoint = LocatedPoint{};
-        updateViews(); });
-    connect(m_sagittalSlider, &QSlider::valueChanged, [this]()
-            {
-        updateSliceLabels();
-        m_locatedPoint = LocatedPoint{};
-        updateViews(); });
-    connect(m_coronalSlider, &QSlider::valueChanged, [this]()
-            {
-        updateSliceLabels();
-        m_locatedPoint = LocatedPoint{};
-        updateViews(); });
+        requestViewUpdate(false, hadMarker ? kAllPlanes : plane);
+    };
+    connect(m_axialSlider, &QSlider::valueChanged, this, [onSliceChanged]() { onSliceChanged(kAxialPlane); });
+    connect(m_sagittalSlider, &QSlider::valueChanged, this, [onSliceChanged]() { onSliceChanged(kSagittalPlane); });
+    connect(m_coronalSlider, &QSlider::valueChanged, this, [onSliceChanged]() { onSliceChanged(kCoronalPlane); });
 
     // Window/Level controls
     connect(m_windowSlider, &RangeSlider::rangeChanged, [this](int low, int high)
@@ -4646,20 +4647,23 @@ static QImage makeQImageFromRGB(const std::vector<unsigned char> &rgb, int w, in
     return img;
 }
 
-void ManualSeedSelector::requestViewUpdate(bool immediate)
+void ManualSeedSelector::requestViewUpdate(bool immediate, unsigned planes)
 {
+    m_pendingPlanes |= planes;
     if (immediate || !m_viewUpdateTimer)
     {
-        m_viewUpdatePending = false;
         if (m_viewUpdateTimer && m_viewUpdateTimer->isActive())
             m_viewUpdateTimer->stop();
-        updateViews();
+        updateViews(std::exchange(m_pendingPlanes, 0u));
         return;
     }
-
-    m_viewUpdatePending = true;
-    if (!m_viewUpdateTimer->isActive())
-        m_viewUpdateTimer->start();
+    // Held since the last draw: the timeout draws what accumulated.
+    if (m_viewUpdateTimer->isActive())
+        return;
+    // Still for a whole interval: draw now, so a single step is never delayed, and
+    // hold whatever follows within the next one.
+    m_viewUpdateTimer->start();
+    updateViews(std::exchange(m_pendingPlanes, 0u));
 }
 
 void ManualSeedSelector::drawRulerOverlay(QPainter &p,
@@ -4812,8 +4816,9 @@ void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, floa
     p.restore();
 }
 
-void ManualSeedSelector::updateViews()
+void ManualSeedSelector::updateViews(unsigned planes)
 {
+    m_pendingPlanes &= ~planes;
     unsigned int sizeX = m_image.getSizeX();
     unsigned int sizeY = m_image.getSizeY();
     unsigned int sizeZ = m_image.getSizeZ();
@@ -4908,28 +4913,33 @@ void ManualSeedSelector::updateViews()
     m_sagittalView->setPixelAspect(pixelAspect(spZ, spY));
     m_coronalView->setPixelAspect(pixelAspect(spZ, spX));
 
-    // Axial view
-    auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
-    if (m_enableAxialMask)
-        blendMaskOverlays(axial_rgb, SlicePlane::Axial, z);
-    QImage axial = makeQImageFromRGB(axial_rgb, int(sizeX), int(sizeY));
-    m_axialView->setImage(axial);
+    const int sagX = m_sagittalSlider->value();
+    const int corY = m_coronalSlider->value();
+    const bool composeAxial = (planes & kAxialPlane) != 0;
+    const bool composeSagittal = (planes & kSagittalPlane) != 0;
+    const bool composeCoronal = (planes & kCoronalPlane) != 0;
 
-    // Sagittal view
-    int sagX = m_sagittalSlider->value();
-    auto sagittal_rgb = m_image.getSagittalSliceAsRGB(sagX, lo, hi);
-    if (m_enableSagittalMask)
-        blendMaskOverlays(sagittal_rgb, SlicePlane::Sagittal, sagX);
-    QImage sagittal = makeQImageFromRGB(sagittal_rgb, int(sizeY), int(sizeZ));
-    m_sagittalView->setImage(sagittal);
-
-    // Coronal view
-    int corY = m_coronalSlider->value();
-    auto coronal_rgb = m_image.getCoronalSliceAsRGB(corY, lo, hi);
-    if (m_enableCoronalMask)
-        blendMaskOverlays(coronal_rgb, SlicePlane::Coronal, corY);
-    QImage coronal = makeQImageFromRGB(coronal_rgb, int(sizeX), int(sizeZ));
-    m_coronalView->setImage(coronal);
+    if (composeAxial)
+    {
+        auto axial_rgb = m_image.getAxialSliceAsRGB(z, lo, hi);
+        if (m_enableAxialMask)
+            blendMaskOverlays(axial_rgb, SlicePlane::Axial, z);
+        m_axialView->setImage(makeQImageFromRGB(axial_rgb, int(sizeX), int(sizeY)));
+    }
+    if (composeSagittal)
+    {
+        auto sagittal_rgb = m_image.getSagittalSliceAsRGB(sagX, lo, hi);
+        if (m_enableSagittalMask)
+            blendMaskOverlays(sagittal_rgb, SlicePlane::Sagittal, sagX);
+        m_sagittalView->setImage(makeQImageFromRGB(sagittal_rgb, int(sizeY), int(sizeZ)));
+    }
+    if (composeCoronal)
+    {
+        auto coronal_rgb = m_image.getCoronalSliceAsRGB(corY, lo, hi);
+        if (m_enableCoronalMask)
+            blendMaskOverlays(coronal_rgb, SlicePlane::Coronal, corY);
+        m_coronalView->setImage(makeQImageFromRGB(coronal_rgb, int(sizeX), int(sizeZ)));
+    }
 
     // Seed overlays (visual declutter only; does not modify m_seeds)
     const int minPixelSpacing = std::max(1, m_seedDisplayMinPixelSpacing);
