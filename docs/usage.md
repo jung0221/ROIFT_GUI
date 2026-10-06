@@ -92,6 +92,18 @@
   importer accepts both, along with `path`, `file_path` and `filepath`.
 - `Save` writes the image as NIfTI only. `Save Mask` writes NIfTI, or a PNG label image while
   the image has one slice; see [Mask I/O](#mask-io).
+- **Loading runs in the background.** Selecting a row in `Images` reads the file on a worker
+  thread: a busy bar at the right of the status bar reads `Loading <file>...` until the image
+  is ready, the window keeps painting and answering, and the previous image stays on screen,
+  and usable, until the new one replaces it (the status line then reads `Loaded: <path>`). Selecting another row while one is being read does not start a second read; the
+  row the list points at when the read completes is loaded next. A file that cannot be read
+  leaves the previous image in place and puts `Could not read <file>: <reason>` in the status
+  bar. Closing the window during a read lets the read finish first, since it cannot be
+  interrupted. The images named on the command line are read before the window appears, so
+  `--mask` and `--seeds` have an image to apply to.
+- **Memory.** A volume is held as 32-bit floats whatever the file's sample type, so a
+  512 x 512 x 1000 CT costs about 1 GB; each drawn mask costs the same again
+  (see [Mask layers](#mask-layers)).
 
 ## Raster images (PNG, JPEG, BMP, TIFF)
 - **One file, one slice.** A raster file opens through ITK's readers as a volume with one
