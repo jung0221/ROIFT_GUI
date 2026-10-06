@@ -160,6 +160,8 @@ private:
     void updateLabelControls();
     void updateColorButtonStyle();
     void setStatusText(const QString &text);
+    // Logs the OpenGL renderer after the first frame, and flags a software one.
+    void noteRenderer();
 
     QVTKOpenGLNativeWidget *m_vtkWidget = nullptr;
     QCheckBox *m_visibilityCheck = nullptr;
@@ -167,6 +169,9 @@ private:
     QComboBox *m_labelCombo = nullptr;
     QPushButton *m_colorButton = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QString m_statusText;
+    // Prefixed to every status line while the renderer is a software rasteriser.
+    QString m_rendererWarning;
 
     vtkSmartPointer<vtkRenderer> m_renderer;
     vtkSmartPointer<vtkActor> m_actor;

@@ -63,6 +63,15 @@
     discrete flying edges passes over the whole volume once per label, and a 1153-segment map
     took 25 s against 0.35 s now. `colorForLabel()` cycles its 252 distinct colours past label
     255 instead of clamping, which had painted every higher label one colour.
+  - `main()` switches VTK's SMP backend from the build default, `Sequential`, to `STDThread`
+    when that backend is compiled in and `VTK_SMP_BACKEND_IN_USE` is unset, so flying edges,
+    the windowed-sinc smoother and the cell locator run on every core. On a 704 x 704 x 640
+    label map with five labels (7.6 M triangles) the surface takes 1.13 s instead of 3.78 s on
+    32 threads, with the same points and cells. The build still runs on the GUI thread.
+  - After its first frame the 3D view logs the OpenGL renderer (`Mask3DView: OpenGL
+    renderer: ...`). A software rasteriser (`llvmpipe`, `softpipe`, `swrast`, GDI Generic) is
+    also named at the head of the panel's status line, because nothing else on screen shows
+    that the surface is being drawn on the CPU. See `docs/linux_build.md` for the usual cause.
 
 - `NiftiImage` (src/NiftiImage.*)
   - A small wrapper for reading NIfTI images (ITK-backed when available). Provides helper functions to get axial/sagittal/coronal slices as RGB buffers used by `OrthogonalView`.
