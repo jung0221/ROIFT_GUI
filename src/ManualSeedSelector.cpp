@@ -69,6 +69,7 @@
 #include <QTreeWidget>
 #include <QProgressBar>
 #include <QSignalBlocker>
+#include <QEventLoop>
 #include <QTimer>
 #include <QTime>
 #include <QResizeEvent>
@@ -2685,9 +2686,23 @@ void ManualSeedSelector::setBackgroundImageLoading(bool enabled)
 
 void ManualSeedSelector::waitForImageLoad()
 {
-    // The completion arrives as a posted event, which wakes this up.
+    // A nested event loop quit by the completion, the same pattern the slice-run
+    // tests use. Not processEvents(WaitForMoreEvents): a posted event can fail to
+    // wake that on Windows, and it then blocks for good. The timer re-checks the
+    // flag in case the signal fired before the loop was entered.
     while (m_imageLoad)
-        QCoreApplication::processEvents(QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents);
+    {
+        QEventLoop loop;
+        QTimer poll;
+        poll.setInterval(20);
+        connect(&poll, &QTimer::timeout, &loop, [this, &loop]()
+                {
+            if (!m_imageLoad)
+                loop.quit(); });
+        connect(this, &ManualSeedSelector::imageLoadFinished, &loop, &QEventLoop::quit);
+        poll.start();
+        loop.exec();
+    }
 }
 
 void ManualSeedSelector::setImageLoadIndicator(const QString &fileName)
@@ -2778,6 +2793,7 @@ void ManualSeedSelector::finishBackgroundImageLoad(const std::shared_ptr<ImageLo
         reportImageLoadFailure(job->data.imagePath, job->error);
     else
         applyLoadedImage(row, std::move(job->image), job->data.isNumpy ? &job->report : nullptr);
+    emit imageLoadFinished(row >= 0 && job->ok, path);
 
     // The user may have selected another row meanwhile.
     const int wanted = m_niftiList ? m_niftiList->currentRow() : -1;

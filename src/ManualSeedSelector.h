@@ -179,6 +179,8 @@ public:
 signals:
     // A slice run ended: pasted into the edited mask, refused, failed or discarded.
     void planeSegmentationFinished(bool success, QString message);
+    // A background image read ended; on success the image is on screen by then.
+    void imageLoadFinished(bool success, QString path);
 
 private slots:
     void openImage();
