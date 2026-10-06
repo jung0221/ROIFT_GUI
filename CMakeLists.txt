@@ -264,6 +264,16 @@ if(BUILD_ROIFT_TESTS)
   endif()
   set_tests_properties(plane_mode_gui PROPERTIES ENVIRONMENT "${_plane_mode_gui_env}")
 
+  # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
+  add_executable(nifti_volume_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NpzVolume.cpp
+  )
+  target_include_directories(nifti_volume_test PRIVATE src)
+  target_link_libraries(nifti_volume_test PRIVATE ${ITK_LIBRARIES})
+  add_test(NAME nifti_volume COMMAND nifti_volume_test)
+
   add_executable(npz_import_probe
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/npz_import_probe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp

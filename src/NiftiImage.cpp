@@ -2,7 +2,6 @@
 #include "RasterFormats.h"
 #include <itkImageFileReader.h>
 #include <itkImageSeriesReader.h>
-#include <itkMinimumMaximumImageCalculator.h>
 #include <itkImageFileWriter.h>
 #include <itkNiftiImageIO.h>
 #include <itkGDCMImageIO.h>
@@ -11,15 +10,27 @@
 #include <itkImageDuplicator.h>
 #include <itkVectorImage.h>
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
+#include <limits>
+#include <thread>
 #include <unordered_set>
 #include <cmath>
-#include <zlib.h>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <itkImageIOFactory.h>
 #include <itkImageIOBase.h>
+
+namespace
+{
+std::string firstLine(const char *text);
+
+long long millisecondsSince(const std::chrono::steady_clock::time_point &start)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+}
+} // namespace
 
 NiftiImage::NiftiImage() {}
 NiftiImage::~NiftiImage() {}
@@ -27,17 +38,6 @@ NiftiImage::~NiftiImage() {}
 bool NiftiImage::load(const std::string &path)
 {
     m_lastError.clear();
-    m_spacingX = 1.0;
-    m_spacingY = 1.0;
-    m_spacingZ = 1.0;
-
-    auto has_suffix_ci = [](const std::string &p, const std::string &suf)
-    {
-        if (p.size() < suf.size())
-            return false;
-        return std::equal(suf.rbegin(), suf.rend(), p.rbegin(), p.rend(), [](char a, char b)
-                          { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
-    };
 
     // Numpy containers carry no header, so they go through the importer that
     // recovers geometry. Defaults here; callers wanting control use loadNumpy().
@@ -60,7 +60,8 @@ bool NiftiImage::load(const std::string &path)
                 return false;
             if (m_region.GetSize()[0] == 0 || m_region.GetSize()[1] == 0 || m_region.GetSize()[2] == 0)
             {
-                std::cerr << "NiftiImage::load: DICOM image has zero size for '" << path << "'" << std::endl;
+                m_lastError = "the DICOM series has zero size";
+                std::cerr << "NiftiImage::load: '" << path << "': " << m_lastError << "\n";
                 return false;
             }
             finalizeLoad(path);
@@ -71,139 +72,73 @@ bool NiftiImage::load(const std::string &path)
     if (isRasterPath(path))
         return loadRaster(path);
 
-    // If .nii.gz, decompress to a temporary .nii to avoid any plugin quirks.
-    std::string actualPath = path;
-    std::string tempPath;
-
-    auto cleanupTemp = [&]() {
-        if (!tempPath.empty())
-        {
-            std::error_code ec;
-            std::filesystem::remove(tempPath, ec);
-        }
+    auto refuse = [&](const std::string &reason)
+    {
+        m_lastError = reason;
+        std::cerr << "NiftiImage::load: '" << path << "': " << reason << "\n";
+        return false;
     };
 
-    auto decompressGzip = [&](const std::string &src, const std::string &dst) -> bool
     {
-        gzFile in = gzopen(src.c_str(), "rb");
-        if (!in)
-        {
-            std::cerr << "NiftiImage::load: failed to open gzip source: " << src << "\n";
-            return false;
-        }
-        FILE *out = std::fopen(dst.c_str(), "wb");
-        if (!out)
-        {
-            std::cerr << "NiftiImage::load: failed to open temp output: " << dst << "\n";
-            gzclose(in);
-            return false;
-        }
-        constexpr size_t CHUNK = 1 << 15;
-        std::vector<unsigned char> buf(CHUNK);
-        int readBytes = 0;
-        while ((readBytes = gzread(in, buf.data(), static_cast<unsigned int>(buf.size()))) > 0)
-        {
-            if (std::fwrite(buf.data(), 1, static_cast<size_t>(readBytes), out) != static_cast<size_t>(readBytes))
-            {
-                std::cerr << "NiftiImage::load: write error while decompressing " << src << "\n";
-                gzclose(in);
-                std::fclose(out);
-                return false;
-            }
-        }
-        gzclose(in);
-        std::fclose(out);
-        return true;
-    };
-
-    if (has_suffix_ci(path, ".nii.gz"))
-    {
-        try
-        {
-            auto tmpdir = std::filesystem::temp_directory_path();
-            auto stem = std::filesystem::path(path).stem().string(); // stem of .nii.gz -> .nii
-            tempPath = (tmpdir / (stem + "_decompressed.nii")).string();
-            if (!decompressGzip(path, tempPath))
-            {
-                cleanupTemp();
-                return false;
-            }
-            actualPath = tempPath;
-        }
-        catch (const std::exception &e)
-        {
-            std::cerr << "NiftiImage::load: failed to create temp for gzip: " << e.what() << "\n";
-            cleanupTemp();
-            return false;
-        }
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec))
+            return refuse("the file does not exist");
     }
 
-    // Defensive diagnostics: ensure the file exists before trying to read
-    try
-    {
-        if (!std::filesystem::exists(actualPath))
-        {
-            std::cerr << "NiftiImage::load: file does not exist: " << actualPath << std::endl;
-            return false;
-        }
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "NiftiImage::load: filesystem check error: " << e.what() << "\n";
-    }
-
-    // Read directly into float using NIfTI IO (ITK handles conversion from
-    // integer types, preserving signedness and scl_slope/scl_inter).
+    // ITK's NIfTI reader inflates a .nii.gz itself, so the file is read once and in
+    // place. Writing a decompressed copy to the temp directory first would cost the
+    // volume's size again on disk, or in memory where /tmp is a tmpfs, and a copy
+    // left behind by a failed read would stay there. ITK converts integer samples
+    // to float, preserving signedness, and applies scl_slope and scl_inter.
+    const auto started = std::chrono::steady_clock::now();
+    ImageType::Pointer image;
+    itk::ImageIOBase::IOComponentType component = itk::ImageIOBase::UNKNOWNCOMPONENTTYPE;
     try
     {
         itk::NiftiImageIO::Pointer nio = itk::NiftiImageIO::New();
-        nio->SetFileName(actualPath);
+        if (!nio->CanReadFile(path.c_str()))
+            return refuse("not a NIfTI file (.nii, .nii.gz, .hdr/.img)");
+        nio->SetFileName(path);
         nio->ReadImageInformation();
-        m_component = nio->GetComponentType();
+        component = nio->GetComponentType();
 
         using ReaderType = itk::ImageFileReader<ImageType>;
         ReaderType::Pointer reader = ReaderType::New();
         reader->SetImageIO(nio);
-        reader->SetFileName(actualPath);
+        reader->SetFileName(path);
         reader->Update();
-        m_image = reader->GetOutput();
-        if (!m_image)
-        {
-            std::cerr << "NiftiImage::load: reader produced null output for '" << path << "'" << std::endl;
-            return false;
-        }
-        m_region = m_image->GetLargestPossibleRegion();
-        takeSpacingFromImage();
+        image = reader->GetOutput();
+        if (!image)
+            return refuse("the reader produced no image");
+        image->DisconnectPipeline();
     }
     catch (itk::ExceptionObject &e)
     {
         std::cerr << "NiftiImage::load: ITK exception while reading '" << path << "': " << e << std::endl;
-        return false;
+        return refuse(firstLine(e.GetDescription()));
     }
     catch (const std::exception &e)
     {
-        std::cerr << "NiftiImage::load: std::exception while reading '" << path << "': " << e.what() << std::endl;
-        return false;
+        return refuse(firstLine(e.what()));
     }
     catch (...)
     {
-        std::cerr << "NiftiImage::load: unknown exception while reading '" << path << "'\n";
-        return false;
+        return refuse("unknown error while reading");
     }
 
-    if (m_region.GetSize()[0] == 0 || m_region.GetSize()[1] == 0 || m_region.GetSize()[2] == 0)
-    {
-        std::cerr << "NiftiImage::load: image has zero size in one or more dimensions for '" << path << "' size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ")" << std::endl;
-        return false;
-    }
-    if (m_region.GetSize()[0] == 0 || m_region.GetSize()[1] == 0 || m_region.GetSize()[2] == 0)
-    {
-        std::cerr << "NiftiImage::load: image has zero size in one or more dimensions for '" << path << "' size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ")" << std::endl;
-        return false;
-    }
+    const ImageType::SizeType size = image->GetLargestPossibleRegion().GetSize();
+    if (size[0] == 0 || size[1] == 0 || size[2] == 0)
+        return refuse("the image has zero size (" + std::to_string(size[0]) + " x " + std::to_string(size[1]) + " x " +
+                      std::to_string(size[2]) + ")");
 
+    // Only a successful read replaces what was loaded before, so a failed open
+    // leaves the previous image, and its spacing, intact.
+    m_image = image;
+    m_region = m_image->GetLargestPossibleRegion();
+    m_component = component;
+    takeSpacingFromImage();
+    std::cerr << "NiftiImage::load: read '" << path << "' in " << millisecondsSince(started) << " ms\n";
     finalizeLoad(path);
-    cleanupTemp();
     return true;
 }
 
@@ -1106,16 +1041,68 @@ bool NiftiImage::loadNumpy(const std::string &path, const NpzImportOptions &opti
     return true;
 }
 
+namespace
+{
+
+// Smallest and largest finite value of the buffer. A NaN or an infinity in the
+// volume would otherwise become the window range and blank the display. Split
+// across threads only when the volume is large enough for a thread to pay off.
+void scanFiniteRange(const float *data, std::size_t count, float &minOut, float &maxOut)
+{
+    constexpr std::size_t kVoxelsPerThread = std::size_t(1) << 22;
+    constexpr unsigned kMaxThreads = 8;
+    const unsigned available = std::max(1u, std::thread::hardware_concurrency());
+    const std::size_t byWork = std::max<std::size_t>(1, count / kVoxelsPerThread);
+    const unsigned threads = static_cast<unsigned>(std::min<std::size_t>(std::min(available, kMaxThreads), byWork));
+
+    std::vector<float> mins(threads, std::numeric_limits<float>::infinity());
+    std::vector<float> maxs(threads, -std::numeric_limits<float>::infinity());
+    auto scan = [&](unsigned t)
+    {
+        const std::size_t begin = count * t / threads;
+        const std::size_t end = count * (t + 1) / threads;
+        float lo = std::numeric_limits<float>::infinity();
+        float hi = -std::numeric_limits<float>::infinity();
+        for (std::size_t i = begin; i < end; ++i)
+        {
+            const float v = data[i];
+            if (!std::isfinite(v))
+                continue;
+            lo = (v < lo) ? v : lo;
+            hi = (v > hi) ? v : hi;
+        }
+        mins[t] = lo;
+        maxs[t] = hi;
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(threads);
+    for (unsigned t = 1; t < threads; ++t)
+        workers.emplace_back(scan, t);
+    scan(0);
+    for (std::thread &worker : workers)
+        worker.join();
+
+    minOut = *std::min_element(mins.begin(), mins.end());
+    maxOut = *std::max_element(maxs.begin(), maxs.end());
+    if (!(minOut <= maxOut))
+    {
+        // No finite voxel at all.
+        minOut = 0.0f;
+        maxOut = 1.0f;
+    }
+}
+
+} // namespace
+
 // Shared post-read processing: compute global min/max, classify mask vs. image,
-// and log the result. Used by both the NIfTI and DICOM loading paths.
+// and log the result. Used by every loading path.
 void NiftiImage::finalizeLoad(const std::string &path)
 {
-    using MinMaxCalculatorType = itk::MinimumMaximumImageCalculator<ImageType>;
-    MinMaxCalculatorType::Pointer calc = MinMaxCalculatorType::New();
-    calc->SetImage(m_image);
-    calc->Compute();
-    m_min = static_cast<float>(calc->GetMinimum());
-    m_max = static_cast<float>(calc->GetMaximum());
+    const auto started = std::chrono::steady_clock::now();
+    const float *buffer = m_image->GetBufferPointer();
+    const std::size_t count = m_region.GetNumberOfPixels();
+    scanFiniteRange(buffer, count, m_min, m_max);
     if (m_max == m_min)
         m_max = m_min + 1.0f;
 
@@ -1131,11 +1118,10 @@ void NiftiImage::finalizeLoad(const std::string &path)
     size_t sampled = 0;
     if (isInteger)
     {
-        itk::ImageRegionConstIterator<ImageType> it(m_image, m_region);
-        for (it.GoToBegin(); !it.IsAtEnd() && sampled < sampleLimit; ++it, ++sampled)
+        const std::size_t limit = std::min(count, sampleLimit);
+        for (; sampled < limit; ++sampled)
         {
-            int v = static_cast<int>(std::lrint(it.Value()));
-            uniques.insert(v);
+            uniques.insert(static_cast<int>(std::lrint(buffer[sampled])));
             if (uniques.size() > uniqueLimit)
                 break;
         }
@@ -1161,7 +1147,7 @@ void NiftiImage::finalizeLoad(const std::string &path)
     }
 
     // Log loaded image properties for debugging
-    std::cerr << "NiftiImage::finalizeLoad: '" << path << "' size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ") spacing=(" << m_spacingX << "," << m_spacingY << "," << m_spacingZ << ") min=" << m_min << " max=" << m_max << " comp=" << m_component << " isMask=" << (m_isMask ? "yes" : "no") << " uniq=" << uniques.size() << " sampled=" << sampled << "\n";
+    std::cerr << "NiftiImage::finalizeLoad: '" << path << "' size=(" << m_region.GetSize()[0] << "," << m_region.GetSize()[1] << "," << m_region.GetSize()[2] << ") spacing=(" << m_spacingX << "," << m_spacingY << "," << m_spacingZ << ") min=" << m_min << " max=" << m_max << " comp=" << m_component << " isMask=" << (m_isMask ? "yes" : "no") << " uniq=" << uniques.size() << " sampled=" << sampled << " scan=" << millisecondsSince(started) << " ms\n";
 }
 
 unsigned int NiftiImage::getSizeX() const { return m_region.GetSize()[0]; }
@@ -1206,19 +1192,12 @@ bool NiftiImage::save(const std::string &path) const
 float NiftiImage::getVoxelValue(unsigned int x, unsigned int y, unsigned int z) const
 {
     if (!m_image)
-    {
         return 0.0f;
-    }
-    ImageType::IndexType idx;
-    idx[0] = x;
-    idx[1] = y;
-    idx[2] = z;
-    ImageType::RegionType region = m_image->GetLargestPossibleRegion();
-    if (!region.IsInside(idx))
-    {
+    const ImageType::SizeType size = m_region.GetSize();
+    if (x >= size[0] || y >= size[1] || z >= size[2])
         return 0.0f;
-    }
-    return static_cast<float>(m_image->GetPixel(idx));
+    const std::size_t offset = std::size_t(x) + std::size_t(y) * size[0] + std::size_t(z) * size[0] * size[1];
+    return m_image->GetBufferPointer()[offset];
 }
 
 void NiftiImage::applyThreshold(float threshold, float newValue)
@@ -1252,122 +1231,89 @@ NiftiImage NiftiImage::deepCopy() const
     out.m_spacingX = m_spacingX;
     out.m_spacingY = m_spacingY;
     out.m_spacingZ = m_spacingZ;
+    out.m_isMask = m_isMask;
+    out.m_component = m_component;
     return out;
 }
 
-static void fillRGBFromSlice(const std::vector<PixelType> &slice, std::vector<unsigned char> &out, float lo, float hi, unsigned int w, unsigned int h, bool isMask)
+namespace
 {
-    out.resize(w * h * 3);
+
+// Window one run of `count` voxels, `stride` apart, into grey RGB triples. The
+// arithmetic is the historical one, so a pixel value is what it always was.
+void windowRun(const float *src, std::size_t stride, unsigned int count, float lo, float hi, bool isMask,
+               unsigned char *dst)
+{
     if (isMask)
     {
-        for (unsigned int i = 0; i < w * h; ++i)
+        for (unsigned int i = 0; i < count; ++i, src += stride, dst += 3)
         {
-            float v = slice[i];
-            unsigned char c = (std::abs(v) > 0.5f) ? 255u : 0u; // any non-zero -> 255
-            out[i * 3 + 0] = c;
-            out[i * 3 + 1] = c;
-            out[i * 3 + 2] = c;
+            const unsigned char c = (std::abs(*src) > 0.5f) ? 255u : 0u; // any non-zero -> 255
+            dst[0] = c;
+            dst[1] = c;
+            dst[2] = c;
         }
+        return;
     }
-    else
+    const float denom = (hi - lo != 0.0f) ? (hi - lo) : 1.0f;
+    for (unsigned int i = 0; i < count; ++i, src += stride, dst += 3)
     {
-        const float denom = (hi - lo != 0.0f) ? (hi - lo) : 1.0f;
-        for (unsigned int i = 0; i < w * h; ++i)
-        {
-            float v = slice[i];
-            if (v < lo)
-                v = lo;
-            if (v > hi)
-                v = hi;
-            unsigned char c = static_cast<unsigned char>(255.0f * (v - lo) / denom);
-            out[i * 3 + 0] = c;
-            out[i * 3 + 1] = c;
-            out[i * 3 + 2] = c;
-        }
+        float v = *src;
+        if (v < lo)
+            v = lo;
+        if (v > hi)
+            v = hi;
+        const unsigned char c = static_cast<unsigned char>(255.0f * (v - lo) / denom);
+        dst[0] = c;
+        dst[1] = c;
+        dst[2] = c;
     }
 }
 
+} // namespace
+
+// The three slice getters read the ITK buffer directly: it is contiguous with X
+// fastest, so a slice is `h` runs of `w` voxels at a fixed stride. An index past
+// the volume gives a black slice rather than a read past the buffer, which can
+// happen for one event while the sliders are still ranged for the previous image.
 std::vector<unsigned char> NiftiImage::getAxialSliceAsRGB(unsigned int z, float lo, float hi) const
 {
-    unsigned int w = getSizeX();
-    unsigned int h = getSizeY();
-    std::vector<PixelType> slice(w * h);
-    ImageType::IndexType idx;
-    if (!m_image)
-    {
-        // Defensive: if image pointer is null, return a black image buffer
-        std::fill(slice.begin(), slice.end(), PixelType(0));
-    }
-    else
-    {
-        for (unsigned int y = 0; y < h; ++y)
-        {
-            for (unsigned int x = 0; x < w; ++x)
-            {
-                idx[0] = x;
-                idx[1] = y;
-                idx[2] = z;
-                slice[y * w + x] = m_image->GetPixel(idx);
-            }
-        }
-    }
-    std::vector<unsigned char> out;
-    fillRGBFromSlice(slice, out, lo, hi, w, h, m_isMask);
+    const unsigned int w = getSizeX();
+    const unsigned int h = getSizeY();
+    std::vector<unsigned char> out(std::size_t(w) * std::size_t(h) * 3, 0u);
+    if (!m_image || z >= getSizeZ())
+        return out;
+    const float *base = m_image->GetBufferPointer() + std::size_t(z) * w * h;
+    for (unsigned int y = 0; y < h; ++y)
+        windowRun(base + std::size_t(y) * w, 1, w, lo, hi, m_isMask, out.data() + std::size_t(y) * w * 3);
     return out;
 }
 
 std::vector<unsigned char> NiftiImage::getSagittalSliceAsRGB(unsigned int x, float lo, float hi) const
 {
-    unsigned int w = getSizeY();
-    unsigned int h = getSizeZ();
-    std::vector<PixelType> slice(w * h);
-    ImageType::IndexType idx;
-    if (!m_image)
-    {
-        std::fill(slice.begin(), slice.end(), PixelType(0));
-    }
-    else
-    {
-        for (unsigned int z = 0; z < h; ++z)
-        {
-            for (unsigned int y = 0; y < w; ++y)
-            {
-                idx[0] = x;
-                idx[1] = y;
-                idx[2] = z;
-                slice[z * w + y] = m_image->GetPixel(idx);
-            }
-        }
-    }
-    std::vector<unsigned char> out;
-    fillRGBFromSlice(slice, out, lo, hi, w, h, m_isMask);
+    const unsigned int w = getSizeY();
+    const unsigned int h = getSizeZ();
+    std::vector<unsigned char> out(std::size_t(w) * std::size_t(h) * 3, 0u);
+    if (!m_image || x >= getSizeX())
+        return out;
+    const std::size_t sizeX = getSizeX();
+    const std::size_t plane = sizeX * w;
+    const float *base = m_image->GetBufferPointer() + x;
+    for (unsigned int z = 0; z < h; ++z)
+        windowRun(base + std::size_t(z) * plane, sizeX, w, lo, hi, m_isMask, out.data() + std::size_t(z) * w * 3);
     return out;
 }
 
 std::vector<unsigned char> NiftiImage::getCoronalSliceAsRGB(unsigned int yidx, float lo, float hi) const
 {
-    unsigned int w = getSizeX();
-    unsigned int h = getSizeZ();
-    std::vector<PixelType> slice(w * h);
-    ImageType::IndexType idx;
-    if (!m_image)
-    {
-        std::fill(slice.begin(), slice.end(), PixelType(0));
-    }
-    else
-    {
-        for (unsigned int z = 0; z < h; ++z)
-        {
-            for (unsigned int x = 0; x < w; ++x)
-            {
-                idx[0] = x;
-                idx[1] = yidx;
-                idx[2] = z;
-                slice[z * w + x] = m_image->GetPixel(idx);
-            }
-        }
-    }
-    std::vector<unsigned char> out;
-    fillRGBFromSlice(slice, out, lo, hi, w, h, m_isMask);
+    const unsigned int w = getSizeX();
+    const unsigned int h = getSizeZ();
+    std::vector<unsigned char> out(std::size_t(w) * std::size_t(h) * 3, 0u);
+    if (!m_image || yidx >= getSizeY())
+        return out;
+    const std::size_t plane = std::size_t(w) * getSizeY();
+    const float *base = m_image->GetBufferPointer() + std::size_t(yidx) * w;
+    for (unsigned int z = 0; z < h; ++z)
+        windowRun(base + std::size_t(z) * plane, 1, w, lo, hi, m_isMask, out.data() + std::size_t(z) * w * 3);
     return out;
 }
