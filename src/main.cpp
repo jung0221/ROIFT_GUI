@@ -1,5 +1,7 @@
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QIcon>
 #include <QMessageBox>
 #include <QScreen>
@@ -45,10 +47,39 @@ static void print_help()
             "or from a <name>.json sidecar, otherwise 1 mm isotropic is assumed."));
 }
 
+// A conda environment's activation exports __EGL_VENDOR_LIBRARY_DIRS naming its own
+// vendor list, which holds Mesa only. This binary loads the system libEGL, so on an
+// NVIDIA machine that list leaves Mesa without a driver and it falls back to llvmpipe:
+// the 3D view, and the window it is composited into, are then drawn on the CPU. Only
+// a list made entirely of conda directories is dropped; one set by hand is kept.
+static void ignoreCondaEglVendorDirs()
+{
+#ifdef Q_OS_LINUX
+    const QString dirs = qEnvironmentVariable("__EGL_VENDOR_LIBRARY_DIRS");
+    const QStringList entries = dirs.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+    if (entries.isEmpty())
+        return;
+    for (const QString &entry : entries)
+    {
+        // <prefix>/share/glvnd/egl_vendor.d, where <prefix> holds conda-meta/
+        QDir prefix(entry);
+        if (!prefix.cdUp() || !prefix.cdUp() || !prefix.cdUp() ||
+            !QFileInfo(prefix.filePath(QStringLiteral("conda-meta"))).isDir())
+            return;
+    }
+    qunsetenv("__EGL_VENDOR_LIBRARY_DIRS");
+    std::cerr << "main: ignoring __EGL_VENDOR_LIBRARY_DIRS=" << dirs.toStdString()
+              << " from a conda environment; it hides the system GPU driver from EGL\n";
+#endif
+}
+
 int main(int argc, char **argv)
 {
     // QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     // QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+
+    // Before QApplication: EGL reads its vendor list once, when Qt first opens it.
+    ignoreCondaEglVendorDirs();
 
     // Must precede QApplication: without it Qt on Wayland hands the 3D view an
     // OpenGL ES context, VTK's GLSL 150 shaders fail and the first render segfaults.
