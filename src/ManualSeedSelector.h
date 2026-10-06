@@ -176,6 +176,15 @@ public:
     planar::Plane selectedPlane() const;
     bool planeBorderBackground() const { return m_planeBorderBox ? m_planeBorderBox->isChecked() : true; }
 
+    // Which slice views to recompose. A slider moves one plane; everything else moves all three.
+    enum PlaneMask : unsigned
+    {
+        kAxialPlane = 1u,
+        kSagittalPlane = 2u,
+        kCoronalPlane = 4u,
+        kAllPlanes = kAxialPlane | kSagittalPlane | kCoronalPlane
+    };
+
 signals:
     // A slice run ended: pasted into the edited mask, refused, failed or discarded.
     void planeSegmentationFinished(bool success, QString message);
@@ -200,8 +209,9 @@ private slots:
     void onAxialClicked(int x, int y, Qt::MouseButton b);
     void onSagittalClicked(int x, int y, Qt::MouseButton b);
     void onCoronalClicked(int x, int y, Qt::MouseButton b);
-    void updateViews();
-    void requestViewUpdate(bool immediate = false);
+    void updateViews(unsigned planes = kAllPlanes);
+    // Draws at once when the views have been still for one interval, otherwise when it ends.
+    void requestViewUpdate(bool immediate = false, unsigned planes = kAllPlanes);
 
     // Mask features
     // The two drawing modes share one convention: 0=off, 1=draw, 2=erase.
@@ -597,7 +607,7 @@ private:
     QVBoxLayout *m_maskLabelFilterLayout = nullptr;
     QProgressBar *m_segmentationProgressBar = nullptr;
     QTimer *m_viewUpdateTimer = nullptr;
-    bool m_viewUpdatePending = false;
+    unsigned m_pendingPlanes = 0; // PlaneMask bits waiting for the hold to end
     QCheckBox *m_show3DCheck = nullptr;
     QCheckBox *m_showMaskCheck = nullptr;
     QCheckBox *m_showSeedsCheck = nullptr;
