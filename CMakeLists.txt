@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 # The release line is v1.1.x; v1.0.0/v1.0.1 are the prebuilt-vcpkg bundles.
 # .github/workflows/release.yml bumps the patch here on every merge to main.
-project(roift_gui VERSION 1.1.8 LANGUAGES C CXX)
+project(roift_gui VERSION 1.1.9 LANGUAGES C CXX)
 
 # A configure that names no build type compiles without optimisation, and every
 # per-voxel loop in the viewer is then several times slower. CI and the release
