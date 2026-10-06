@@ -12,6 +12,8 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QColorDialog>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QTimer>
 
 #include <QVTKOpenGLNativeWidget.h>
@@ -44,6 +46,7 @@
 #include <vtkWindowedSincPolyDataFilter.h>
 #include <vtkSmartPointer.h>
 
+#include <iostream>
 #include <set>
 #include <algorithm>
 #include <cmath>
@@ -84,6 +87,10 @@ Mask3DView::Mask3DView(QWidget *parent)
 
     buildPipeline();
     clearMask();
+
+    // A software rasteriser draws a large surface at a fraction of a frame per
+    // second, and nothing else on screen would say why.
+    connect(m_vtkWidget, &QOpenGLWidget::frameSwapped, this, &Mask3DView::noteRenderer, Qt::SingleShotConnection);
 }
 
 void Mask3DView::buildPipeline()
@@ -406,7 +413,7 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
     const double physX = static_cast<double>(sizeX) * m_spacingX;
     const double physY = static_cast<double>(sizeY) * m_spacingY;
     const double physZ = static_cast<double>(sizeZ) * m_spacingZ;
-    setStatusText(QString("Labels visíveis: %1 (GPU) | Voxel(mm): %2 x %3 x %4 | Dim(mm): %5 x %6 x %7")
+    setStatusText(QString("Labels visíveis: %1 | Voxel(mm): %2 x %3 x %4 | Dim(mm): %5 x %6 x %7")
                       .arg(m_activeLabels.size())
                       .arg(m_spacingX, 0, 'f', 3)
                       .arg(m_spacingY, 0, 'f', 3)
@@ -1185,11 +1192,33 @@ void Mask3DView::updateColorButtonStyle()
 
 void Mask3DView::setStatusText(const QString &text)
 {
+    m_statusText = text;
     if (m_statusLabel)
     {
-        m_statusLabel->setText(text);
-        m_statusLabel->setToolTip(text);
+        const QString shown = m_rendererWarning.isEmpty() ? text : m_rendererWarning + " | " + text;
+        m_statusLabel->setText(shown);
+        m_statusLabel->setToolTip(shown);
     }
+}
+
+void Mask3DView::noteRenderer()
+{
+    m_vtkWidget->makeCurrent();
+    QOpenGLContext *context = m_vtkWidget->context();
+    const GLubyte *raw = context ? context->functions()->glGetString(GL_RENDERER) : nullptr;
+    const QString renderer = raw ? QString::fromLatin1(reinterpret_cast<const char *>(raw)) : QString();
+    std::cerr << "Mask3DView: OpenGL renderer: " << (renderer.isEmpty() ? "unknown" : renderer.toStdString()) << "\n";
+
+    static const char *const kSoftware[] = {"llvmpipe", "softpipe", "swrast", "software rasterizer", "gdi generic"};
+    for (const char *name : kSoftware)
+        if (renderer.contains(QLatin1String(name), Qt::CaseInsensitive))
+        {
+            m_rendererWarning = QString("Software OpenGL (%1): the 3D view is drawn on the CPU").arg(renderer);
+            std::cerr << "Mask3DView: " << m_rendererWarning.toStdString()
+                      << "; large surfaces will be slow. Check that the GPU driver is the one EGL/GLX loads.\n";
+            setStatusText(m_statusText);
+            break;
+        }
 }
 
 void Mask3DView::onVisibilityToggled(bool checked)
