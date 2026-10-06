@@ -41,6 +41,12 @@ struct SeedRenderData
     int z = 0;
     int label = 1;
     int seedIndex = -1;
+
+    bool operator==(const SeedRenderData &other) const
+    {
+        return x == other.x && y == other.y && z == other.z && label == other.label && seedIndex == other.seedIndex;
+    }
+    bool operator!=(const SeedRenderData &other) const { return !(*this == other); }
 };
 
 /// A name drawn at a voxel, in the overlay layer: the surface never hides it.
@@ -176,6 +182,8 @@ private:
 
     float m_opacity = 0.4f;
     std::vector<SeedRenderData> m_seedRenderData;
+    // Spacing the seed glyphs were last placed with; a new spacing invalidates them.
+    double m_seedGlyphSpacing[3] = {0.0, 0.0, 0.0};
     std::vector<Annotation3D> m_annotations;
     std::vector<vtkSmartPointer<vtkTextActor>> m_annotationActors;
     // Drawn after the surface with the same camera, so the graph, its highlights
