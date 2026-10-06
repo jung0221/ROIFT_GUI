@@ -69,6 +69,7 @@
 #include <QTreeWidget>
 #include <QProgressBar>
 #include <QSignalBlocker>
+#include <QEventLoop>
 #include <QTimer>
 #include <QTime>
 #include <QResizeEvent>
@@ -144,76 +145,20 @@ QString planeName(planar::Plane plane)
 } // namespace
 
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
-    : QMainWindow(parent), m_path(niftiPath)
+    : QMainWindow(parent)
 {
     setupUi();
     if (!niftiPath.empty())
-    {
-        if (!m_image.load(niftiPath))
-        {
-            std::cerr << "Failed to load " << niftiPath << std::endl;
-        }
-        else
-        {
-            // Add initial image to the list
-            ImageData imgData;
-            imgData.imagePath = niftiPath;
-            imgData.color = getColorForImageIndex(0);
-            m_images.push_back(imgData);
-
-            std::string filename = std::filesystem::path(niftiPath).filename().string();
-            QListWidgetItem *niftiItem = new QListWidgetItem(QString::fromStdString(filename));
-            niftiItem->setData(Qt::UserRole, QFileInfo(QString::fromStdString(niftiPath)).absoluteFilePath());
-            m_niftiList->addItem(niftiItem);
-            renumberNiftiListItems();
-            m_niftiList->setCurrentRow(0);
-            m_currentImageIndex = 0;
-
-            // Clear any previously loaded mask data when a new image is loaded
-            if (!m_maskData.empty())
-            {
-                std::cerr << "ManualSeedSelector: clearing existing mask buffer due to new image load" << std::endl;
-                m_maskData.clear();
-                m_maskDimX = 0;
-                m_maskDimY = 0;
-                m_maskDimZ = 0;
-                m_mask3DDirty = true;
-            }
-            m_maskSpacingX = m_image.getSpacingX();
-            m_maskSpacingY = m_image.getSpacingY();
-            m_maskSpacingZ = m_image.getSpacingZ();
-            // Update slider ranges
-            m_axialSlider->setRange(0, static_cast<int>(m_image.getSizeZ()) - 1);
-            m_axialSlider->setValue(static_cast<int>(m_image.getSizeZ()) / 2);
-
-            m_sagittalSlider->setRange(0, static_cast<int>(m_image.getSizeX()) - 1);
-            m_sagittalSlider->setValue(static_cast<int>(m_image.getSizeX()) / 2);
-
-            m_coronalSlider->setRange(0, static_cast<int>(m_image.getSizeY()) - 1);
-            m_coronalSlider->setValue(static_cast<int>(m_image.getSizeY()) / 2);
-
-            // Window/level setup
-            float gmin = m_image.getGlobalMin();
-            float gmax = m_image.getGlobalMax();
-            configureWindowControls(gmin, gmax,
-                                    m_windowSlider,
-                                    m_windowLevelSpin,
-                                    m_windowWidthSpin,
-                                    &m_windowGlobalMin,
-                                    &m_windowGlobalMax,
-                                    &m_windowLow,
-                                    &m_windowHigh);
-
-            clearRulerMeasurements();
-            applySliceLayout();
-            updateViews();
-        }
-    }
+        addImagesFromPaths({QString::fromStdString(niftiPath)});
 }
 
 ManualSeedSelector::~ManualSeedSelector()
 {
     stopSegmentationWorker(true);
+    // A read cannot be interrupted; its result is dropped with the window's
+    // event queue, but the thread has to be gone before the members it reads.
+    if (m_imageLoadWorker.joinable())
+        m_imageLoadWorker.join();
 }
 
 bool ManualSeedSelector::useLegacyBinaryMode() const
@@ -1800,96 +1745,7 @@ void ManualSeedSelector::setupUi()
     niftiListLayout->addWidget(m_autoDetectAssociationsCheck);
 
     // Connect item selection to load the image
-    connect(m_niftiList, &QListWidget::currentRowChanged, [this](int row)
-            {
-        if (row >= 0 && row < static_cast<int>(m_images.size())) {
-            const Mask3DView::CameraState preservedCamera = (m_mask3DView != nullptr)
-                                                                ? m_mask3DView->captureCameraState()
-                                                                : Mask3DView::CameraState{};
-            // Persist current slice positions before switching images.
-            if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size())) {
-                m_images[m_currentImageIndex].lastAxialSlice = m_axialSlider->value();
-                m_images[m_currentImageIndex].lastSagittalSlice = m_sagittalSlider->value();
-                m_images[m_currentImageIndex].lastCoronalSlice = m_coronalSlider->value();
-            }
-
-            const std::string &path = m_images[row].imagePath;
-            if (loadImageData(m_images[row])) {
-                m_currentImageIndex = row;
-                m_path = path;
-                autoDetectAssociatedFilesForImage(row, false);
-                
-                // Clear mask and seed data when switching images: masks drawn
-                // for the old image sit on a grid the new one does not share.
-                clearMaskLayers();
-                m_unsavedMaskStyle = MaskLayer();
-                m_loadedMaskPath.clear();
-                m_pendingActiveMaskPath.clear();
-                m_maskData.clear();
-                m_maskDimX = 0;
-                m_maskDimY = 0;
-                m_maskDimZ = 0;
-                m_seeds.clear();
-                m_maskSpacingX = m_image.getSpacingX();
-                m_maskSpacingY = m_image.getSpacingY();
-                m_maskSpacingZ = m_image.getSpacingZ();
-                m_mask3DDirty = true;
-                clearRulerMeasurements();
-                m_locatedPoint = LocatedPoint{};
-
-                // Update slider ranges and restore last saved position for this image.
-                const int axialMax = std::max(0, static_cast<int>(m_image.getSizeZ()) - 1);
-                const int sagittalMax = std::max(0, static_cast<int>(m_image.getSizeX()) - 1);
-                const int coronalMax = std::max(0, static_cast<int>(m_image.getSizeY()) - 1);
-
-                m_axialSlider->setRange(0, axialMax);
-                m_sagittalSlider->setRange(0, sagittalMax);
-                m_coronalSlider->setRange(0, coronalMax);
-
-                int axialValue = m_images[row].lastAxialSlice;
-                int sagittalValue = m_images[row].lastSagittalSlice;
-                int coronalValue = m_images[row].lastCoronalSlice;
-
-                if (axialValue < 0)
-                    axialValue = axialMax / 2;
-                if (sagittalValue < 0)
-                    sagittalValue = sagittalMax / 2;
-                if (coronalValue < 0)
-                    coronalValue = coronalMax / 2;
-
-                m_axialSlider->setValue(std::min(std::max(axialValue, 0), axialMax));
-                m_sagittalSlider->setValue(std::min(std::max(sagittalValue, 0), sagittalMax));
-                m_coronalSlider->setValue(std::min(std::max(coronalValue, 0), coronalMax));
-                
-                // Window/level setup
-                float gmin = m_image.getGlobalMin();
-                float gmax = m_image.getGlobalMax();
-                configureWindowControls(gmin, gmax,
-                                        m_windowSlider,
-                                        m_windowLevelSpin,
-                                        m_windowWidthSpin,
-                                        &m_windowGlobalMin,
-                                        &m_windowGlobalMax,
-                                        &m_windowLow,
-                                        &m_windowHigh);
-                
-                // Update mask and seed lists for this image
-                updateMaskSeedLists();
-                applySliceLayout();
-                updateViews();
-                if (m_mask3DView && preservedCamera.valid)
-                    m_mask3DView->restoreCameraState(preservedCamera, true);
-                m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(path)));
-            } else {
-                // Windows GUI builds keep no stderr, so the reason has to reach the window.
-                const QString name = QFileInfo(QString::fromStdString(path)).fileName();
-                const QString reason = QString::fromStdString(m_image.lastError());
-                m_statusLabel->setText(reason.isEmpty()
-                                           ? QString("Could not read %1; see the log for details.").arg(name)
-                                           : QString("Could not read %1: %2").arg(name, reason));
-                applySliceLayout();
-            }
-        } });
+    connect(m_niftiList, &QListWidget::currentRowChanged, this, &ManualSeedSelector::selectImageRow);
 
     sidebarSplitter->addWidget(niftiListGroup);
 
@@ -2460,6 +2316,15 @@ void ManualSeedSelector::setupUi()
     m_segmentationProgressBar->setMinimumWidth(240);
     bottomStatusLayout->addWidget(m_segmentationProgressBar, 0);
 
+    // Busy indicator for a background image read.
+    m_imageLoadProgressBar = new QProgressBar();
+    m_imageLoadProgressBar->setObjectName("imageLoadProgressBar");
+    m_imageLoadProgressBar->setRange(0, 0);
+    m_imageLoadProgressBar->setTextVisible(true);
+    m_imageLoadProgressBar->setVisible(false);
+    m_imageLoadProgressBar->setMinimumWidth(240);
+    bottomStatusLayout->addWidget(m_imageLoadProgressBar, 0);
+
     bottomSectionLayout->addLayout(bottomStatusLayout);
 
     // Main vertical splitter: work area (tools + views + data) above, logs below.
@@ -2780,30 +2645,254 @@ void ManualSeedSelector::setupUi()
 // IMAGE I/O
 // =============================================================================
 
-bool ManualSeedSelector::loadImageData(ImageData &data)
+struct ManualSeedSelector::ImageLoadJob
 {
-    if (!data.isNumpy)
-    {
-        if (!m_image.load(data.imagePath))
-            return false;
-    }
-    else
-    {
-        NpzImportReport report;
-        if (!m_image.loadNumpy(data.imagePath, data.npzOptions, &report))
-            return false;
+    ImageData data; // a copy: the list may change while the file is read
+    NiftiImage image;
+    NpzImportReport report;
+    std::string error;
+    bool ok = false;
+};
 
+bool ManualSeedSelector::readImageData(const ImageData &data, NiftiImage &image, NpzImportReport &report,
+                                       std::string &error)
+{
+    error.clear();
+    bool ok = false;
+    try
+    {
+        ok = data.isNumpy ? image.loadNumpy(data.imagePath, data.npzOptions, &report, &error)
+                          : image.load(data.imagePath);
+    }
+    catch (const std::exception &e)
+    {
+        error = e.what();
+        return false;
+    }
+    catch (...)
+    {
+        error = "unexpected error while reading";
+        return false;
+    }
+    if (!ok && error.empty())
+        error = image.lastError();
+    return ok;
+}
+
+void ManualSeedSelector::setBackgroundImageLoading(bool enabled)
+{
+    m_backgroundImageLoading = enabled;
+}
+
+void ManualSeedSelector::waitForImageLoad()
+{
+    // A nested event loop quit by the completion, the same pattern the slice-run
+    // tests use. Not processEvents(WaitForMoreEvents): a posted event can fail to
+    // wake that on Windows, and it then blocks for good. The timer re-checks the
+    // flag in case the signal fired before the loop was entered.
+    while (m_imageLoad)
+    {
+        QEventLoop loop;
+        QTimer poll;
+        poll.setInterval(20);
+        connect(&poll, &QTimer::timeout, &loop, [this, &loop]()
+                {
+            if (!m_imageLoad)
+                loop.quit(); });
+        connect(this, &ManualSeedSelector::imageLoadFinished, &loop, &QEventLoop::quit);
+        poll.start();
+        loop.exec();
+    }
+}
+
+void ManualSeedSelector::setImageLoadIndicator(const QString &fileName)
+{
+    const bool loading = !fileName.isEmpty();
+    const QString text = loading ? QString("Loading %1...").arg(fileName) : QString();
+    if (m_imageLoadProgressBar)
+    {
+        m_imageLoadProgressBar->setFormat(text);
+        m_imageLoadProgressBar->setVisible(loading);
+    }
+    if (m_statusLabel && loading)
+        m_statusLabel->setText(text);
+    if (loading)
+        setCursor(Qt::BusyCursor);
+    else
+        unsetCursor();
+}
+
+void ManualSeedSelector::selectImageRow(int row)
+{
+    if (row < 0 || row >= static_cast<int>(m_images.size()))
+        return;
+    // A read in progress finishes first; its completion looks at the list's
+    // current row and starts this one if it is still the one wanted.
+    if (m_imageLoad)
+        return;
+
+    // Persist current slice positions before switching images.
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        ImageData &current = m_images[static_cast<size_t>(m_currentImageIndex)];
+        current.lastAxialSlice = m_axialSlider->value();
+        current.lastSagittalSlice = m_sagittalSlider->value();
+        current.lastCoronalSlice = m_coronalSlider->value();
+    }
+
+    if (m_backgroundImageLoading)
+    {
+        beginBackgroundImageLoad(row);
+        return;
+    }
+
+    const ImageData &data = m_images[static_cast<size_t>(row)];
+    NiftiImage image;
+    NpzImportReport report;
+    std::string error;
+    if (readImageData(data, image, report, error))
+        applyLoadedImage(row, std::move(image), data.isNumpy ? &report : nullptr);
+    else
+        reportImageLoadFailure(data.imagePath, error);
+}
+
+void ManualSeedSelector::beginBackgroundImageLoad(int row)
+{
+    auto job = std::make_shared<ImageLoadJob>();
+    job->data = m_images[static_cast<size_t>(row)];
+    m_imageLoad = job;
+    setImageLoadIndicator(QFileInfo(QString::fromStdString(job->data.imagePath)).fileName());
+
+    // The previous worker posted its result before exiting, so this returns at once.
+    if (m_imageLoadWorker.joinable())
+        m_imageLoadWorker.join();
+    m_imageLoadWorker = std::thread([this, job]()
+                                    {
+        job->ok = readImageData(job->data, job->image, job->report, job->error);
+        // Back to the GUI thread. Qt drops the call if the window is gone by then.
+        QMetaObject::invokeMethod(this, [this, job]() { finishBackgroundImageLoad(job); }, Qt::QueuedConnection); });
+}
+
+void ManualSeedSelector::finishBackgroundImageLoad(const std::shared_ptr<ImageLoadJob> &job)
+{
+    if (m_imageLoad != job)
+        return;
+    m_imageLoad.reset();
+    setImageLoadIndicator(QString());
+
+    // The list may have changed while the file was read, so find the entry by path.
+    const QString path = QString::fromStdString(job->data.imagePath);
+    const int row = findImageIndexByPath(path);
+    if (row < 0)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Discarded %1: it was removed from the list while loading.")
+                                       .arg(QFileInfo(path).fileName()));
+    }
+    else if (!job->ok)
+        reportImageLoadFailure(job->data.imagePath, job->error);
+    else
+        applyLoadedImage(row, std::move(job->image), job->data.isNumpy ? &job->report : nullptr);
+    emit imageLoadFinished(row >= 0 && job->ok, path);
+
+    // The user may have selected another row meanwhile.
+    const int wanted = m_niftiList ? m_niftiList->currentRow() : -1;
+    if (wanted >= 0 && wanted != row && wanted < static_cast<int>(m_images.size()))
+        selectImageRow(wanted);
+}
+
+void ManualSeedSelector::reportImageLoadFailure(const std::string &path, const std::string &reason)
+{
+    // Windows GUI builds keep no stderr, so the reason has to reach the window.
+    const QString name = QFileInfo(QString::fromStdString(path)).fileName();
+    const QString why = QString::fromStdString(reason);
+    if (m_statusLabel)
+        m_statusLabel->setText(why.isEmpty() ? QString("Could not read %1; see the log for details.").arg(name)
+                                             : QString("Could not read %1: %2").arg(name, why));
+    applySliceLayout();
+}
+
+void ManualSeedSelector::applyLoadedImage(int row, NiftiImage &&image, const NpzImportReport *numpyReport)
+{
+    ImageData &data = m_images[static_cast<size_t>(row)];
+    if (numpyReport)
+    {
         // Pin down whatever "Automatic" resolved to. Masks loaded next inherit it,
         // and reselecting the image later cannot silently resolve it differently.
-        data.npzOptions.axisOrder = report.axisOrder;
+        data.npzOptions.axisOrder = numpyReport->axisOrder;
         for (int i = 0; i < 3; ++i)
-            data.npzOptions.flip[i] = report.flip[i];
+            data.npzOptions.flip[i] = numpyReport->flip[i];
     }
+    const Mask3DView::CameraState preservedCamera =
+        m_mask3DView ? m_mask3DView->captureCameraState() : Mask3DView::CameraState{};
 
+    m_image = std::move(image);
+    m_currentImageIndex = row;
+    m_path = data.imagePath;
     // The file or its import options may have changed since the last export.
     m_nativeImagePath.clear();
     m_nativeImageSource.clear();
-    return true;
+    autoDetectAssociatedFilesForImage(row, false);
+
+    // Clear mask and seed data when switching images: masks drawn for the old
+    // image sit on a grid the new one does not share.
+    clearMaskLayers();
+    m_unsavedMaskStyle = MaskLayer();
+    m_loadedMaskPath.clear();
+    m_pendingActiveMaskPath.clear();
+    m_maskData.clear();
+    m_maskDimX = 0;
+    m_maskDimY = 0;
+    m_maskDimZ = 0;
+    m_seeds.clear();
+    m_maskSpacingX = m_image.getSpacingX();
+    m_maskSpacingY = m_image.getSpacingY();
+    m_maskSpacingZ = m_image.getSpacingZ();
+    m_mask3DDirty = true;
+    clearRulerMeasurements();
+    m_locatedPoint = LocatedPoint{};
+
+    // Slider ranges, with their signals held: each change would otherwise
+    // recompose all three views, and a value still ranged for the previous
+    // image must not reach the new one. Restore the last position for this image.
+    const int axialMax = std::max(0, static_cast<int>(m_image.getSizeZ()) - 1);
+    const int sagittalMax = std::max(0, static_cast<int>(m_image.getSizeX()) - 1);
+    const int coronalMax = std::max(0, static_cast<int>(m_image.getSizeY()) - 1);
+    {
+        const QSignalBlocker blockAxial(m_axialSlider);
+        const QSignalBlocker blockSagittal(m_sagittalSlider);
+        const QSignalBlocker blockCoronal(m_coronalSlider);
+        m_axialSlider->setRange(0, axialMax);
+        m_sagittalSlider->setRange(0, sagittalMax);
+        m_coronalSlider->setRange(0, coronalMax);
+        const int axialValue = data.lastAxialSlice < 0 ? axialMax / 2 : data.lastAxialSlice;
+        const int sagittalValue = data.lastSagittalSlice < 0 ? sagittalMax / 2 : data.lastSagittalSlice;
+        const int coronalValue = data.lastCoronalSlice < 0 ? coronalMax / 2 : data.lastCoronalSlice;
+        m_axialSlider->setValue(std::clamp(axialValue, 0, axialMax));
+        m_sagittalSlider->setValue(std::clamp(sagittalValue, 0, sagittalMax));
+        m_coronalSlider->setValue(std::clamp(coronalValue, 0, coronalMax));
+    }
+
+    // Window/level setup; the spin boxes would otherwise recompose the views too.
+    m_blockWindowSignals = true;
+    configureWindowControls(m_image.getGlobalMin(), m_image.getGlobalMax(),
+                            m_windowSlider,
+                            m_windowLevelSpin,
+                            m_windowWidthSpin,
+                            &m_windowGlobalMin,
+                            &m_windowGlobalMax,
+                            &m_windowLow,
+                            &m_windowHigh);
+    m_blockWindowSignals = false;
+
+    // Update mask and seed lists for this image, then draw it once.
+    updateMaskSeedLists();
+    applySliceLayout();
+    updateViews();
+    if (m_mask3DView && preservedCamera.valid)
+        m_mask3DView->restoreCameraState(preservedCamera, true);
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(m_path)));
 }
 
 std::string ManualSeedSelector::nativeImagePath()
@@ -6058,46 +6147,47 @@ void ManualSeedSelector::blendMaskOverlays(std::vector<unsigned char> &rgb,
             continue; // cannot be co-registered with what is on screen
 
         LabelColorTable colors(*item.style);
-        const std::vector<int> &data = *item.data;
+        const int *data = item.data->data();
         const size_t maskPlane = size_t(item.dimX) * size_t(item.dimY);
+        const bool filterLabels = item.active;
+
+        // Every row of the slice is one run through the mask, `uStride` voxels
+        // apart; only its start depends on the plane, and the depth mapping is
+        // per row at most (axial: once).
+        const size_t uStride = (plane == SlicePlane::Sagittal) ? size_t(item.dimX) : 1;
+        const size_t axialPlaneOffset =
+            (plane == SlicePlane::Axial)
+                ? size_t(mapDepthIndex(static_cast<unsigned int>(sliceIndex), sizeZ, item.dimZ)) * maskPlane
+                : 0;
+        auto rowStart = [&](unsigned int v) -> size_t
+        {
+            switch (plane)
+            {
+            case SlicePlane::Axial:
+                return axialPlaneOffset + size_t(v) * item.dimX;
+            case SlicePlane::Sagittal:
+                return size_t(sliceIndex) + size_t(mapDepthIndex(v, sizeZ, item.dimZ)) * maskPlane;
+            case SlicePlane::Coronal:
+            default:
+                return size_t(sliceIndex) * item.dimX + size_t(mapDepthIndex(v, sizeZ, item.dimZ)) * maskPlane;
+            }
+        };
 
         for (unsigned int v = 0; v < outH; ++v)
         {
-            for (unsigned int u = 0; u < outW; ++u)
+            const int *row = data + rowStart(v);
+            unsigned char *pix = rgb.data() + size_t(v) * outW * 3;
+            for (unsigned int u = 0; u < outW; ++u, pix += 3)
             {
-                unsigned int x = 0;
-                unsigned int y = 0;
-                unsigned int z = 0;
-                switch (plane)
-                {
-                case SlicePlane::Axial:
-                    x = u;
-                    y = v;
-                    z = static_cast<unsigned int>(sliceIndex);
-                    break;
-                case SlicePlane::Sagittal:
-                    x = static_cast<unsigned int>(sliceIndex);
-                    y = u;
-                    z = v;
-                    break;
-                case SlicePlane::Coronal:
-                    x = u;
-                    y = static_cast<unsigned int>(sliceIndex);
-                    z = v;
-                    break;
-                }
-
-                const unsigned int mappedZ = mapDepthIndex(z, sizeZ, item.dimZ);
-                const int label = data[size_t(x) + size_t(y) * item.dimX + size_t(mappedZ) * maskPlane];
+                const int label = row[size_t(u) * uStride];
                 if (label == 0)
                     continue;
-                if (item.active && !maskLabelVisible(label))
+                if (filterLabels && !maskLabelVisible(label))
                     continue;
 
                 const unsigned char *color = colors.colorFor(label);
-                const size_t pix = (size_t(v) * outW + u) * 3;
                 for (int c = 0; c < 3; ++c)
-                    rgb[pix + c] = static_cast<unsigned char>(opacity * color[c] + inverse * rgb[pix + c]);
+                    pix[c] = static_cast<unsigned char>(opacity * color[c] + inverse * pix[c]);
             }
         }
     }

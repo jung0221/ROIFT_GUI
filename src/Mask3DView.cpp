@@ -813,6 +813,18 @@ void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
     if (!m_seedPolyData || !m_seedActor)
         return;
 
+    // Called on every slice change, so the common case is the same seeds at the
+    // same spacing: rebuilding the glyphs and rendering would cost a frame for
+    // nothing.
+    const bool sameSpacing = (m_seedGlyphSpacing[0] == m_spacingX && m_seedGlyphSpacing[1] == m_spacingY &&
+                              m_seedGlyphSpacing[2] == m_spacingZ);
+    const bool samePoints = (m_seedPolyData->GetNumberOfPoints() == static_cast<vtkIdType>(seeds.size()));
+    if (sameSpacing && samePoints && seeds == m_seedRenderData)
+        return;
+    m_seedGlyphSpacing[0] = m_spacingX;
+    m_seedGlyphSpacing[1] = m_spacingY;
+    m_seedGlyphSpacing[2] = m_spacingZ;
+
     m_seedRenderData = seeds;
     const bool hadVisibleSeeds = (m_seedPolyData && m_seedPolyData->GetNumberOfPoints() > 0);
 

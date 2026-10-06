@@ -120,12 +120,13 @@ bool readMaskVolume(const std::string &path,
             out.spacingX = volume.getSpacingX();
             out.spacingY = volume.getSpacingY();
             out.spacingZ = volume.getSpacingZ();
-            out.data.resize(out.voxelCount());
-            std::size_t writeIdx = 0;
-            for (unsigned int z = 0; z < out.dimZ; ++z)
-                for (unsigned int y = 0; y < out.dimY; ++y)
-                    for (unsigned int x = 0; x < out.dimX; ++x)
-                        out.data[writeIdx++] = static_cast<int>(std::lround(volume.getVoxelValue(x, y, z)));
+            // Both buffers are X fastest, so this is one pass, not a bounds-checked
+            // lookup per voxel.
+            const float *src = volume.buffer();
+            const std::size_t count = out.voxelCount();
+            out.data.resize(count);
+            for (std::size_t i = 0; i < count; ++i)
+                out.data[i] = static_cast<int>(std::lround(src[i]));
         }
         else
         {

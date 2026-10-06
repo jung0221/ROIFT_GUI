@@ -3,6 +3,16 @@ cmake_minimum_required(VERSION 3.16)
 # .github/workflows/release.yml bumps the patch here on every merge to main.
 project(roift_gui VERSION 1.1.7 LANGUAGES C CXX)
 
+# A configure that names no build type compiles without optimisation, and every
+# per-voxel loop in the viewer is then several times slower. CI and the release
+# packages pass Release explicitly; this covers a plain local configure. A parent
+# project that sets the type first keeps its choice.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING
+      "Build type: Release, RelWithDebInfo, Debug or MinSizeRel" FORCE)
+  message(STATUS "CMAKE_BUILD_TYPE was not set; defaulting to Release")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -264,6 +274,22 @@ if(BUILD_ROIFT_TESTS)
   endif()
   set_tests_properties(plane_mode_gui PROPERTIES ENVIRONMENT "${_plane_mode_gui_env}")
 
+  # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
+  add_executable(nifti_volume_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/NpzVolume.cpp
+  )
+  target_include_directories(nifti_volume_test PRIVATE src)
+  target_link_libraries(nifti_volume_test PRIVATE ${ITK_LIBRARIES})
+  add_test(NAME nifti_volume COMMAND nifti_volume_test)
+
+  # Image loading in the window: inline by default, on a worker thread when enabled.
+  add_executable(image_load_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/image_load_gui_test.cpp)
+  target_link_libraries(image_load_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME image_load_gui COMMAND image_load_gui_test)
+  set_tests_properties(image_load_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
   add_executable(npz_import_probe
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/npz_import_probe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp
@@ -302,14 +328,14 @@ if(BUILD_ROIFT_TESTS)
     message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
   endif()
 
-  # wheel_guard, mask_overlay and plane_mode_gui run with QT_QPA_PLATFORM=offscreen.
+  # wheel_guard, mask_overlay, plane_mode_gui and image_load_gui run with QT_QPA_PLATFORM=offscreen.
   # Qt aborts at startup if the requested platform plugin is absent, and windeployqt
   # stages only the native one — so on Windows the offscreen plugin has to be
   # put beside the test binaries. Without it the tests do not fail, they hang:
   # the aborting process sits on a Windows error dialog until CI's job limit
   # kills the whole run.
   if(WIN32 AND TARGET Qt6::QOffscreenIntegrationPlugin)
-    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test plane_mode_gui_test)
+    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test plane_mode_gui_test image_load_gui_test)
       add_custom_command(TARGET ${_offscreen_consumer} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
           "$<TARGET_FILE_DIR:${_offscreen_consumer}>/platforms"
