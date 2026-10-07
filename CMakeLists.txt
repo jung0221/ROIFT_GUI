@@ -290,6 +290,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME image_load_gui COMMAND image_load_gui_test)
   set_tests_properties(image_load_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+  # Building the window must not show any widget as a window of its own.
+  add_executable(startup_window_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_window_test.cpp)
+  target_link_libraries(startup_window_test PRIVATE roift_gui_test_objects)
+  add_test(NAME startup_window COMMAND startup_window_test)
+  set_tests_properties(startup_window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
   add_executable(npz_import_probe
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/npz_import_probe.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/NiftiImage.cpp
