@@ -59,14 +59,17 @@ extra setup. `ROIFT_EXECUTABLE` overrides the search with an explicit path.
 ctest --test-dir build --output-on-failure
 ```
 
-The fourteen tests are `ui_paths`, `solver_network`, `planar_slice`,
+The fifteen tests are `ui_paths`, `solver_network`, `planar_slice`,
 `plane_segmentation`, `raster_image`, `nifti_volume`, `wheel_guard`,
-`mask_overlay`, `plane_mode_gui`, `image_load_gui`, `npz_import`,
-`oiftrelax_nifti_gz`, `oiftrelax_one_slice` and `oiftrelax_header_2d`.
+`mask_overlay`, `plane_mode_gui`, `image_load_gui`, `startup_window`,
+`npz_import`, `oiftrelax_nifti_gz`, `oiftrelax_one_slice` and
+`oiftrelax_header_2d`.
 `nifti_volume` reads NIfTI volumes through `NiftiImage`: a `.nii.gz` in place
 with no decompressed copy left behind, the slice getters, a failed read, and a
 volume with NaN. `image_load_gui` drives the window's image loading, inline and
-on the worker thread. `solver_network` pins the YAML reader and the
+on the worker thread. `startup_window` fails if building the window shows any
+widget as a window of its own: on GNOME each such window leaves a busy cursor
+for 15 s. `solver_network` pins the YAML reader and the
 voxel-to-segment lookup; `mask_overlay` also loads a network into the real window. `oiftrelax_nifti_gz` segments a gzipped NIfTI phantom with the
 built `oiftrelax`; see [packaging.md](packaging.md#regression-test).
 `oiftrelax_one_slice` and `oiftrelax_header_2d` segment a disc in a one-slice volume and in a 2D NIfTI header, at the default stride and blur, and require a Dice coefficient of at least 0.9.
@@ -80,8 +83,8 @@ skips that part and says so).
 `plane_segmentation` and the three `oiftrelax_*` tests are registered only when
 the `oiftrelax` target exists; `npz_import` and the `oiftrelax_*` tests also
 need a Python interpreter.
-No display is needed: the four that build widgets (`wheel_guard`,
-`mask_overlay`, `plane_mode_gui` and `image_load_gui`) run with `QT_QPA_PLATFORM=offscreen`,
+No display is needed: the five that build widgets (`wheel_guard`,
+`mask_overlay`, `plane_mode_gui`, `image_load_gui` and `startup_window`) run with `QT_QPA_PLATFORM=offscreen`,
 which CTest sets for them, so there is no `xvfb-run` in the loop. `npz_import`
 reports as skipped unless numpy and SimpleITK are importable.
 

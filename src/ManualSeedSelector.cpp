@@ -1146,9 +1146,12 @@ void ManualSeedSelector::setupUi()
                     }
                 }
             });
-    updateMethodParamRows(); // set initial visibility
 
     paramsColumns->addLayout(rightGrid, 1);
+    // Only once the grid has a parent: setVisible(true) on a parentless widget
+    // opens it as a window, and on GNOME each window's unused activation token
+    // holds a busy cursor for 15 s.
+    updateMethodParamRows();
 
     segSecLayout->addWidget(paramsGroup);
 
