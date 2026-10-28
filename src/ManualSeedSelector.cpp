@@ -775,6 +775,7 @@ void ManualSeedSelector::setupUi()
     connect(btnSeedClear, &QPushButton::clicked, [this]()
             {
         m_seeds.clear();
+        m_seedSliceIndex.invalidate();
         m_seedSourcePath.clear();
         updateViews(); });
     seedFileLayout->addWidget(btnSeedClear);
@@ -2598,6 +2599,7 @@ void ManualSeedSelector::setupUi()
                 kept.push_back(m_seeds[i]);
         }
         m_seeds.swap(kept);
+        m_seedSliceIndex.invalidate();
         updateViews(); });
 
     // Shift+click on the 3D surface drives all three slice views to that voxel.
@@ -3785,6 +3787,7 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
     in.close();
 
     m_seeds.clear();
+    m_seedSliceIndex.invalidate();
     m_seedSourcePath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath()).toStdString();
     int sx = static_cast<int>(m_image.getSizeX());
     int sy = static_cast<int>(m_image.getSizeY());
@@ -4237,27 +4240,26 @@ const Seed *ManualSeedSelector::findSeedNearCursor(int x, int y, int z, SlicePla
     const int maxDistSquared = maxDistance * maxDistance;
     const Seed *nearest = nullptr;
     int nearestDistSquared = std::numeric_limits<int>::max();
-    for (const Seed &seed : m_seeds)
+    const int slice = (plane == SlicePlane::Sagittal) ? x : (plane == SlicePlane::Coronal) ? y : z;
+    for (const std::uint32_t i : seedsOnSlice(plane, slice))
     {
+        const Seed &seed = m_seeds[i];
+        // A seed the filter hides is not reported under the pointer either.
+        if (!seedPassesTypeFilter(seed))
+            continue;
         int d0 = 0;
         int d1 = 0;
         switch (plane)
         {
         case SlicePlane::Axial:
-            if (seed.z != z)
-                continue;
             d0 = seed.x - x;
             d1 = seed.y - y;
             break;
         case SlicePlane::Sagittal:
-            if (seed.x != x)
-                continue;
             d0 = seed.y - y;
             d1 = seed.z - z;
             break;
         case SlicePlane::Coronal:
-            if (seed.y != y)
-                continue;
             d0 = seed.x - x;
             d1 = seed.z - z;
             break;
@@ -4274,6 +4276,21 @@ const Seed *ManualSeedSelector::findSeedNearCursor(int x, int y, int z, SlicePla
     }
 
     return nearest;
+}
+
+const std::vector<std::uint32_t> &ManualSeedSelector::seedsOnSlice(SlicePlane plane, int slice) const
+{
+    m_seedSliceIndex.sync(m_seeds);
+    switch (plane)
+    {
+    case SlicePlane::Sagittal:
+        return m_seedSliceIndex.onSlice(SeedSliceIndex::AxisX, slice);
+    case SlicePlane::Coronal:
+        return m_seedSliceIndex.onSlice(SeedSliceIndex::AxisY, slice);
+    case SlicePlane::Axial:
+    default:
+        return m_seedSliceIndex.onSlice(SeedSliceIndex::AxisZ, slice);
+    }
 }
 
 void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z)
@@ -4547,6 +4564,7 @@ void ManualSeedSelector::eraseNear(int x, int y, int z, int r)
             keep.push_back(s);
     }
     m_seeds.swap(keep);
+    m_seedSliceIndex.invalidate();
     requestViewUpdate(false);
 }
 
@@ -4782,6 +4800,7 @@ bool ManualSeedSelector::dropSeedsFromFile(const QString &absolutePath)
     m_seeds.erase(std::remove_if(m_seeds.begin(), m_seeds.end(), [](const Seed &s)
                                  { return s.fromFile; }),
                   m_seeds.end());
+    m_seedSliceIndex.invalidate();
     m_seedSourcePath.clear();
     return true;
 }
@@ -4865,22 +4884,7 @@ void ManualSeedSelector::updateViews(unsigned planes)
     }
     else if (render3D)
     {
-        std::vector<SeedRenderData> seedRenderData;
-        seedRenderData.reserve(m_seeds.size());
-        for (size_t i = 0; i < m_seeds.size(); ++i)
-        {
-            const Seed &s = m_seeds[i];
-            if (!seedPassesTypeFilter(s))
-                continue;
-            SeedRenderData d;
-            d.x = s.x;
-            d.y = s.y;
-            d.z = s.z;
-            d.label = s.label;
-            d.seedIndex = static_cast<int>(i);
-            seedRenderData.push_back(d);
-        }
-        m_mask3DView->setSeedData(seedRenderData);
+        update3DSeedData();
     }
 
     if (sizeX == 0 || sizeY == 0 || sizeZ == 0)
@@ -4980,14 +4984,14 @@ void ManualSeedSelector::updateViews(unsigned planes)
                                 {
         if (m_enableAxialSeeds)
         {
+            const std::vector<std::uint32_t> &onSlice = seedsOnSlice(SlicePlane::Axial, z);
             std::unordered_set<std::uint64_t> occupiedCells;
             if (minPixelSpacing > 1)
-                occupiedCells.reserve(m_seeds.size());
+                occupiedCells.reserve(onSlice.size());
             const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
-            for (const auto &s : m_seeds)
+            for (const std::uint32_t i : onSlice)
             {
-                if (s.z != z)
-                    continue;
+                const Seed &s = m_seeds[i];
                 if (!seedPassesTypeFilter(s))
                     continue;
                 const int px = static_cast<int>(std::lround(s.x * scaleX));
@@ -5013,14 +5017,14 @@ void ManualSeedSelector::updateViews(unsigned planes)
                                    {
         if (m_enableSagittalSeeds)
         {
+            const std::vector<std::uint32_t> &onSlice = seedsOnSlice(SlicePlane::Sagittal, sagX);
             std::unordered_set<std::uint64_t> occupiedCells;
             if (minPixelSpacing > 1)
-                occupiedCells.reserve(m_seeds.size());
+                occupiedCells.reserve(onSlice.size());
             const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
-            for (const auto &s : m_seeds)
+            for (const std::uint32_t i : onSlice)
             {
-                if (s.x != sagX)
-                    continue;
+                const Seed &s = m_seeds[i];
                 if (!seedPassesTypeFilter(s))
                     continue;
                 const int px = static_cast<int>(std::lround(s.y * scaleX));
@@ -5046,14 +5050,14 @@ void ManualSeedSelector::updateViews(unsigned planes)
                                   {
         if (m_enableCoronalSeeds)
         {
+            const std::vector<std::uint32_t> &onSlice = seedsOnSlice(SlicePlane::Coronal, corY);
             std::unordered_set<std::uint64_t> occupiedCells;
             if (minPixelSpacing > 1)
-                occupiedCells.reserve(m_seeds.size());
+                occupiedCells.reserve(onSlice.size());
             const int markerRadius = (minPixelSpacing >= 5) ? 1 : 2;
-            for (const auto &s : m_seeds)
+            for (const std::uint32_t i : onSlice)
             {
-                if (s.y != corY)
-                    continue;
+                const Seed &s = m_seeds[i];
                 if (!seedPassesTypeFilter(s))
                     continue;
                 const int px = static_cast<int>(std::lround(s.x * scaleX));
@@ -5719,6 +5723,7 @@ void ManualSeedSelector::clearImageOverlays()
     m_maskDimY = 0;
     m_maskDimZ = 0;
     m_seeds.clear();
+    m_seedSliceIndex.invalidate();
     m_seedSourcePath.clear();
     m_mask3DDirty = true;
     clearRulerMeasurements();
@@ -6385,6 +6390,18 @@ void ManualSeedSelector::update3DMaskView()
         }
     }
 
+    update3DSeedData();
+}
+
+// Runs on every slice step; rebuilding and comparing a million-seed list there cost the step
+// the whole list even with the filter showing a fraction of it.
+void ManualSeedSelector::update3DSeedData()
+{
+    if (!m_mask3DView)
+        return;
+    m_seedSliceIndex.sync(m_seeds);
+    if (m_3DSeedRevision == m_seedSliceIndex.revision() && m_3DSeedFilter == m_seedTypeFilter)
+        return;
     std::vector<SeedRenderData> seedRenderData;
     seedRenderData.reserve(m_seeds.size());
     for (size_t i = 0; i < m_seeds.size(); ++i)
@@ -6401,6 +6418,8 @@ void ManualSeedSelector::update3DMaskView()
         seedRenderData.push_back(d);
     }
     m_mask3DView->setSeedData(seedRenderData);
+    m_3DSeedRevision = m_seedSliceIndex.revision();
+    m_3DSeedFilter = m_seedTypeFilter;
 }
 
 // =============================================================================

@@ -27,6 +27,9 @@
  - `SeedFiles` (src/SeedFiles.*)
    - The seed-file writers shared by volume and slice runs: `writeMultilabelSeedFile()`, `writeLegacySeedFile()`, and `dedupeSeedsKeepingLatest()`, which keeps the last seed placed on a voxel.
 
+ - `SeedSliceIndex` (src/SeedSliceIndex.*)
+   - `m_seeds` bucketed by x, y and z, as indices in list order, so the slice overlays and `findSeedNearCursor()` visit the seeds on one slice (`ManualSeedSelector::seedsOnSlice()`). `sync()` adds appended seeds, which is all a hand-drawn seed needs; every other edit of `m_seeds` calls `invalidate()`, and the next access rebuilds it in two passes (14 ms for 1.2M seeds in a Debug build). A list shorter than the one indexed is rebuilt without `invalidate()`, so a missed call cannot index past its end. `revision()` lets `update3DSeedData()` skip the 3D seed list while the seeds and the seed-type filter are unchanged. On RIDER_1225 with its 1.2M-seed heart file under `Internal only`, a repaint of the three views fell from 18.9 ms to 0.4 ms and a hover from 5.2 ms to 0.02 ms (Debug, offscreen); every paint and pointer move had scanned the whole list. Pinned by the `seed_slice_index` test.
+
  - `PlanarSlice` (src/PlanarSlice.*)
    - Plane geometry free of widgets, oriented as the slice views draw it (axial `z = k` is `(x, y)`, sagittal `x = k` is `(y, z)`, coronal `y = k` is `(x, z)`): `makeGeometry()`, `toPlane()` for a voxel, `extractPlane()` for the pixels, `borderPixels()` for the four edges, and `pastePlaneLabels()`, the paste policy (a positive result wins; elsewhere only the labels seeded in the run are cleared). Pinned by the `planar_slice` test.
 
