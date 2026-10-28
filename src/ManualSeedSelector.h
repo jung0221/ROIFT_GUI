@@ -25,6 +25,7 @@
 #include "PlanarSlice.h"
 #include "RangeSlider.h"
 #include "Seed.h"
+#include "SeedSliceIndex.h"
 #include "SolverNetwork.h"
 
 class QDoubleSpinBox;
@@ -448,6 +449,8 @@ private:
     bool maskHasHiddenLabels() const;
     QString formatRulerDistance(double millimeters) const;
     const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
+    // Indices into m_seeds of the seeds on one slice of a plane, in list order.
+    const std::vector<std::uint32_t> &seedsOnSlice(SlicePlane plane, int slice) const;
     void updateHoverStatus(SlicePlane plane, int x, int y, int z);
     void showSeedNoteTip(SlicePlane plane, const std::string &note);
     void addSeed(int x, int y, int z);
@@ -543,6 +546,8 @@ private:
     QPushButton *m_solverUnloadButton = nullptr;
     QAction *m_actUnloadSolver = nullptr;
     void update3DMaskView();
+    // Hands the seeds the filter shows to the 3D view, unless they and the filter are unchanged.
+    void update3DSeedData();
 
     void updateLabelColor(int label);
     void clampWindowToCurrentScreen();
@@ -550,6 +555,8 @@ private:
     NiftiImage m_image;
     std::string m_path;
     std::vector<Seed> m_seeds;
+    // m_seeds by slice. Appends are picked up on access; any other edit of m_seeds must invalidate it.
+    mutable SeedSliceIndex m_seedSliceIndex;
     // Clean absolute path of the file m_seeds was last read from; empty once cleared.
     std::string m_seedSourcePath;
 
@@ -601,6 +608,9 @@ private:
     int m_seedBrushRadius = 5;
     int m_seedDisplayMinPixelSpacing = 4;
     SeedTypeFilter m_seedTypeFilter = SeedTypeFilter::All;
+    // Index revision and filter the 3D view's seeds were last built from; revision 0 is never.
+    std::uint64_t m_3DSeedRevision = 0;
+    SeedTypeFilter m_3DSeedFilter = SeedTypeFilter::All;
 
     // Tabbed UI: inline controls instead of dialogs
     QPushButton *m_btnSeedDraw = nullptr;

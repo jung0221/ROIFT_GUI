@@ -24,7 +24,7 @@ class vtkTextActor;
 class vtkCellPicker;
 class vtkDiscreteFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
-class vtkGlyph3DMapper;
+class vtkPointGaussianMapper;
 class vtkLookupTable;
 class vtkPolyData;
 class vtkPolyDataMapper;
@@ -180,7 +180,7 @@ private:
     vtkSmartPointer<vtkRenderer> m_renderer;
     vtkSmartPointer<vtkActor> m_actor;
     vtkSmartPointer<vtkActor> m_seedActor;
-    vtkSmartPointer<vtkGlyph3DMapper> m_seedMapper;
+    vtkSmartPointer<vtkPointGaussianMapper> m_seedMapper;
     vtkSmartPointer<vtkPolyData> m_seedPolyData;
     vtkSmartPointer<vtkPolyDataMapper> m_mapper;
     vtkSmartPointer<vtkDiscreteFlyingEdges3D> m_flyingEdges;

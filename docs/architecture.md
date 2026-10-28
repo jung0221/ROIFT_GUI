@@ -27,6 +27,9 @@
  - `SeedFiles` (src/SeedFiles.*)
    - The seed-file writers shared by volume and slice runs: `writeMultilabelSeedFile()`, `writeLegacySeedFile()`, and `dedupeSeedsKeepingLatest()`, which keeps the last seed placed on a voxel.
 
+ - `SeedSliceIndex` (src/SeedSliceIndex.*)
+   - `m_seeds` bucketed by x, y and z, as indices in list order, so the slice overlays and `findSeedNearCursor()` visit the seeds on one slice (`ManualSeedSelector::seedsOnSlice()`). `sync()` adds appended seeds, which is all a hand-drawn seed needs; every other edit of `m_seeds` calls `invalidate()`, and the next access rebuilds it in two passes (14 ms for 1.2M seeds in a Debug build). A list shorter than the one indexed is rebuilt without `invalidate()`, so a missed call cannot index past its end. `revision()` lets `update3DSeedData()` skip the 3D seed list while the seeds and the seed-type filter are unchanged. On RIDER_1225 with its 1.2M-seed heart file under `Internal only`, a repaint of the three views fell from 18.9 ms to 0.4 ms and a hover from 5.2 ms to 0.02 ms (Debug, offscreen); every paint and pointer move had scanned the whole list. Pinned by the `seed_slice_index` test.
+
  - `PlanarSlice` (src/PlanarSlice.*)
    - Plane geometry free of widgets, oriented as the slice views draw it (axial `z = k` is `(x, y)`, sagittal `x = k` is `(y, z)`, coronal `y = k` is `(x, z)`): `makeGeometry()`, `toPlane()` for a voxel, `extractPlane()` for the pixels, `borderPixels()` for the four edges, and `pastePlaneLabels()`, the paste policy (a positive result wins; elsewhere only the labels seeded in the run are cleared). Pinned by the `planar_slice` test.
 
@@ -63,6 +66,12 @@
     discrete flying edges passes over the whole volume once per label, and a 1153-segment map
     took 25 s against 0.35 s now. `colorForLabel()` cycles its 252 distinct colours past label
     255 instead of clamping, which had painted every higher label one colour.
+  - Seeds are drawn by a `vtkPointGaussianMapper` as flat discs 1.6 mm in radius facing the
+    camera, one triangle each, with `EmissiveOff()` so the surface hides the seeds behind it.
+    They are unlit, so the sphere glyphs they replace (`vtkGlyph3DMapper`, 160 triangles a
+    seed) looked the same. On RIDER_1225's 1.2M-seed heart file, headless on an RTX 5080, a
+    frame while orbiting fell from 29 ms to 2.7 ms and the first frame after a seed change from
+    141 ms to 18 ms; 0.4 to 0.9% of pixels differ, at the seed edges.
   - `main()` switches VTK's SMP backend from the build default, `Sequential`, to `STDThread`
     when that backend is compiled in and `VTK_SMP_BACKEND_IN_USE` is unset, so flying edges,
     the windowed-sinc smoother and the cell locator run on every core. On a 704 x 704 x 640

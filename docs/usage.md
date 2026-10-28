@@ -221,6 +221,19 @@
   it and only the seeds up to that line take part, without an error. Do not pass a noted file
   to `oiftrelax` directly; the GUI's own runs write a fresh seed file without notes.
 
+## Seed-type filter
+- The `All seeds`, `Internal only` and `External only` menu beside each `Show Seeds` chooses
+  which seeds the slice views and the 3D view draw. The menus are one setting. A seed is
+  internal when column 5 of its line is not 0.
+- A hidden seed is not reported on hover either: the status bar and the note tooltip skip it.
+- Hidden seeds cost nothing per frame. A slice view and the hover readout visit only the seeds
+  on their own slice, and the 3D seed list is rebuilt only when the seeds or the filter change,
+  so with a million external seeds loaded `Internal only` repaints as fast as a file holding
+  the internal seeds alone. Loading the file and erasing still cost the whole list.
+- The 3D view draws each seed as a flat disc 1.6 mm in radius facing the camera.
+- The seed eraser on the slices removes hidden seeds inside its radius as well. The 3D
+  rectangle erase removes only the seeds the 3D view draws.
+
 ## NIfTI Auto-Detection Toggle
 - In the `Images` panel, use `Auto-detect masks/seeds` to enable or disable automatic scanning of the image folder for:
 - mask files (`.nii`, `.nii.gz`, `.npz`, `.npy`; never raster files) associated with the current image
