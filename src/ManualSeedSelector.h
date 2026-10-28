@@ -407,6 +407,11 @@ private:
     // Forget a mask entirely, freeing whatever voxels it held.
     void dropMaskLayer(const QString &absolutePath);
     void clearMaskLayers();
+    // Forget what was drawn on the current image: mask layers, the editable
+    // buffer, seeds, rulers. Mask spacing is left to the caller.
+    void clearImageOverlays();
+    // Leave the window with no current image, as removing it from the list does.
+    void showNoImage();
     // True when a mask can share the grid the window already draws on. The
     // overlay maps depth only, so X/Y have to agree.
     bool maskVolumeCoregisters(const MaskVolume &volume, QString *reason = nullptr) const;
