@@ -27,6 +27,7 @@
 #include <QGuiApplication>
 #include <QClipboard>
 #include <QCursor>
+#include <QToolTip>
 #include <QPushButton>
 #include <QFileDialog>
 #include <QLabel>
@@ -1352,7 +1353,6 @@ void ManualSeedSelector::setupUi()
     contentSplitter->setObjectName("contentSplitter");
     contentSplitter->setChildrenCollapsible(true);
     contentSplitter->setHandleWidth(8);
-    contentSplitter->setToolTip("Drag these dividers to resize the side panels.");
 
     // Left: collapsible tool sidebar (built above).
     contentSplitter->addWidget(toolSidebar);
@@ -3746,7 +3746,10 @@ void ManualSeedSelector::saveSeeds()
     }
     for (auto &s : m_seeds)
     {
-        out << s.x << " " << s.y << " " << s.z << " " << s.label << " " << s.internal << "\n";
+        out << s.x << " " << s.y << " " << s.z << " " << s.label << " " << s.internal;
+        if (!s.note.empty())
+            out << " # " << s.note;
+        out << "\n";
     }
     out.close();
 }
@@ -3830,9 +3833,8 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
         else
         {
             // First line is not just a count, try to parse as seed
-            std::istringstream iss(line);
             Seed s;
-            if (iss >> s.x >> s.y >> s.z >> s.label >> s.internal)
+            if (parseSeedLine(line, s))
             {
                 s.x = std::max(0, std::min(s.x, sx - 1));
                 s.y = std::max(0, std::min(s.y, sy - 1));
@@ -3858,9 +3860,8 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
             continue;
         }
 
-        std::istringstream iss(line);
         Seed s;
-        if (!(iss >> s.x >> s.y >> s.z >> s.label >> s.internal))
+        if (!parseSeedLine(line, s))
         {
             skippedLines++;
             continue;
@@ -4280,14 +4281,14 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
     if (!m_statusLabel || !hasImage())
         return;
 
-    if (x < 0 || y < 0 || z < 0)
-        return;
-
     const int sizeX = static_cast<int>(m_image.getSizeX());
     const int sizeY = static_cast<int>(m_image.getSizeY());
     const int sizeZ = static_cast<int>(m_image.getSizeZ());
-    if (x >= sizeX || y >= sizeY || z >= sizeZ)
+    if (x < 0 || y < 0 || z < 0 || x >= sizeX || y >= sizeY || z >= sizeZ)
+    {
+        showSeedNoteTip(plane, std::string());
         return;
+    }
 
     const float voxelValue = m_image.getVoxelValue(static_cast<unsigned int>(x), static_cast<unsigned int>(y), static_cast<unsigned int>(z));
     QString viewName;
@@ -4311,12 +4312,16 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
                             .arg(z)
                             .arg(QString::number(static_cast<double>(voxelValue), 'f', 3));
 
-    const Seed *seed = findSeedNearCursor(x, y, z, plane, 1);
+    // 2 voxels: about the radius a seed is drawn with when the slice fits the view.
+    const Seed *seed = findSeedNearCursor(x, y, z, plane, 2);
     if (seed)
     {
         const QString seedType = (seed->internal != 0) ? "internal" : "external";
         hoverText += QString(" | Seed: label %1 (%2)").arg(seed->label).arg(seedType);
+        if (!seed->note.empty())
+            hoverText += " | " + QString::fromStdString(seed->note);
     }
+    showSeedNoteTip(plane, seed ? seed->note : std::string());
 
     if (solverNetworkPlaced())
     {
@@ -4331,6 +4336,25 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
     }
 
     m_statusLabel->setText(hoverText);
+}
+
+// The hovered seed's note as a tooltip at the cursor; an empty note hides only a tip put up here.
+void ManualSeedSelector::showSeedNoteTip(SlicePlane plane, const std::string &note)
+{
+    if (note.empty())
+    {
+        if (m_seedNoteTipShown)
+            QToolTip::hideText();
+        m_seedNoteTipShown = false;
+        return;
+    }
+    QWidget *view = m_axialView;
+    if (plane == SlicePlane::Sagittal)
+        view = m_sagittalView;
+    else if (plane == SlicePlane::Coronal)
+        view = m_coronalView;
+    QToolTip::showText(QCursor::pos(), QString::fromStdString(note), view);
+    m_seedNoteTipShown = true;
 }
 
 void ManualSeedSelector::onAxialClicked(int x, int y, Qt::MouseButton b)

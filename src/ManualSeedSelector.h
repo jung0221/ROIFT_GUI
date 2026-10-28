@@ -449,6 +449,7 @@ private:
     QString formatRulerDistance(double millimeters) const;
     const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
     void updateHoverStatus(SlicePlane plane, int x, int y, int z);
+    void showSeedNoteTip(SlicePlane plane, const std::string &note);
     void addSeed(int x, int y, int z);
     void eraseNear(int x, int y, int z, int r);
     // Move the three slice views onto one voxel; out-of-range is ignored.
@@ -571,6 +572,7 @@ private:
     QSpinBox *m_labelSelector;
     QLabel *m_labelColorIndicator;
     QLabel *m_statusLabel;
+    bool m_seedNoteTipShown = false;
     QPlainTextEdit *m_logConsole = nullptr;
     // backup copy used to undo destructive edits like threshold
     NiftiImage m_imageBackup;

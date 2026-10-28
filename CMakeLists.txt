@@ -210,6 +210,14 @@ if(BUILD_ROIFT_TESTS)
   target_include_directories(planar_slice_test PRIVATE src)
   add_test(NAME planar_slice COMMAND planar_slice_test)
 
+  add_executable(seed_files_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/seed_files_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SeedFiles.cpp
+  )
+  target_include_directories(seed_files_test PRIVATE src)
+  target_link_libraries(seed_files_test PRIVATE Qt6::Core)
+  add_test(NAME seed_files COMMAND seed_files_test)
+
   # Runs the real oiftrelax on synthetic planes; no display.
   if(TARGET oiftrelax)
     add_executable(plane_segmentation_test

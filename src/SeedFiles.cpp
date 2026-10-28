@@ -2,8 +2,37 @@
 
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <unordered_set>
+
+namespace
+{
+
+void trim(std::string &s)
+{
+    s.erase(0, std::min(s.find_first_not_of(" \t"), s.size()));
+    s.erase(s.find_last_not_of(" \t") + 1);
+}
+
+} // namespace
+
+bool parseSeedLine(const std::string &line, Seed &seed)
+{
+    std::istringstream iss(line);
+    if (!(iss >> seed.x >> seed.y >> seed.z >> seed.label >> seed.internal))
+        return false;
+    std::string note;
+    std::getline(iss, note);
+    trim(note);
+    if (!note.empty() && note[0] == '#')
+    {
+        note.erase(0, 1);
+        trim(note);
+    }
+    seed.note = note;
+    return true;
+}
 
 std::vector<Seed> dedupeSeedsKeepingLatest(const std::vector<Seed> &seeds)
 {

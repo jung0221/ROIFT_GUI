@@ -214,6 +214,12 @@
 - Removing the row whose seeds are loaded, singly or with the remove-all button, takes those
   seeds out of the slice views and the 3D view. Seeds placed by hand after the load stay, and
   the file is not touched. Removing any other row only shortens the list.
+- **Notes.** A seed line may end in a note: `x y z <col4> <col5> # LPA_04 | x=0.026 y=0.008 m`
+  (the `#` is optional). Hovering within 2 voxels of the seed shows the note in a tooltip and
+  in the status bar, and `Save Seeds` writes it back. `oiftrelax` cannot read a noted file: its
+  reader does not check `fscanf`, so every row after the first noted one is read as a copy of
+  it and only the seeds up to that line take part, without an error. Do not pass a noted file
+  to `oiftrelax` directly; the GUI's own runs write a fresh seed file without notes.
 
 ## NIfTI Auto-Detection Toggle
 - In the `Images` panel, use `Auto-detect masks/seeds` to enable or disable automatic scanning of the image folder for:
