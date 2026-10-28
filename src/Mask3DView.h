@@ -132,6 +132,8 @@ public:
     void clearMask();
     /// True while a mask surface is built, whether or not "Show 3D" is drawing it.
     bool hasMaskSurface() const { return !m_activeLabels.empty(); }
+    /// Seeds placed by the last setSeedData(), whether or not "Show Seeds" is drawing them.
+    size_t seedCount() const { return m_seedRenderData.size(); }
     void setSeedRectangleEraseEnabled(bool enabled);
     CameraState captureCameraState() const;
     void restoreCameraState(const CameraState &state, bool render = true);

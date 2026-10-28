@@ -425,6 +425,36 @@ int main(int argc, char **argv)
         }
     }
 
+    // Removing a seed group takes the seeds it loaded out of the views, as
+    // removing a mask row does for its surface.
+    {
+        const QString seedPath = dir.filePath("seeds_left.txt");
+        QFile seedFile(seedPath);
+        const bool wroteSeeds = seedFile.open(QIODevice::WriteOnly | QIODevice::Text) &&
+                                seedFile.write("2\n3 3 2 1 1\n20 20 2 0 0\n") > 0;
+        seedFile.close();
+        check(wroteSeeds, "seed file written");
+
+        ManualSeedSelector withSeeds("");
+        withSeeds.addImagesFromPaths({ctPath});
+        withSeeds.refreshAssociatedFilesForCurrentImage(true); // lists the .txt beside the image
+        QListWidget *seedList = withSeeds.findChild<QListWidget *>("seedList");
+        Mask3DView *view3D = withSeeds.findChild<Mask3DView *>();
+        QToolButton *removeSeedGroup = removeButton(withSeeds, "Remove selected seed group");
+        const int row = seedList ? rowForFile(seedList, "seeds_left.txt") : -1;
+        check(seedList && view3D && removeSeedGroup && row >= 0, "seed window built, its file listed");
+        if (wroteSeeds && seedList && view3D && removeSeedGroup && row >= 0)
+        {
+            seedList->setCurrentRow(row);
+            emit seedList->itemClicked(seedList->item(row));
+            check(withSeeds.getSeeds().size() == 2 && view3D->seedCount() == 2,
+                  "clicking the group draws its seeds in 3D");
+            removeSeedGroup->click();
+            check(rowForFile(seedList, "seeds_left.txt") < 0, "removing the group drops its row");
+            check(withSeeds.getSeeds().empty() && view3D->seedCount() == 0, "and takes its seeds out of the 3D view");
+        }
+    }
+
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
 }

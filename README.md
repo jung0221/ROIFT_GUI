@@ -41,6 +41,12 @@ Open directly with an input image (example used during testing):
 ./roift_gui --input example_image.nii.gz
 ```
 
+With masks (one `--mask` per file) and a seed file on that image:
+
+```bash
+./roift_gui --input ct.nii.gz --mask lungs.nii.gz --mask artery.nii.gz --seeds seeds.txt
+```
+
 Segmentation (ROIFT / `oiftrelax`):
 
 - The segmentation button launches a small dialog that can run a single label segmentation or batch-run per-label using seeds.

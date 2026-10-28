@@ -27,6 +27,7 @@
 #include <QGuiApplication>
 #include <QClipboard>
 #include <QCursor>
+#include <QToolTip>
 #include <QPushButton>
 #include <QFileDialog>
 #include <QLabel>
@@ -490,6 +491,23 @@ bool ManualSeedSelector::applyMaskFromPath(const std::string &path)
     return true;
 }
 
+bool ManualSeedSelector::applySeedsFromPath(const std::string &path)
+{
+    if (!loadSeedsFromFile(path))
+        return false;
+
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        const std::string absolutePath =
+            QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath()).toStdString();
+        auto &seedPaths = m_images[m_currentImageIndex].seedPaths;
+        if (std::find(seedPaths.begin(), seedPaths.end(), absolutePath) == seedPaths.end())
+            seedPaths.push_back(absolutePath);
+        updateMaskSeedLists();
+    }
+    return true;
+}
+
 void ManualSeedSelector::refreshAssociatedFilesForCurrentImage(bool forceDetect)
 {
     if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
@@ -757,6 +775,7 @@ void ManualSeedSelector::setupUi()
     connect(btnSeedClear, &QPushButton::clicked, [this]()
             {
         m_seeds.clear();
+        m_seedSourcePath.clear();
         updateViews(); });
     seedFileLayout->addWidget(btnSeedClear);
 
@@ -1334,7 +1353,6 @@ void ManualSeedSelector::setupUi()
     contentSplitter->setObjectName("contentSplitter");
     contentSplitter->setChildrenCollapsible(true);
     contentSplitter->setHandleWidth(8);
-    contentSplitter->setToolTip("Drag these dividers to resize the side panels.");
 
     // Left: collapsible tool sidebar (built above).
     contentSplitter->addWidget(toolSidebar);
@@ -1982,6 +2000,7 @@ void ManualSeedSelector::setupUi()
     seedListLayout->setSpacing(4);
 
     m_seedList = new QListWidget();
+    m_seedList->setObjectName("seedList");
     m_seedList->setMinimumHeight(70);
     m_seedList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_seedList->setToolTip("Click to load seeds - Colors indicate which image they belong to");
@@ -2041,11 +2060,16 @@ void ManualSeedSelector::setupUi()
 
         const QString removedPath = QFileInfo(QString::fromStdString(seedPaths[static_cast<size_t>(row)])).absoluteFilePath();
         seedPaths.erase(seedPaths.begin() + row);
+        const bool clearedSeeds = dropSeedsFromFile(removedPath);
         updateMaskSeedLists();
         if (m_seedList && m_seedList->count() > 0)
             m_seedList->setCurrentRow(std::min(row, m_seedList->count() - 1));
+        if (clearedSeeds)
+            updateViews();
         if (m_statusLabel)
-            m_statusLabel->setText(QString("Removed seed group: %1").arg(removedPath));
+            m_statusLabel->setText(clearedSeeds
+                                       ? QString("Removed seed group: %1 (its seeds cleared)").arg(removedPath)
+                                       : QString("Removed seed group: %1").arg(removedPath));
     });
 
     QToolButton *btnRemoveAllSeeds = new QToolButton();
@@ -2071,10 +2095,17 @@ void ManualSeedSelector::setupUi()
             return;
 
         const int removedCount = static_cast<int>(seedPaths.size());
+        bool clearedSeeds = false;
+        for (const std::string &seedPath : seedPaths)
+            clearedSeeds = dropSeedsFromFile(QString::fromStdString(seedPath)) || clearedSeeds;
         seedPaths.clear();
         updateMaskSeedLists();
+        if (clearedSeeds)
+            updateViews();
         if (m_statusLabel)
-            m_statusLabel->setText(QString("Removed %1 seed group(s) from current image.").arg(removedCount));
+            m_statusLabel->setText(clearedSeeds
+                                       ? QString("Removed %1 seed group(s) from current image (loaded seeds cleared).").arg(removedCount)
+                                       : QString("Removed %1 seed group(s) from current image.").arg(removedCount));
     });
 
     seedButtonsLayout->addStretch(1);
@@ -3715,7 +3746,10 @@ void ManualSeedSelector::saveSeeds()
     }
     for (auto &s : m_seeds)
     {
-        out << s.x << " " << s.y << " " << s.z << " " << s.label << " " << s.internal << "\n";
+        out << s.x << " " << s.y << " " << s.z << " " << s.label << " " << s.internal;
+        if (!s.note.empty())
+            out << " # " << s.note;
+        out << "\n";
     }
     out.close();
 }
@@ -3751,6 +3785,7 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
     in.close();
 
     m_seeds.clear();
+    m_seedSourcePath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath()).toStdString();
     int sx = static_cast<int>(m_image.getSizeX());
     int sy = static_cast<int>(m_image.getSizeY());
     int sz = static_cast<int>(m_image.getSizeZ());
@@ -3798,9 +3833,8 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
         else
         {
             // First line is not just a count, try to parse as seed
-            std::istringstream iss(line);
             Seed s;
-            if (iss >> s.x >> s.y >> s.z >> s.label >> s.internal)
+            if (parseSeedLine(line, s))
             {
                 s.x = std::max(0, std::min(s.x, sx - 1));
                 s.y = std::max(0, std::min(s.y, sy - 1));
@@ -3826,9 +3860,8 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
             continue;
         }
 
-        std::istringstream iss(line);
         Seed s;
-        if (!(iss >> s.x >> s.y >> s.z >> s.label >> s.internal))
+        if (!parseSeedLine(line, s))
         {
             skippedLines++;
             continue;
@@ -4248,14 +4281,14 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
     if (!m_statusLabel || !hasImage())
         return;
 
-    if (x < 0 || y < 0 || z < 0)
-        return;
-
     const int sizeX = static_cast<int>(m_image.getSizeX());
     const int sizeY = static_cast<int>(m_image.getSizeY());
     const int sizeZ = static_cast<int>(m_image.getSizeZ());
-    if (x >= sizeX || y >= sizeY || z >= sizeZ)
+    if (x < 0 || y < 0 || z < 0 || x >= sizeX || y >= sizeY || z >= sizeZ)
+    {
+        showSeedNoteTip(plane, std::string());
         return;
+    }
 
     const float voxelValue = m_image.getVoxelValue(static_cast<unsigned int>(x), static_cast<unsigned int>(y), static_cast<unsigned int>(z));
     QString viewName;
@@ -4279,12 +4312,16 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
                             .arg(z)
                             .arg(QString::number(static_cast<double>(voxelValue), 'f', 3));
 
-    const Seed *seed = findSeedNearCursor(x, y, z, plane, 1);
+    // 2 voxels: about the radius a seed is drawn with when the slice fits the view.
+    const Seed *seed = findSeedNearCursor(x, y, z, plane, 2);
     if (seed)
     {
         const QString seedType = (seed->internal != 0) ? "internal" : "external";
         hoverText += QString(" | Seed: label %1 (%2)").arg(seed->label).arg(seedType);
+        if (!seed->note.empty())
+            hoverText += " | " + QString::fromStdString(seed->note);
     }
+    showSeedNoteTip(plane, seed ? seed->note : std::string());
 
     if (solverNetworkPlaced())
     {
@@ -4299,6 +4336,25 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
     }
 
     m_statusLabel->setText(hoverText);
+}
+
+// The hovered seed's note as a tooltip at the cursor; an empty note hides only a tip put up here.
+void ManualSeedSelector::showSeedNoteTip(SlicePlane plane, const std::string &note)
+{
+    if (note.empty())
+    {
+        if (m_seedNoteTipShown)
+            QToolTip::hideText();
+        m_seedNoteTipShown = false;
+        return;
+    }
+    QWidget *view = m_axialView;
+    if (plane == SlicePlane::Sagittal)
+        view = m_sagittalView;
+    else if (plane == SlicePlane::Coronal)
+        view = m_coronalView;
+    QToolTip::showText(QCursor::pos(), QString::fromStdString(note), view);
+    m_seedNoteTipShown = true;
 }
 
 void ManualSeedSelector::onAxialClicked(int x, int y, Qt::MouseButton b)
@@ -4715,6 +4771,19 @@ bool ManualSeedSelector::forgetMaskPath(const QString &absolutePath, int imageIn
     m_mask3DDirty = true;
     updateMaskSeedLists();
     return removed;
+}
+
+bool ManualSeedSelector::dropSeedsFromFile(const QString &absolutePath)
+{
+    const std::string key = QDir::cleanPath(QFileInfo(absolutePath).absoluteFilePath()).toStdString();
+    if (m_seedSourcePath.empty() || key != m_seedSourcePath)
+        return false;
+    // A seed placed by hand belongs to no group, so removing one leaves it.
+    m_seeds.erase(std::remove_if(m_seeds.begin(), m_seeds.end(), [](const Seed &s)
+                                 { return s.fromFile; }),
+                  m_seeds.end());
+    m_seedSourcePath.clear();
+    return true;
 }
 
 void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const
@@ -5650,6 +5719,7 @@ void ManualSeedSelector::clearImageOverlays()
     m_maskDimY = 0;
     m_maskDimZ = 0;
     m_seeds.clear();
+    m_seedSourcePath.clear();
     m_mask3DDirty = true;
     clearRulerMeasurements();
     m_locatedPoint = LocatedPoint{};

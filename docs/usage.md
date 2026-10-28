@@ -101,6 +101,12 @@
   bar. Closing the window during a read lets the read finish first, since it cannot be
   interrupted. The images named on the command line are read before the window appears, so
   `--mask` and `--seeds` have an image to apply to.
+- **Masks and seeds from the command line.** `--mask`/`-m` opens a mask on the first image and
+  may be repeated, one layer per file. `--seeds`/`-s` loads a seed file onto it and lists the
+  file under `Seed Groups`, as `Load Seeds` does. Each flag reads only its own kind of file: a
+  seed `.txt` given to `--mask` is not retried as seeds. A file that cannot be read prints
+  `Warning: failed to load mask from <path>` (or `seeds`) on stderr and the window opens
+  without it; with no image loaded, both flags are ignored with a warning.
 - **Memory.** A volume is held as 32-bit floats whatever the file's sample type, so a
   512 x 512 x 1000 CT costs about 1 GB; each drawn mask costs the same again
   (see [Mask layers](#mask-layers)).
@@ -201,6 +207,19 @@
   The choice is made once per file and reused whenever the entry is reselected.
 - The array is auto-picked by name in this order: `probabilities`, `softmax`, `data`, `arr_0`,
   `image`, `volume`, `ct`, `seg`, `label`, then the first usable 3D array.
+
+## Seed groups
+- Clicking a row in `Seed Groups` loads that file's seeds in place of those on screen,
+  hand-placed ones included.
+- Removing the row whose seeds are loaded, singly or with the remove-all button, takes those
+  seeds out of the slice views and the 3D view. Seeds placed by hand after the load stay, and
+  the file is not touched. Removing any other row only shortens the list.
+- **Notes.** A seed line may end in a note: `x y z <col4> <col5> # LPA_04 | x=0.026 y=0.008 m`
+  (the `#` is optional). Hovering within 2 voxels of the seed shows the note in a tooltip and
+  in the status bar, and `Save Seeds` writes it back. `oiftrelax` cannot read a noted file: its
+  reader does not check `fscanf`, so every row after the first noted one is read as a copy of
+  it and only the seeds up to that line take part, without an error. Do not pass a noted file
+  to `oiftrelax` directly; the GUI's own runs write a fresh seed file without notes.
 
 ## NIfTI Auto-Detection Toggle
 - In the `Images` panel, use `Auto-detect masks/seeds` to enable or disable automatic scanning of the image folder for:

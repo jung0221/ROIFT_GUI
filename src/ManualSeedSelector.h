@@ -120,6 +120,9 @@ public:
     std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
+    // Loads a seed file and lists it in the current image's seed groups, as the Load
+    // Seeds button does (used by the command line).
+    bool applySeedsFromPath(const std::string &path);
     // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
     // 8-bit or 16-bit label image. Returns false and sets *error on failure. A deferred mask that
     // cannot be read still raises the Load Mask dialog.
@@ -446,6 +449,7 @@ private:
     QString formatRulerDistance(double millimeters) const;
     const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
     void updateHoverStatus(SlicePlane plane, int x, int y, int z);
+    void showSeedNoteTip(SlicePlane plane, const std::string &note);
     void addSeed(int x, int y, int z);
     void eraseNear(int x, int y, int z, int r);
     // Move the three slice views onto one voxel; out-of-range is ignored.
@@ -484,6 +488,9 @@ private:
     // every list (kEveryMaskList), and from the screen. False when no list held it.
     static constexpr int kEveryMaskList = -2;
     bool forgetMaskPath(const QString &absolutePath, int imageIndex);
+    // Take the seeds read from @p absolutePath off screen when they are the ones loaded;
+    // hand-placed seeds stay. True when they were. The caller redraws.
+    bool dropSeedsFromFile(const QString &absolutePath);
     // 1-based segment whose territory holds the voxel (within @p radius voxels), or 0.
     int solverSegmentAtVoxel(int x, int y, int z, int radius = 0) const;
     // 1-based segment whose modelled lumen holds the voxel, or 0.
@@ -543,6 +550,8 @@ private:
     NiftiImage m_image;
     std::string m_path;
     std::vector<Seed> m_seeds;
+    // Clean absolute path of the file m_seeds was last read from; empty once cleared.
+    std::string m_seedSourcePath;
 
     OrthogonalView *m_axialView;
     OrthogonalView *m_sagittalView;
@@ -563,6 +572,7 @@ private:
     QSpinBox *m_labelSelector;
     QLabel *m_labelColorIndicator;
     QLabel *m_statusLabel;
+    bool m_seedNoteTipShown = false;
     QPlainTextEdit *m_logConsole = nullptr;
     // backup copy used to undo destructive edits like threshold
     NiftiImage m_imageBackup;
