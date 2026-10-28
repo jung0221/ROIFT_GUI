@@ -490,6 +490,23 @@ bool ManualSeedSelector::applyMaskFromPath(const std::string &path)
     return true;
 }
 
+bool ManualSeedSelector::applySeedsFromPath(const std::string &path)
+{
+    if (!loadSeedsFromFile(path))
+        return false;
+
+    if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
+    {
+        const std::string absolutePath =
+            QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath()).toStdString();
+        auto &seedPaths = m_images[m_currentImageIndex].seedPaths;
+        if (std::find(seedPaths.begin(), seedPaths.end(), absolutePath) == seedPaths.end())
+            seedPaths.push_back(absolutePath);
+        updateMaskSeedLists();
+    }
+    return true;
+}
+
 void ManualSeedSelector::refreshAssociatedFilesForCurrentImage(bool forceDetect)
 {
     if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))

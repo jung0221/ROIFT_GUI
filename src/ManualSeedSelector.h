@@ -120,6 +120,9 @@ public:
     std::string nativeImagePath();
     // convenience wrapper to load a mask and update views (used by segmentation runner)
     bool applyMaskFromPath(const std::string &path);
+    // Loads a seed file and lists it in the current image's seed groups, as the Load
+    // Seeds button does (used by the command line).
+    bool applySeedsFromPath(const std::string &path);
     // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
     // 8-bit or 16-bit label image. Returns false and sets *error on failure. A deferred mask that
     // cannot be read still raises the Load Mask dialog.

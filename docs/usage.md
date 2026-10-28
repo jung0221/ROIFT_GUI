@@ -101,6 +101,12 @@
   bar. Closing the window during a read lets the read finish first, since it cannot be
   interrupted. The images named on the command line are read before the window appears, so
   `--mask` and `--seeds` have an image to apply to.
+- **Masks and seeds from the command line.** `--mask`/`-m` opens a mask on the first image and
+  may be repeated, one layer per file. `--seeds`/`-s` loads a seed file onto it and lists the
+  file under `Seed Groups`, as `Load Seeds` does. Each flag reads only its own kind of file: a
+  seed `.txt` given to `--mask` is not retried as seeds. A file that cannot be read prints
+  `Warning: failed to load mask from <path>` (or `seeds`) on stderr and the window opens
+  without it; with no image loaded, both flags are ignored with a warning.
 - **Memory.** A volume is held as 32-bit floats whatever the file's sample type, so a
   512 x 512 x 1000 CT costs about 1 GB; each drawn mask costs the same again
   (see [Mask layers](#mask-layers)).

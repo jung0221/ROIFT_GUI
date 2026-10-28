@@ -45,8 +45,9 @@ static void print_help()
     report_cli_message(
         QStringLiteral("ROIFT GUI"),
         QStringLiteral(
-            "roift_gui [--version] [--input <image_path> [more_paths...]]\n"
+            "roift_gui [--version] [--input <image_path> [more_paths...]] [--mask <mask_path>]... [--seeds <seeds.txt>]\n"
             "You can pass multiple paths after --input/-i or as positional arguments.\n"
+            "--mask/-m (repeatable) opens a mask on the first image; --seeds/-s loads a seed file onto it.\n"
             "Accepted: .nii, .nii.gz, DICOM (file or directory), .npz, .npy, and the raster\n"
             "formats .png, .jpg, .jpeg, .bmp, .tif and .tiff (measured in pixels).\n"
             "A .npz/.npy carries no spacing: it is taken from a matching .nii.gz next to it,\n"
@@ -115,6 +116,7 @@ int main(int argc, char **argv)
     QCoreApplication::setApplicationName("roift_gui");
     QCoreApplication::setApplicationVersion(Version::string());
     std::vector<std::string> inputPaths;
+    std::vector<std::string> maskPaths;
     std::string seedsPath;
     bool startFullscreen = false;
     for (int i = 1; i < argc; ++i)
@@ -157,7 +159,7 @@ int main(int argc, char **argv)
         {
             if (i + 1 < argc)
             {
-                seedsPath = argv[i + 1];
+                maskPaths.push_back(argv[i + 1]);
                 ++i;
             }
             else
@@ -170,7 +172,7 @@ int main(int argc, char **argv)
         else if (a == "--mask-required")
         {
             // signal that a mask must be provided when input is given
-            if (seedsPath.empty())
+            if (maskPaths.empty())
             {
                 std::cerr << "Error: --mask-required specified but no --mask provided\n";
                 print_help();
@@ -224,18 +226,19 @@ int main(int argc, char **argv)
         w.addImagesFromPaths(initialPaths);
     }
 
-    // if an image was provided and successfully loaded, optionally load seeds
-    if (!seedsPath.empty() && w.hasImage())
+    // Masks and seeds need the image loaded above; each flag opens only its own kind of
+    // file, so a seed .txt never reaches the mask reader and its error dialog.
+    if ((!maskPaths.empty() || !seedsPath.empty()) && !w.hasImage())
+        std::cerr << "Warning: --mask/--seeds ignored, no image was loaded\n";
+    else
     {
-        // 'seedsPath' variable is used for --seeds previously; support --mask as well
-        // try to apply as mask first, then if fails try as seeds file for backwards compatibility
-        bool okMask = w.applyMaskFromPath(seedsPath);
-        if (!okMask)
+        for (const std::string &maskPath : maskPaths)
         {
-            bool okSeeds = w.loadSeedsFromFile(seedsPath);
-            if (!okSeeds)
-                std::cerr << "Warning: failed to load mask or seeds from " << seedsPath << "\n";
+            if (!w.applyMaskFromPath(maskPath))
+                std::cerr << "Warning: failed to load mask from " << maskPath << "\n";
         }
+        if (!seedsPath.empty() && !w.applySeedsFromPath(seedsPath))
+            std::cerr << "Warning: failed to load seeds from " << seedsPath << "\n";
     }
     // From here on, images chosen in the window are read on a worker thread so
     // the window stays responsive; the command-line ones above were read inline
