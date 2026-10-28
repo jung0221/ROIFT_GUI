@@ -230,6 +230,7 @@
   on their own slice, and the 3D seed list is rebuilt only when the seeds or the filter change,
   so with a million external seeds loaded `Internal only` repaints as fast as a file holding
   the internal seeds alone. Loading the file and erasing still cost the whole list.
+- The 3D view draws each seed as a flat disc 1.6 mm in radius facing the camera.
 - The seed eraser on the slices removes hidden seeds inside its radius as well. The 3D
   rectangle erase removes only the seeds the 3D view draws.
 

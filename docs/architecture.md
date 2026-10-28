@@ -66,6 +66,12 @@
     discrete flying edges passes over the whole volume once per label, and a 1153-segment map
     took 25 s against 0.35 s now. `colorForLabel()` cycles its 252 distinct colours past label
     255 instead of clamping, which had painted every higher label one colour.
+  - Seeds are drawn by a `vtkPointGaussianMapper` as flat discs 1.6 mm in radius facing the
+    camera, one triangle each, with `EmissiveOff()` so the surface hides the seeds behind it.
+    They are unlit, so the sphere glyphs they replace (`vtkGlyph3DMapper`, 160 triangles a
+    seed) looked the same. On RIDER_1225's 1.2M-seed heart file, headless on an RTX 5080, a
+    frame while orbiting fell from 29 ms to 2.7 ms and the first frame after a seed change from
+    141 ms to 18 ms; 0.4 to 0.9% of pixels differ, at the seed edges.
   - `main()` switches VTK's SMP backend from the build default, `Sequential`, to `STDThread`
     when that backend is compiled in and `VTK_SMP_BACKEND_IN_USE` is unset, so flying edges,
     the windowed-sinc smoother and the cell locator run on every core. On a 704 x 704 x 640
