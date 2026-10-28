@@ -8,8 +8,12 @@
 #include <QStringList>
 #include <QSurfaceFormat>
 #include <QVTKOpenGLNativeWidget.h>
+// With VTK's TBB backend (conda-forge) these pull in oneTBB, whose emit() member Qt's emit macro erases.
+#pragma push_macro("emit")
+#undef emit
 #include <vtkSMP.h>
 #include <vtkSMPTools.h>
+#pragma pop_macro("emit")
 #include "ManualSeedSelector.h"
 #include "Theme.h"
 #include "Version.h"
