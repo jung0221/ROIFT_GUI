@@ -1654,24 +1654,17 @@ void ManualSeedSelector::setupUi()
             {
         int currentRow = m_niftiList->currentRow();
         if (currentRow >= 0 && currentRow < static_cast<int>(m_images.size())) {
+            const QString removedName = QFileInfo(QString::fromStdString(m_images[currentRow].imagePath)).fileName();
             m_images.erase(m_images.begin() + currentRow);
             delete m_niftiList->takeItem(currentRow);
             renumberNiftiListItems();
             if (currentRow == m_currentImageIndex) {
-                m_currentImageIndex = -1;
-                m_image = NiftiImage();
-                m_path.clear();
-                m_maskSpacingX = 1.0;
-                m_maskSpacingY = 1.0;
-                m_maskSpacingZ = 1.0;
-                clearRulerMeasurements();
-                m_locatedPoint = LocatedPoint{};
-                updateMaskSeedLists();
-                applySliceLayout();
-                updateViews();
+                showNoImage();
             } else if (m_currentImageIndex > currentRow) {
                 m_currentImageIndex--;
             }
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Removed image: %1").arg(removedName));
         } });
 
     QToolButton *btnRemoveAllNifti = new QToolButton();
@@ -1694,36 +1687,7 @@ void ManualSeedSelector::setupUi()
 
         m_images.clear();
         m_niftiList->clear();
-        m_currentImageIndex = -1;
-        m_image = NiftiImage();
-        m_path.clear();
-        clearMaskLayers();
-        m_unsavedMaskStyle = MaskLayer();
-        m_loadedMaskPath.clear();
-        m_pendingActiveMaskPath.clear();
-        m_maskData.clear();
-        m_maskDimX = 0;
-        m_maskDimY = 0;
-        m_maskDimZ = 0;
-        m_seeds.clear();
-        m_maskSpacingX = 1.0;
-        m_maskSpacingY = 1.0;
-        m_maskSpacingZ = 1.0;
-        m_mask3DDirty = true;
-        clearRulerMeasurements();
-        m_locatedPoint = LocatedPoint{};
-
-        m_axialSlider->setRange(0, 0);
-        m_sagittalSlider->setRange(0, 0);
-        m_coronalSlider->setRange(0, 0);
-
-        m_axialView->setImage(QImage());
-        m_sagittalView->setImage(QImage());
-        m_coronalView->setImage(QImage());
-
-        updateMaskSeedLists();
-        applySliceLayout();
-        updateViews();
+        showNoImage();
         if (m_statusLabel)
             m_statusLabel->setText("All images removed.");
     });
@@ -2840,21 +2804,10 @@ void ManualSeedSelector::applyLoadedImage(int row, NiftiImage &&image, const Npz
 
     // Clear mask and seed data when switching images: masks drawn for the old
     // image sit on a grid the new one does not share.
-    clearMaskLayers();
-    m_unsavedMaskStyle = MaskLayer();
-    m_loadedMaskPath.clear();
-    m_pendingActiveMaskPath.clear();
-    m_maskData.clear();
-    m_maskDimX = 0;
-    m_maskDimY = 0;
-    m_maskDimZ = 0;
-    m_seeds.clear();
+    clearImageOverlays();
     m_maskSpacingX = m_image.getSpacingX();
     m_maskSpacingY = m_image.getSpacingY();
     m_maskSpacingZ = m_image.getSpacingZ();
-    m_mask3DDirty = true;
-    clearRulerMeasurements();
-    m_locatedPoint = LocatedPoint{};
 
     // Slider ranges, with their signals held: each change would otherwise
     // recompose all three views, and a value still ranged for the previous
@@ -5684,6 +5637,46 @@ void ManualSeedSelector::dropMaskLayer(const QString &absolutePath)
 void ManualSeedSelector::clearMaskLayers()
 {
     m_maskLayers.clear();
+}
+
+void ManualSeedSelector::clearImageOverlays()
+{
+    clearMaskLayers();
+    m_unsavedMaskStyle = MaskLayer();
+    m_loadedMaskPath.clear();
+    m_pendingActiveMaskPath.clear();
+    m_maskData.clear();
+    m_maskDimX = 0;
+    m_maskDimY = 0;
+    m_maskDimZ = 0;
+    m_seeds.clear();
+    m_mask3DDirty = true;
+    clearRulerMeasurements();
+    m_locatedPoint = LocatedPoint{};
+}
+
+void ManualSeedSelector::showNoImage()
+{
+    m_currentImageIndex = -1;
+    m_image = NiftiImage();
+    m_path.clear();
+    // The image's own mask rows went with it, so nothing it drew may stay on screen.
+    clearImageOverlays();
+    m_maskSpacingX = 1.0;
+    m_maskSpacingY = 1.0;
+    m_maskSpacingZ = 1.0;
+
+    m_axialSlider->setRange(0, 0);
+    m_sagittalSlider->setRange(0, 0);
+    m_coronalSlider->setRange(0, 0);
+
+    m_axialView->setImage(QImage());
+    m_sagittalView->setImage(QImage());
+    m_coronalView->setImage(QImage());
+
+    updateMaskSeedLists();
+    applySliceLayout();
+    updateViews();
 }
 
 MaskVisibility ManualSeedSelector::maskVisibilityForPath(const QString &absolutePath) const

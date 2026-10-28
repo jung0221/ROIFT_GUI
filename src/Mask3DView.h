@@ -130,6 +130,8 @@ public:
     void setMaskOpacity(float opacity);
     float maskOpacity() const { return m_opacity; }
     void clearMask();
+    /// True while a mask surface is built, whether or not "Show 3D" is drawing it.
+    bool hasMaskSurface() const { return !m_activeLabels.empty(); }
     void setSeedRectangleEraseEnabled(bool enabled);
     CameraState captureCameraState() const;
     void restoreCameraState(const CameraState &state, bool render = true);

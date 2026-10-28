@@ -14,6 +14,7 @@
 // It also loads a solver network with its segment map, the other feature that
 // puts a mask on screen on the program's initiative.
 #include "ManualSeedSelector.h"
+#include "Mask3DView.h"
 #include "MaskLayers.h"
 #include "MaskListDelegate.h"
 #include "OrthogonalView.h"
@@ -22,7 +23,9 @@
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QCheckBox>
 #include <QListWidget>
+#include <QToolButton>
 #include <QMouseEvent>
 #include <QFile>
 #include <QCryptographicHash>
@@ -373,6 +376,54 @@ int main(int argc, char **argv)
               window.loadSolverNetworkFromPath(yamlPath, &networkError),
           "a stale geometry still lets the YAML load");
     check(!window.solverNetworkPlaced(), "but places nothing");
+
+    // Taking a mask off the list takes its surface out of the 3D view, and so
+    // does removing the image it was drawn on: its rows leave the list with it,
+    // so nothing would be left to remove it by.
+    auto removeButton = [](QWidget &w, const QString &toolTip)
+    {
+        for (QToolButton *button : w.findChildren<QToolButton *>())
+            if (button->toolTip() == toolTip)
+                return button;
+        return static_cast<QToolButton *>(nullptr);
+    };
+    {
+        ManualSeedSelector maskOnly("");
+        QListWidget *list = maskOnly.findChild<QListWidget *>("maskList");
+        Mask3DView *view3D = maskOnly.findChild<Mask3DView *>();
+        QToolButton *removeMask = removeButton(maskOnly, "Remove selected mask");
+        check(list && view3D && removeMask, "mask-only window built");
+        if (list && view3D && removeMask)
+        {
+            check(maskOnly.applyMaskFromPath(leftPath.toStdString()) && view3D->hasMaskSurface(),
+                  "a mask opened with no image is drawn in 3D");
+            list->setCurrentRow(rowForFile(list, leftName));
+            removeMask->click();
+            check(list->count() == 0 && !view3D->hasMaskSurface(), "removing its row clears the 3D view");
+        }
+    }
+    {
+        ManualSeedSelector withImage("");
+        withImage.addImagesFromPaths({ctPath});
+        QListWidget *list = withImage.findChild<QListWidget *>("maskList");
+        Mask3DView *view3D = withImage.findChild<Mask3DView *>();
+        QToolButton *removeImage = removeButton(withImage, "Remove");
+        QCheckBox *show3D = nullptr;
+        for (QCheckBox *box : withImage.findChildren<QCheckBox *>())
+            if (box->text() == "Show 3D")
+                show3D = box;
+        check(list && view3D && removeImage && show3D, "image window built");
+        if (list && view3D && removeImage && show3D)
+        {
+            show3D->setChecked(true);
+            check(withImage.applyMaskFromPath(leftPath.toStdString()) && view3D->hasMaskSurface(),
+                  "a mask on the image is drawn in 3D");
+            removeImage->click(); // the image row is the current one
+            check(!withImage.hasImage() && list->count() == 0, "removing the image empties the mask list");
+            check(!view3D->hasMaskSurface(), "and takes its mask out of the 3D view");
+            check(withImage.activeMaskPath().isEmpty(), "and leaves no mask being edited");
+        }
+    }
 
     std::printf("%s\n", failures == 0 ? "all checks passed" : "FAILURES");
     return failures == 0 ? 0 : 1;
