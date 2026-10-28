@@ -757,6 +757,7 @@ void ManualSeedSelector::setupUi()
     connect(btnSeedClear, &QPushButton::clicked, [this]()
             {
         m_seeds.clear();
+        m_seedSourcePath.clear();
         updateViews(); });
     seedFileLayout->addWidget(btnSeedClear);
 
@@ -1982,6 +1983,7 @@ void ManualSeedSelector::setupUi()
     seedListLayout->setSpacing(4);
 
     m_seedList = new QListWidget();
+    m_seedList->setObjectName("seedList");
     m_seedList->setMinimumHeight(70);
     m_seedList->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_seedList->setToolTip("Click to load seeds - Colors indicate which image they belong to");
@@ -2041,11 +2043,16 @@ void ManualSeedSelector::setupUi()
 
         const QString removedPath = QFileInfo(QString::fromStdString(seedPaths[static_cast<size_t>(row)])).absoluteFilePath();
         seedPaths.erase(seedPaths.begin() + row);
+        const bool clearedSeeds = dropSeedsFromFile(removedPath);
         updateMaskSeedLists();
         if (m_seedList && m_seedList->count() > 0)
             m_seedList->setCurrentRow(std::min(row, m_seedList->count() - 1));
+        if (clearedSeeds)
+            updateViews();
         if (m_statusLabel)
-            m_statusLabel->setText(QString("Removed seed group: %1").arg(removedPath));
+            m_statusLabel->setText(clearedSeeds
+                                       ? QString("Removed seed group: %1 (its seeds cleared)").arg(removedPath)
+                                       : QString("Removed seed group: %1").arg(removedPath));
     });
 
     QToolButton *btnRemoveAllSeeds = new QToolButton();
@@ -2071,10 +2078,17 @@ void ManualSeedSelector::setupUi()
             return;
 
         const int removedCount = static_cast<int>(seedPaths.size());
+        bool clearedSeeds = false;
+        for (const std::string &seedPath : seedPaths)
+            clearedSeeds = dropSeedsFromFile(QString::fromStdString(seedPath)) || clearedSeeds;
         seedPaths.clear();
         updateMaskSeedLists();
+        if (clearedSeeds)
+            updateViews();
         if (m_statusLabel)
-            m_statusLabel->setText(QString("Removed %1 seed group(s) from current image.").arg(removedCount));
+            m_statusLabel->setText(clearedSeeds
+                                       ? QString("Removed %1 seed group(s) from current image (loaded seeds cleared).").arg(removedCount)
+                                       : QString("Removed %1 seed group(s) from current image.").arg(removedCount));
     });
 
     seedButtonsLayout->addStretch(1);
@@ -3751,6 +3765,7 @@ bool ManualSeedSelector::loadSeedsFromFile(const std::string &path)
     in.close();
 
     m_seeds.clear();
+    m_seedSourcePath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath()).toStdString();
     int sx = static_cast<int>(m_image.getSizeX());
     int sy = static_cast<int>(m_image.getSizeY());
     int sz = static_cast<int>(m_image.getSizeZ());
@@ -4717,6 +4732,19 @@ bool ManualSeedSelector::forgetMaskPath(const QString &absolutePath, int imageIn
     return removed;
 }
 
+bool ManualSeedSelector::dropSeedsFromFile(const QString &absolutePath)
+{
+    const std::string key = QDir::cleanPath(QFileInfo(absolutePath).absoluteFilePath()).toStdString();
+    if (m_seedSourcePath.empty() || key != m_seedSourcePath)
+        return false;
+    // A seed placed by hand belongs to no group, so removing one leaves it.
+    m_seeds.erase(std::remove_if(m_seeds.begin(), m_seeds.end(), [](const Seed &s)
+                                 { return s.fromFile; }),
+                  m_seeds.end());
+    m_seedSourcePath.clear();
+    return true;
+}
+
 void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const
 {
     if (!m_locatedPoint.valid || scaleX <= 0.0f || scaleY <= 0.0f)
@@ -5650,6 +5678,7 @@ void ManualSeedSelector::clearImageOverlays()
     m_maskDimY = 0;
     m_maskDimZ = 0;
     m_seeds.clear();
+    m_seedSourcePath.clear();
     m_mask3DDirty = true;
     clearRulerMeasurements();
     m_locatedPoint = LocatedPoint{};

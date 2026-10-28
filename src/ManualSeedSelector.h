@@ -484,6 +484,9 @@ private:
     // every list (kEveryMaskList), and from the screen. False when no list held it.
     static constexpr int kEveryMaskList = -2;
     bool forgetMaskPath(const QString &absolutePath, int imageIndex);
+    // Take the seeds read from @p absolutePath off screen when they are the ones loaded;
+    // hand-placed seeds stay. True when they were. The caller redraws.
+    bool dropSeedsFromFile(const QString &absolutePath);
     // 1-based segment whose territory holds the voxel (within @p radius voxels), or 0.
     int solverSegmentAtVoxel(int x, int y, int z, int radius = 0) const;
     // 1-based segment whose modelled lumen holds the voxel, or 0.
@@ -543,6 +546,8 @@ private:
     NiftiImage m_image;
     std::string m_path;
     std::vector<Seed> m_seeds;
+    // Clean absolute path of the file m_seeds was last read from; empty once cleared.
+    std::string m_seedSourcePath;
 
     OrthogonalView *m_axialView;
     OrthogonalView *m_sagittalView;

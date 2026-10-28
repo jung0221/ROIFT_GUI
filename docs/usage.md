@@ -202,6 +202,13 @@
 - The array is auto-picked by name in this order: `probabilities`, `softmax`, `data`, `arr_0`,
   `image`, `volume`, `ct`, `seg`, `label`, then the first usable 3D array.
 
+## Seed groups
+- Clicking a row in `Seed Groups` loads that file's seeds in place of those on screen,
+  hand-placed ones included.
+- Removing the row whose seeds are loaded, singly or with the remove-all button, takes those
+  seeds out of the slice views and the 3D view. Seeds placed by hand after the load stay, and
+  the file is not touched. Removing any other row only shortens the list.
+
 ## NIfTI Auto-Detection Toggle
 - In the `Images` panel, use `Auto-detect masks/seeds` to enable or disable automatic scanning of the image folder for:
 - mask files (`.nii`, `.nii.gz`, `.npz`, `.npy`; never raster files) associated with the current image
