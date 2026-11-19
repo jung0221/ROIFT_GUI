@@ -897,26 +897,23 @@ void ManualSeedSelector::setupUi()
     maskBrushLayout->setVerticalSpacing(6);
 
     maskBrushLayout->addWidget(new QLabel("Radius:"), 0, 0);
-    m_maskBrushSpin = new QSlider(Qt::Horizontal);
-    m_maskBrushSpin->setObjectName("maskBrushRadius");
-    m_maskBrushSpin->setRange(1, 50);
-    m_maskBrushSpin->setValue(5);
-    m_maskBrushSpin->setSingleStep(1);
-    m_maskBrushSpin->setPageStep(10);
-    m_maskBrushSpin->setSizePolicy(QSizePolicy::Expanding,
-                                   QSizePolicy::Fixed);
-    m_maskBrushSpin->setToolTip("Mask brush radius");
-
-    QLabel *radiusValue = new QLabel("5");
-    radiusValue->setMinimumWidth(36);
-    radiusValue->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-    connect(m_maskBrushSpin, &QSlider::valueChanged, [this, radiusValue](int r)
-            {
-        m_maskBrushRadius = r;
-    radiusValue->setText(QString("%1").arg(r)); });
-    maskBrushLayout->addWidget(m_maskBrushSpin, 0, 1);
-    maskBrushLayout->addWidget(radiusValue, 0, 2);
+    m_brushRadiusSpin = new QDoubleSpinBox();
+    m_brushRadiusSpin->setObjectName("maskBrushRadius");
+    m_brushRadiusSpin->setRange(kBrushRadiusMinMm, kBrushRadiusMaxMm);
+    m_brushRadiusSpin->setDecimals(1);
+    m_brushRadiusSpin->setSingleStep(0.5);
+    m_brushRadiusSpin->setSuffix(" mm");
+    m_brushRadiusSpin->setValue(m_brushRadiusMm);
+    m_brushRadiusSpin->setToolTip("Brush radius in millimetres; Ctrl+wheel over a view changes it while painting");
+    connect(m_brushRadiusSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double mm)
+            { setBrushRadiusMm(mm); });
+    maskBrushLayout->addWidget(m_brushRadiusSpin, 0, 1);
+    m_brushSphereCheck = new QCheckBox("Ball");
+    m_brushSphereCheck->setObjectName("maskBrushSphere");
+    m_brushSphereCheck->setToolTip("Paint a ball through the neighbouring slices instead of a disc on this one");
+    connect(m_brushSphereCheck, &QCheckBox::toggled, this, [this](bool on)
+            { setBrushSphere(on); });
+    maskBrushLayout->addWidget(m_brushSphereCheck, 0, 2);
 
     maskBrushLayout->addWidget(new QLabel("Opacity:"), 1, 0);
     m_maskOpacitySlider = new QSlider(Qt::Horizontal);
@@ -1073,6 +1070,46 @@ void ManualSeedSelector::setupUi()
             if (!loadLabelTable(path, &error))
                 QMessageBox::warning(this, "Label Names", error); });
         maskLabelButtons->addWidget(btnLabelTable);
+        QToolButton *labelTools = new QToolButton();
+        labelTools->setObjectName("labelToolsButton");
+        labelTools->setText("Tools");
+        labelTools->setToolTip("Operations on the active label of the edited mask; each is one undo step");
+        labelTools->setPopupMode(QToolButton::InstantPopup);
+        QMenu *labelToolsMenu = new QMenu(labelTools);
+        connect(labelToolsMenu, &QMenu::aboutToShow, this, [this, labelToolsMenu]()
+                {
+            labelToolsMenu->clear();
+            const int label = activeLabel();
+            const QString name = labelDisplayName(label);
+            labelToolsMenu->addAction(QString("Pieces of %1").arg(name), this, [this, label]()
+                                      { showLabelPieces(label); });
+            labelToolsMenu->addAction(QString("Remove small pieces of %1...").arg(name), this, [this, label]()
+                                      {
+                bool ok = false;
+                const double mm3 = QInputDialog::getDouble(this, "Remove small pieces",
+                                                           "Pieces up to this volume become background (mm³):",
+                                                           10.0, 0.0, 1e9, 2, &ok);
+                if (ok)
+                    removeLabelIslands(label, mm3); });
+            labelToolsMenu->addAction(QString("Keep only the largest piece of %1").arg(name), this, [this, label]()
+                                      { keepLargestPiece(label); });
+            labelToolsMenu->addSeparator();
+            labelToolsMenu->addAction(QString("Swap %1 with...").arg(name), this, [this, label]()
+                                      {
+                bool ok = false;
+                const int other = QInputDialog::getInt(this, "Swap labels", QString("Swap %1 with label:").arg(labelDisplayName(label)),
+                                                       label, 1, 65535, 1, &ok);
+                if (ok)
+                    swapLabels(label, other); });
+            labelToolsMenu->addAction(QString("Merge %1 into...").arg(name), this, [this, label]()
+                                      {
+                bool ok = false;
+                const int other = QInputDialog::getInt(this, "Merge labels", QString("Every voxel of %1 becomes label:").arg(labelDisplayName(label)),
+                                                       0, 0, 65535, 1, &ok);
+                if (ok)
+                    mergeLabelInto(label, other); }); });
+        labelTools->setMenu(labelToolsMenu);
+        maskLabelButtons->addWidget(labelTools);
         labelsLayout->addLayout(maskLabelButtons);
 
         m_labelFilterEdit = new QLineEdit();
@@ -1500,6 +1537,19 @@ void ManualSeedSelector::setupUi()
     m_sagittalView = new OrthogonalView();
     m_sagittalView->setObjectName("sagittalView");
     m_coronalView = new OrthogonalView();
+    // Ctrl+wheel resizes the brush while the mask brush is up; otherwise the wheel zooms.
+    for (OrthogonalView *view : {m_axialView, m_sagittalView, m_coronalView})
+    {
+        view->setWheelHandler([this, view](int steps, Qt::KeyboardModifiers modifiers)
+                              {
+            if (!(modifiers & Qt::ControlModifier) || !isMaskTabActive() || m_maskMode == 0)
+                return false;
+            setBrushRadiusMm(m_brushRadiusMm * std::pow(1.1, steps));
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Brush radius %1 mm").arg(m_brushRadiusMm, 0, 'f', 1));
+            view->update();
+            return true; });
+    }
     m_coronalView->setObjectName("coronalView");
     m_mask3DView = new Mask3DView();
 
@@ -2651,6 +2701,9 @@ void ManualSeedSelector::setupUi()
     connect(m_axialView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
         updateHoverStatus(SlicePlane::Axial, x, y, m_axialSlider->value());
+        m_brushHover = BrushStamp{SlicePlane::Axial, x, y};
+        if (isMaskTabActive() && m_maskMode != 0)
+            m_axialView->update(); // the brush outline follows the pointer
         if (handleRulerMouseMove(SlicePlane::Axial, x, y, buttons))
             return;
         if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
@@ -2695,6 +2748,9 @@ void ManualSeedSelector::setupUi()
     connect(m_sagittalView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
         updateHoverStatus(SlicePlane::Sagittal, m_sagittalSlider->value(), x, y);
+        m_brushHover = BrushStamp{SlicePlane::Sagittal, x, y};
+        if (isMaskTabActive() && m_maskMode != 0)
+            m_sagittalView->update(); // the brush outline follows the pointer
         if (handleRulerMouseMove(SlicePlane::Sagittal, x, y, buttons))
             return;
         if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
@@ -2739,6 +2795,9 @@ void ManualSeedSelector::setupUi()
     connect(m_coronalView, &OrthogonalView::mouseMoved, this, [this](int x, int y, Qt::MouseButtons buttons)
             {
         updateHoverStatus(SlicePlane::Coronal, x, m_coronalSlider->value(), y);
+        m_brushHover = BrushStamp{SlicePlane::Coronal, x, y};
+        if (isMaskTabActive() && m_maskMode != 0)
+            m_coronalView->update(); // the brush outline follows the pointer
         if (handleRulerMouseMove(SlicePlane::Coronal, x, y, buttons))
             return;
         if (isMaskTabActive() && (buttons & Qt::LeftButton) && m_maskMode != 0)
@@ -4731,8 +4790,13 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     QMenu menu(this);
     QAction *copyVoxelAction = menu.addAction("Copy coordinates and value");
     QAction *pickLabelAction = nullptr;
+    QAction *relabelPieceAction = nullptr;
     if (const int here = editedLabelAt(vx, vy, vz); here > 0 && here != activeLabel())
+    {
         pickLabelAction = menu.addAction(QString("Paint with %1 (Ctrl+click)").arg(labelDisplayName(here)));
+        relabelPieceAction = menu.addAction(QString("Give this piece of %1 the label %2")
+                                                .arg(labelDisplayName(here), labelDisplayName(activeLabel())));
+    }
     QAction *segmentAction = nullptr;
     QAction *nodeAction = nullptr;
     // Two voxels of slack: the click lands on the vessel wall as often as inside it.
@@ -4760,6 +4824,11 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     if (pickLabelAction && selected == pickLabelAction)
     {
         pickActiveLabelAt(vx, vy, vz);
+        return;
+    }
+    if (relabelPieceAction && selected == relabelPieceAction)
+    {
+        relabelPieceAt(vx, vy, vz, activeLabel());
         return;
     }
 
@@ -5266,7 +5335,8 @@ void ManualSeedSelector::updateViews(unsigned planes)
         }
         drawRulerOverlay(p, scaleX, scaleY, m_axialRuler, z, m_image.getSpacingX(), m_image.getSpacingY());
         drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Axial);
-        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Axial); });
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Axial);
+        drawBrushOutline(p, scaleX, scaleY, SlicePlane::Axial); });
 
     m_sagittalView->setOverlayDraw([this, sagX, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                    {
@@ -5299,7 +5369,8 @@ void ManualSeedSelector::updateViews(unsigned planes)
         }
         drawRulerOverlay(p, scaleX, scaleY, m_sagittalRuler, sagX, m_image.getSpacingY(), m_image.getSpacingZ());
         drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Sagittal);
-        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Sagittal); });
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Sagittal);
+        drawBrushOutline(p, scaleX, scaleY, SlicePlane::Sagittal); });
 
     m_coronalView->setOverlayDraw([this, corY, minPixelSpacing, makeCellKey](QPainter &p, float scaleX, float scaleY)
                                   {
@@ -5332,7 +5403,8 @@ void ManualSeedSelector::updateViews(unsigned planes)
         }
         drawRulerOverlay(p, scaleX, scaleY, m_coronalRuler, corY, m_image.getSpacingX(), m_image.getSpacingZ());
         drawLocatedPointOverlay(p, scaleX, scaleY, SlicePlane::Coronal);
-        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Coronal); });
+        drawSolverNetworkOverlay(p, scaleX, scaleY, SlicePlane::Coronal);
+        drawBrushOutline(p, scaleX, scaleY, SlicePlane::Coronal); });
 }
 
 void ManualSeedSelector::jumpToVoxel(int x, int y, int z)
@@ -7124,6 +7196,176 @@ void ManualSeedSelector::reportLockedLabel(int label)
         m_statusLabel->setText(QString("%1 is locked: unlock it in Labels to paint or erase it.").arg(labelDisplayName(label)));
 }
 
+bool ManualSeedSelector::editedMaskReady()
+{
+    commitMaskEdit();
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
+    return !m_maskData.empty() && m_maskDimX > 0 && m_maskDimY > 0 && m_maskDimZ > 0 &&
+           m_maskData.size() == size_t(m_maskDimX) * m_maskDimY * m_maskDimZ;
+}
+
+double ManualSeedSelector::voxelVolumeMm3() const
+{
+    const std::array<double, 3> spacing = brushSpacing();
+    return spacing[0] * spacing[1] * spacing[2];
+}
+
+std::vector<label_ops::Piece> ManualSeedSelector::labelPieces(int label)
+{
+    if (!editedMaskReady())
+        return {};
+    return label_ops::pieces(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label);
+}
+
+long long ManualSeedSelector::finishLabelOperation(const char *name, long long changed, long long refused)
+{
+    if (m_maskHistory.commit())
+        applyMaskLabelDelta(m_maskHistory.lastLabelDelta());
+    m_mask3DDirty = true;
+    updateMaskUndoControls();
+    updateViews();
+    if (m_statusLabel)
+    {
+        QString text = QString("%1: %2 voxel(s) changed").arg(name).arg(QLocale().toString(changed));
+        if (refused > 0)
+            text += QString(", %1 kept by locks").arg(QLocale().toString(refused));
+        m_statusLabel->setText(text + ".");
+    }
+    return changed;
+}
+
+long long ManualSeedSelector::writeLabelOperation(const char *name, const std::vector<std::size_t> &indices,
+                                                  int newValue)
+{
+    m_maskHistory.begin(name);
+    long long changed = 0;
+    long long refused = 0;
+    for (const std::size_t index : indices)
+    {
+        if (m_maskData[index] == newValue)
+            continue;
+        if (maskWriteAllowed(m_maskData[index], newValue, false))
+        {
+            m_maskHistory.write(m_maskData, index, newValue);
+            ++changed;
+        }
+        else
+            ++refused;
+    }
+    return finishLabelOperation(name, changed, refused);
+}
+
+long long ManualSeedSelector::remapLabelOperation(const char *name, const std::map<int, int> &remap)
+{
+    m_maskHistory.begin(name);
+    long long changed = 0;
+    long long refused = 0;
+    for (std::size_t i = 0; i < m_maskData.size(); ++i)
+    {
+        const auto it = remap.find(m_maskData[i]);
+        if (it == remap.end())
+            continue;
+        if (it->second == m_maskData[i])
+            continue;
+        if (maskWriteAllowed(m_maskData[i], it->second, false))
+        {
+            m_maskHistory.write(m_maskData, i, it->second);
+            ++changed;
+        }
+        else
+            ++refused;
+    }
+    return finishLabelOperation(name, changed, refused);
+}
+
+long long ManualSeedSelector::removeLabelIslands(int label, double maxMm3)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    const std::array<unsigned, 3> dims{m_maskDimX, m_maskDimY, m_maskDimZ};
+    const double voxelMm3 = voxelVolumeMm3();
+    std::vector<std::size_t> islands;
+    for (const label_ops::Piece &piece : label_ops::pieces(m_maskData, dims, label))
+    {
+        if (piece.voxels * voxelMm3 > maxMm3)
+            continue;
+        const std::vector<std::size_t> voxels = label_ops::pieceAt(m_maskData, dims, piece.seed);
+        islands.insert(islands.end(), voxels.begin(), voxels.end());
+    }
+    return writeLabelOperation("Remove islands", islands, 0);
+}
+
+long long ManualSeedSelector::keepLargestPiece(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    const std::array<unsigned, 3> dims{m_maskDimX, m_maskDimY, m_maskDimZ};
+    const std::vector<label_ops::Piece> found = label_ops::pieces(m_maskData, dims, label);
+    std::vector<std::size_t> rest;
+    for (std::size_t i = 1; i < found.size(); ++i)
+    {
+        const std::vector<std::size_t> voxels = label_ops::pieceAt(m_maskData, dims, found[i].seed);
+        rest.insert(rest.end(), voxels.begin(), voxels.end());
+    }
+    return writeLabelOperation("Keep largest piece", rest, 0);
+}
+
+long long ManualSeedSelector::relabelPieceAt(int x, int y, int z, int newLabel)
+{
+    if (newLabel < 0 || !editedMaskReady())
+        return 0;
+    const int here = editedLabelAt(x, y, z);
+    if (here <= 0 || here == newLabel)
+        return 0;
+    const unsigned mappedZ = mapDepthIndex(static_cast<unsigned>(z), m_image.getSizeZ(), m_maskDimZ);
+    const size_t seed = size_t(x) + size_t(y) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
+    return writeLabelOperation("Relabel piece",
+                               label_ops::pieceAt(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, seed), newLabel);
+}
+
+long long ManualSeedSelector::swapLabels(int a, int b)
+{
+    if (a <= 0 || b <= 0 || a == b || !editedMaskReady())
+        return 0;
+    return remapLabelOperation("Swap labels", {{a, b}, {b, a}});
+}
+
+long long ManualSeedSelector::mergeLabelInto(int from, int to)
+{
+    if (from <= 0 || to < 0 || from == to || !editedMaskReady())
+        return 0;
+    return remapLabelOperation("Merge labels", {{from, to}});
+}
+
+void ManualSeedSelector::showLabelPieces(int label)
+{
+    const std::vector<label_ops::Piece> found = labelPieces(label);
+    const double voxelMm3 = voxelVolumeMm3();
+    QStringList lines;
+    const size_t shown = std::min<size_t>(found.size(), 12);
+    for (size_t i = 0; i < shown; ++i)
+    {
+        const size_t seed = found[i].seed;
+        const size_t plane = size_t(m_maskDimX) * m_maskDimY;
+        lines << QString("%1. %2 mm³ (%3 voxels), from x %4 y %5 z %6")
+                     .arg(i + 1)
+                     .arg(found[i].voxels * voxelMm3, 0, 'f', 1)
+                     .arg(QLocale().toString(found[i].voxels))
+                     .arg(seed % m_maskDimX)
+                     .arg((seed / m_maskDimX) % m_maskDimY)
+                     .arg(seed / plane);
+    }
+    if (found.size() > shown)
+        lines << QString("... and %1 more").arg(found.size() - shown);
+    QMessageBox::information(this, "Pieces",
+                             found.empty() ? QString("%1 is not in the edited mask.").arg(labelDisplayName(label))
+                                           : QString("%1 is in %2 piece(s):\n\n%3")
+                                                 .arg(labelDisplayName(label))
+                                                 .arg(found.size())
+                                                 .arg(lines.join('\n')));
+}
+
 bool ManualSeedSelector::pickActiveLabelAt(int x, int y, int z)
 {
     const int label = editedLabelAt(x, y, z);
@@ -7551,31 +7793,91 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
 
 void ManualSeedSelector::paintAxialMask(int x, int y)
 {
-    if (m_image.getSizeX() == 0)
-        return;
-    int z = m_axialSlider->value();
-    bool erase = (m_maskMode == 2);
-    applyBrushToMask({x, y, z}, {0, 1}, m_maskBrushRadius, m_labelSelector->value(), erase);
-    requestViewUpdate(false);
+    paintMaskAt(SlicePlane::Axial, x, y);
 }
 
 void ManualSeedSelector::paintSagittalMask(int x, int y)
 {
-    int sx = m_sagittalSlider->value();
-    bool erase = (m_maskMode == 2);
-    applyBrushToMask({sx, x, y}, {1, 2}, m_maskBrushRadius, m_labelSelector->value(), erase);
-    requestViewUpdate(false);
+    paintMaskAt(SlicePlane::Sagittal, x, y);
 }
 
 void ManualSeedSelector::paintCoronalMask(int x, int y)
 {
-    int cy = m_coronalSlider->value();
-    bool erase = (m_maskMode == 2);
-    applyBrushToMask({x, cy, y}, {0, 2}, m_maskBrushRadius, m_labelSelector->value(), erase);
+    paintMaskAt(SlicePlane::Coronal, x, y);
+}
+
+std::array<double, 3> ManualSeedSelector::brushSpacing() const
+{
+    std::array<double, 3> spacing{m_image.getSpacingX(), m_image.getSpacingY(), m_image.getSpacingZ()};
+    for (double &s : spacing)
+        if (!(s > 0.0) || !std::isfinite(s))
+            s = 1.0;
+    return spacing;
+}
+
+void ManualSeedSelector::paintMaskAt(SlicePlane plane, int u, int v)
+{
+    if (m_image.getSizeX() == 0 || !m_labelSelector)
+        return;
+    std::pair<int, int> axes{0, 1};
+    switch (plane)
+    {
+    case SlicePlane::Axial:
+        axes = {0, 1};
+        break;
+    case SlicePlane::Sagittal:
+        axes = {1, 2};
+        break;
+    case SlicePlane::Coronal:
+        axes = {0, 2};
+        break;
+    }
+    const auto centerAt = [&](int pu, int pv) -> std::array<int, 3>
+    {
+        switch (plane)
+        {
+        case SlicePlane::Sagittal:
+            return {m_sagittalSlider->value(), pu, pv};
+        case SlicePlane::Coronal:
+            return {pu, m_coronalSlider->value(), pv};
+        case SlicePlane::Axial:
+        default:
+            return {pu, pv, m_axialSlider->value()};
+        }
+    };
+    const bool erase = (m_maskMode == 2);
+    const int label = m_labelSelector->value();
+
+    // Pointer events arrive tens of voxels apart on a fast stroke; stamping the brush only
+    // where they land leaves gaps, so the segment from the last stamp is walked at half the
+    // brush's smallest in-plane radius.
+    if (m_lastBrushStamp && m_lastBrushStamp->plane == plane)
+    {
+        const std::array<double, 3> spacing = brushSpacing();
+        const double reach = std::max(1.0, std::min(m_brushRadiusMm / spacing[size_t(axes.first)],
+                                                    m_brushRadiusMm / spacing[size_t(axes.second)]));
+        const double step = std::max(1.0, reach / 2.0);
+        const double du = double(u - m_lastBrushStamp->u);
+        const double dv = double(v - m_lastBrushStamp->v);
+        const int count = static_cast<int>(std::ceil(std::hypot(du, dv) / step));
+        for (int i = 1; i <= count; ++i)
+        {
+            const double t = double(i) / count;
+            applyBrushToMask(centerAt(static_cast<int>(std::lround(m_lastBrushStamp->u + t * du)),
+                                      static_cast<int>(std::lround(m_lastBrushStamp->v + t * dv))),
+                             axes, m_brushRadiusMm, label, erase);
+        }
+        if (count == 0)
+            applyBrushToMask(centerAt(u, v), axes, m_brushRadiusMm, label, erase);
+    }
+    else
+        applyBrushToMask(centerAt(u, v), axes, m_brushRadiusMm, label, erase);
+    m_lastBrushStamp = BrushStamp{plane, u, v};
     requestViewUpdate(false);
 }
 
-void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, int radius, int labelValue, bool erase)
+void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes,
+                                          double radiusMm, int labelValue, bool erase)
 {
     const unsigned int imageSX = m_image.getSizeX();
     const unsigned int imageSY = m_image.getSizeY();
@@ -7597,10 +7899,6 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
     if (m_maskDimX != imageSX || m_maskDimY != imageSY || m_maskDimZ == 0)
         return;
 
-    const unsigned int maskSX = m_maskDimX;
-    const unsigned int maskSY = m_maskDimY;
-    const unsigned int maskSZ = m_maskDimZ;
-
     if (labelLocked(labelValue))
     {
         reportLockedLabel(labelValue);
@@ -7609,46 +7907,101 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
     // Continues the stroke's operation; the mouse release commits it.
     m_maskHistory.begin(erase ? "Erase" : "Brush");
 
-    std::array<int, 3> mappedCenter = center;
-    mappedCenter[2] = static_cast<int>(mapDepthIndex(static_cast<unsigned int>(std::max(0, center[2])), imageSZ, maskSZ));
+    // The brush is a disc of radiusMm in the view's plane, or a ball through the neighbouring
+    // slices, in millimetres: on anisotropic voxels it is an ellipse in voxel units. The
+    // centre voxel is always painted, so a radius under one voxel still paints.
+    const std::array<double, 3> spacing = brushSpacing();
+    const std::array<int, 3> dims{int(imageSX), int(imageSY), int(imageSZ)};
+    const int a0 = axes.first;
+    const int a1 = axes.second;
+    const int an = 3 - a0 - a1;
+    std::array<int, 3> reach{};
+    for (size_t a = 0; a < 3; ++a)
+        reach[a] = static_cast<int>(std::floor(radiusMm / spacing[a] + 1e-9));
+    if (!m_brushSphere)
+        reach[size_t(an)] = 0;
+    const double r2 = radiusMm * radiusMm;
+    const size_t maskPlane = size_t(m_maskDimX) * size_t(m_maskDimY);
 
-    int a0 = axes.first;
-    int a1 = axes.second;
-    int min0 = std::max(0, mappedCenter[a0] - radius);
-    int max0 = std::min(int((a0 == 0 ? maskSX : (a0 == 1 ? maskSY : maskSZ))) - 1, mappedCenter[a0] + radius);
-    int min1 = std::max(0, mappedCenter[a1] - radius);
-    int max1 = std::min(int((a1 == 0 ? maskSX : (a1 == 1 ? maskSY : maskSZ))) - 1, mappedCenter[a1] + radius);
-
-    for (int i = min0; i <= max0; ++i)
-    {
-        for (int j = min1; j <= max1; ++j)
-        {
-            int di = i - mappedCenter[a0];
-            int dj = j - mappedCenter[a1];
-            if (di * di + dj * dj <= radius * radius)
+    std::array<int, 3> d{};
+    for (d[size_t(an)] = -reach[size_t(an)]; d[size_t(an)] <= reach[size_t(an)]; ++d[size_t(an)])
+        for (d[size_t(a1)] = -reach[size_t(a1)]; d[size_t(a1)] <= reach[size_t(a1)]; ++d[size_t(a1)])
+            for (d[size_t(a0)] = -reach[size_t(a0)]; d[size_t(a0)] <= reach[size_t(a0)]; ++d[size_t(a0)])
             {
-                int xi = (a0 == 0) ? i : ((a1 == 0) ? j : mappedCenter[0]);
-                int yi = (a0 == 1) ? i : ((a1 == 1) ? j : mappedCenter[1]);
-                int zi = (a0 == 2) ? i : ((a1 == 2) ? j : mappedCenter[2]);
-                if (xi < 0 || yi < 0 || zi < 0 || xi >= int(maskSX) || yi >= int(maskSY) || zi >= int(maskSZ))
+                double mm2 = 0.0;
+                for (size_t a = 0; a < 3; ++a)
+                    mm2 += (d[a] * spacing[a]) * (d[a] * spacing[a]);
+                if (mm2 > r2 && (d[0] != 0 || d[1] != 0 || d[2] != 0))
                     continue;
-                const size_t idx = size_t(xi) + size_t(yi) * maskSX + size_t(zi) * maskSX * maskSY;
+                std::array<int, 3> p{};
+                bool inside = true;
+                for (size_t a = 0; a < 3; ++a)
+                {
+                    p[a] = center[a] + d[a];
+                    inside = inside && p[a] >= 0 && p[a] < dims[a];
+                }
+                if (!inside)
+                    continue;
+                const unsigned maskZ = mapDepthIndex(static_cast<unsigned>(p[2]), imageSZ, m_maskDimZ);
+                const size_t idx = size_t(p[0]) + size_t(p[1]) * m_maskDimX + size_t(maskZ) * maskPlane;
                 if (erase)
                 {
                     if (m_maskData[idx] == labelValue)
                         m_maskHistory.write(m_maskData, idx, 0);
                 }
                 else if (maskWriteAllowed(m_maskData[idx], labelValue, true))
-                {
                     m_maskHistory.write(m_maskData, idx, labelValue);
-                }
             }
-        }
-        m_mask3DDirty = true;
-    }
+    m_mask3DDirty = true;
 
     if (!erase)
         noteActiveMaskLabel(labelValue);
+}
+
+void ManualSeedSelector::setBrushRadiusMm(double radiusMm)
+{
+    radiusMm = std::clamp(radiusMm, kBrushRadiusMinMm, kBrushRadiusMaxMm);
+    m_brushRadiusMm = radiusMm;
+    if (m_brushRadiusSpin && m_brushRadiusSpin->value() != radiusMm)
+    {
+        QSignalBlocker blocker(m_brushRadiusSpin);
+        m_brushRadiusSpin->setValue(radiusMm);
+    }
+    requestViewUpdate(false); // the outline
+}
+
+void ManualSeedSelector::setBrushSphere(bool sphere)
+{
+    m_brushSphere = sphere;
+    if (m_brushSphereCheck && m_brushSphereCheck->isChecked() != sphere)
+    {
+        QSignalBlocker blocker(m_brushSphereCheck);
+        m_brushSphereCheck->setChecked(sphere);
+    }
+}
+
+void ManualSeedSelector::drawBrushOutline(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const
+{
+    if (!m_brushHover || m_brushHover->plane != plane || !isMaskTabActive() || m_maskMode == 0)
+        return;
+    const std::array<double, 3> spacing = brushSpacing();
+    int au = 0;
+    int av = 1;
+    if (plane == SlicePlane::Sagittal)
+    {
+        au = 1;
+        av = 2;
+    }
+    else if (plane == SlicePlane::Coronal)
+        av = 2;
+    const QPointF centre((m_brushHover->u + 0.5) * scaleX, (m_brushHover->v + 0.5) * scaleY);
+    const double rx = std::max(0.5, m_brushRadiusMm / spacing[size_t(au)]) * scaleX;
+    const double ry = std::max(0.5, m_brushRadiusMm / spacing[size_t(av)]) * scaleY;
+    p.save();
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(255, 255, 255, 200), 1.0, m_maskMode == 2 ? Qt::DashLine : Qt::SolidLine));
+    p.drawEllipse(centre, rx, ry);
+    p.restore();
 }
 
 // =============================================================================
@@ -7976,6 +8329,7 @@ void restoreScrollAnchor(QListWidget *list, const ListScrollAnchor &anchor)
 
 void ManualSeedSelector::commitMaskEdit()
 {
+    m_lastBrushStamp.reset();
     if (m_maskHistory.hasOpenOperation())
     {
         if (m_maskHistory.commit())

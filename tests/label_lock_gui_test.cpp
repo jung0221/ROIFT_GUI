@@ -8,7 +8,6 @@
 #include <QDir>
 #include <QPushButton>
 #include <QSettings>
-#include <QSlider>
 #include <QTemporaryDir>
 #include <QTreeWidget>
 
@@ -78,7 +77,7 @@ int maskAt(unsigned x, unsigned y, unsigned)
     return y < kDim / 2 ? 2 : 0;
 }
 
-// A stroke along row y from x0 to x1 with the brush at radius 1.
+// A stroke along row y from x0 to x1.
 void stroke(OrthogonalView *view, int x0, int x1, int y)
 {
     emit view->mousePressed(x0, y, Qt::LeftButton);
@@ -134,12 +133,11 @@ int main(int argc, char **argv)
     auto *draw = window.findChild<QPushButton *>("maskDrawButton");
     auto *erase = window.findChild<QPushButton *>("maskEraseButton");
     auto *clear = window.findChild<QPushButton *>("maskClearButton");
-    auto *radius = window.findChild<QSlider *>("maskBrushRadius");
-    const bool found = tree && axial && draw && erase && clear && radius;
+    const bool found = tree && axial && draw && erase && clear;
     check(found, "controls found");
     if (!found)
         return 1;
-    radius->setValue(1);
+    window.setBrushRadiusMm(1.0); // one voxel at the test image's 1 mm spacing
     const MaskEditHistory &history = window.maskEditHistory();
 
     // Lock label 1 from its row.

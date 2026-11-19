@@ -9,7 +9,8 @@
 
 ## Mouse
 - Left-click in a view to add seeds (when seed mode is draw)
-- Hold left-drag to draw mask strokes when in mask mode
+- Hold left-drag to draw mask strokes when in mask mode; see [Brush](#brush)
+- Ctrl+wheel over a view resizes the brush while the mask brush is on; otherwise the wheel zooms
 - Ctrl+click in any view to paint with the edited mask's label under the cursor; see
   [Label table](#label-table)
 - Right-click to erase (or use mask dialog's erase mode)
@@ -56,6 +57,21 @@
 - Each drawn mask is a full label volume in memory, so opening several large masks is
   answered with a size warning before it happens.
 
+## Brush
+- The radius is in millimetres (0.1 to 50 mm, `Radius` in the `Brush` group), so the brush
+  covers the same anatomy on a 0.16 mm CBCT as on a 1 mm CT. A stamp paints every voxel whose
+  centre lies within the radius of the centre voxel's, using the image's spacing: on
+  anisotropic voxels it is an ellipse in voxel units. The centre voxel is always painted, so a
+  radius under one voxel paints that voxel.
+- `Ball` paints a ball through the neighbouring slices instead of a disc on the slice drawn on.
+  On a 0.5 x 0.5 x 2 mm image a 2 mm ball reaches one slice each way, and on those slices only
+  the centre voxel.
+- Ctrl+wheel over a view changes the radius by a tenth per step while the mask brush is on.
+- A white circle (dashed when erasing) shows the brush under the pointer.
+- Between two pointer events of a stroke the brush is stamped along the segment, at half its
+  smallest in-plane radius, so a fast stroke leaves no gap; the stroke is still one undo step.
+- Before this, the radius was in voxels (1 to 50, default 5).
+
 ## Label table
 - The `Labels` section lists one row per label of the edited mask, and one per label of the
   loaded names: a box that shows or hides the label, a box that locks it, its colour and value,
@@ -84,6 +100,18 @@
   holding its label: `Any unlocked label` (the default), `Background only`, or `One label`
   (the number beside it). It applies to brush strokes; `Clear`, `Threshold` and slice runs
   follow the locks only.
+- **Tools** acts on the active label of the edited mask, each operation one undo step that
+  leaves locked labels as they are; the status bar says how many voxels changed and how many
+  the locks kept:
+  - `Pieces of ...` lists its pieces (26-connected: voxels touching at a face, an edge or a
+    corner belong together), largest first, with their volume in mm³ and a voxel of each.
+  - `Remove small pieces of ...` turns every piece up to a volume in mm³ into background.
+  - `Keep only the largest piece of ...` turns every other piece into background.
+  - `Swap ... with` exchanges two labels everywhere; `Merge ... into` gives every voxel of the
+    active label another one (0 clears it).
+- Right-click a voxel of the edited mask and choose `Give this piece of ... the label ...` to
+  give the whole piece under the pointer the active label: the fix for a tooth that a model
+  numbered as its mirror (21 for 11).
 - The counts are taken by one scan when a mask is loaded, and then follow each edit, undo and
   redo by the voxels it changed, so they stay current without rescanning the volume.
 

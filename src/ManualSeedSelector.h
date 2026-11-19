@@ -17,9 +17,11 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <thread>
 #include <vector>
+#include "LabelOps.h"
 #include "LabelTable.h"
 #include "MaskAutosave.h"
 #include "MaskEditHistory.h"
@@ -162,6 +164,16 @@ public:
     // Makes the edited mask's label under a voxel the active one (Ctrl+click). False when
     // there is none there.
     bool pickActiveLabelAt(int x, int y, int z);
+    // The brush, in millimetres so it paints the same anatomy on a 0.16 mm CBCT as on a 1 mm CT:
+    // a disc in the view's plane, or a ball through the neighbouring slices.
+    static constexpr double kBrushRadiusMinMm = 0.1;
+    static constexpr double kBrushRadiusMaxMm = 50.0;
+    static constexpr double kBrushDefaultRadiusMm = 2.0;
+    void setBrushRadiusMm(double radiusMm);
+    double brushRadiusMm() const { return m_brushRadiusMm; }
+    void setBrushSphere(bool sphere);
+    bool brushSphere() const { return m_brushSphere; }
+
     // A locked label keeps every voxel as it is: no brush, erase, Clear, Threshold or slice
     // paste changes, removes or grows it. Undo and redo still replay it.
     void setLabelLocked(int label, bool locked);
@@ -175,6 +187,19 @@ public:
     };
     void setPaintOver(PaintOver target, int label = 0);
     PaintOver paintOver() const { return m_paintOver; }
+
+    // Pieces (26-connected components) of a label of the edited mask, largest first.
+    std::vector<label_ops::Piece> labelPieces(int label);
+    // Label operations on the edited mask. Each is one undo step, keeps locked labels as they
+    // are, and returns the voxels it changed (0 when there was nothing to do or it was refused).
+    // Pieces of label no larger than maxMm3 become background.
+    long long removeLabelIslands(int label, double maxMm3);
+    // Every piece of label but the largest becomes background.
+    long long keepLargestPiece(int label);
+    // The piece holding the voxel takes newLabel (a tooth given its mirror number).
+    long long relabelPieceAt(int x, int y, int z, int newLabel);
+    long long swapLabels(int a, int b);
+    long long mergeLabelInto(int from, int to);
 
     // Voxels per label of the edited mask (background left out), kept current edit by edit.
     const std::map<int, long long> &maskLabelCounts() const { return m_labelCounts; }
@@ -301,7 +326,9 @@ private slots:
     void paintAxialMask(int x, int y);
     void paintSagittalMask(int x, int y);
     void paintCoronalMask(int x, int y);
-    void applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, int radius, int labelValue, bool erase = false);
+    // One stamp of the brush at an image voxel, on the plane spanned by axes.
+    void applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, double radiusMm,
+                          int labelValue, bool erase = false);
     // Closes the open brush stroke, if any, as one undo step.
     void commitMaskEdit();
     void updateMaskUndoControls();
@@ -317,6 +344,11 @@ private:
         Sagittal,
         Coronal
     };
+    // A pointer event of a stroke on a view, stamped from the stroke's last position to this one.
+    void paintMaskAt(SlicePlane plane, int u, int v);
+    // The image's voxel spacing, 1 mm on an axis where it is not positive.
+    std::array<double, 3> brushSpacing() const;
+    void drawBrushOutline(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const;
     // Seed subset drawn across all views; orthogonal to the per-view Show Seeds toggles.
     enum class SeedTypeFilter
     {
@@ -714,7 +746,18 @@ private:
     unsigned int m_maskDimY = 0;
     unsigned int m_maskDimZ = 0;
     int m_maskMode = 0;
-    int m_maskBrushRadius = 6;
+    double m_brushRadiusMm = kBrushDefaultRadiusMm;
+    bool m_brushSphere = false;
+    QDoubleSpinBox *m_brushRadiusSpin = nullptr;
+    QCheckBox *m_brushSphereCheck = nullptr;
+    struct BrushStamp
+    {
+        SlicePlane plane;
+        int u;
+        int v;
+    };
+    std::optional<BrushStamp> m_lastBrushStamp; // the stroke in progress, reset by commitMaskEdit()
+    std::optional<BrushStamp> m_brushHover;     // where the brush outline is drawn
     float m_maskOpacity = 0.5f;
     // Mask-label visibility filter (Mask tab). Maps a label value to whether it
     // is shown in the 2D/3D viewers. Labels absent from the map default to
@@ -742,7 +785,6 @@ private:
     QPushButton *m_btnMaskRedo = nullptr;
     QSpinBox *m_seedBrushSpin = nullptr;
     QSpinBox *m_seedDisplaySpacingSpin = nullptr;
-    QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
     // Mask-label filter UI: the section is shown only when the mask has >1 label;
     // the layout holds one swatch+checkbox row per present label, rebuilt on
@@ -765,6 +807,15 @@ private:
     bool maskWriteAllowed(int before, int after, bool brush) const;
     // Status line for a stroke refused because its label is locked.
     void reportLockedLabel(int label);
+    // The edited mask's voxels (read first if pending), or false when there are none.
+    bool editedMaskReady();
+    // One undo step setting each voxel of indices to newValue, or each voxel to remap(value);
+    // locked labels are left as they are. Returns the voxels changed.
+    long long writeLabelOperation(const char *name, const std::vector<std::size_t> &indices, int newValue);
+    long long remapLabelOperation(const char *name, const std::map<int, int> &remap);
+    long long finishLabelOperation(const char *name, long long changed, long long refused);
+    double voxelVolumeMm3() const;
+    void showLabelPieces(int label);
     // Rebuilds the rows when the set of labels changed, else only refreshes their counts.
     void refreshLabelPanel();
     void applyMaskLabelDelta(const std::unordered_map<int, long long> &delta);
