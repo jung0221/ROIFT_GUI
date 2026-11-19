@@ -21,6 +21,7 @@
 #include <set>
 #include <thread>
 #include <vector>
+#include "FloodFill.h"
 #include "LabelOps.h"
 #include "SliceFill.h"
 #include "LabelTable.h"
@@ -201,6 +202,14 @@ public:
     long long relabelPieceAt(int x, int y, int z, int newLabel);
     long long swapLabels(int a, int b);
     long long mergeLabelInto(int from, int to);
+    // Fill (the fourth drawing mode): the face-connected region under (x, y, z) that holds the
+    // clicked voxel's label and lies within the fill tolerance of its intensity takes the
+    // active label. planeAxis 0, 1 or 2 keeps it on that slice; -1 spreads it in 3D. Writes
+    // like a brush stroke. Stops, changing nothing, past kFloodFillMaxVoxels.
+    static constexpr std::size_t kFloodFillMaxVoxels = 20'000'000;
+    long long floodFillAt(int x, int y, int z, int planeAxis);
+    void setFillTolerance(double tolerance);
+    double fillTolerance() const { return m_fillTolerance; }
     // Carries label through every run of empty slices between two slices holding it, along
     // normalAxis (0 sagittal, 1 coronal, 2 axial), by blending the two outlines' signed
     // distances. Writes like a brush stroke: locks and "Over" apply.
@@ -785,6 +794,9 @@ private:
     QPushButton *m_btnSeedOff = nullptr;
     QPushButton *m_btnMaskDraw = nullptr;
     QPushButton *m_btnMaskErase = nullptr;
+    QPushButton *m_btnMaskFill = nullptr;
+    double m_fillTolerance = 100.0;
+    QDoubleSpinBox *m_fillToleranceSpin = nullptr;
     QPushButton *m_btnMaskOff = nullptr;
     QPushButton *m_btnMaskUndo = nullptr;
     QPushButton *m_btnMaskRedo = nullptr;

@@ -835,6 +835,12 @@ void ManualSeedSelector::setupUi()
     m_btnMaskErase->setToolTip("Erase mask regions");
     maskModeLayout->addWidget(m_btnMaskErase);
 
+    m_btnMaskFill = new QPushButton("Fill");
+    m_btnMaskFill->setObjectName("maskFillButton");
+    m_btnMaskFill->setCheckable(true);
+    m_btnMaskFill->setToolTip("Click to give the active label to the connected region of similar intensity under the pointer");
+    maskModeLayout->addWidget(m_btnMaskFill);
+
     m_btnMaskOff = new QPushButton("Off");
     m_btnMaskOff->setObjectName("maskOffButton");
     m_btnMaskOff->setCheckable(true);
@@ -846,6 +852,7 @@ void ManualSeedSelector::setupUi()
     maskModeButtons->addButton(m_btnMaskOff, 0);   // mode 0 = off
     maskModeButtons->addButton(m_btnMaskDraw, 1);  // mode 1 = draw
     maskModeButtons->addButton(m_btnMaskErase, 2); // mode 2 = erase
+    maskModeButtons->addButton(m_btnMaskFill, 3);  // mode 3 = fill
     connect(maskModeButtons, QOverload<int>::of(&QButtonGroup::idClicked), [this](int id)
             { setMaskMode(id); });
 
@@ -951,6 +958,18 @@ void ManualSeedSelector::setupUi()
     m_paintOverLabelSpin->setEnabled(false);
     m_paintOverLabelSpin->setToolTip("The one label a stroke may paint over");
     maskBrushLayout->addWidget(m_paintOverLabelSpin, 2, 2);
+
+    maskBrushLayout->addWidget(new QLabel("Fill \u00b1:"), 3, 0);
+    m_fillToleranceSpin = new QDoubleSpinBox();
+    m_fillToleranceSpin->setObjectName("fillTolerance");
+    m_fillToleranceSpin->setRange(0.0, 1e6);
+    m_fillToleranceSpin->setDecimals(1);
+    m_fillToleranceSpin->setSingleStep(10.0);
+    m_fillToleranceSpin->setValue(m_fillTolerance);
+    m_fillToleranceSpin->setToolTip("Fill spreads to voxels within this much of the clicked voxel's intensity (image units, HU on CT); Ball spreads it in 3D");
+    connect(m_fillToleranceSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double t)
+            { m_fillTolerance = t; });
+    maskBrushLayout->addWidget(m_fillToleranceSpin, 3, 1);
     connect(m_paintOverCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int)
             { setPaintOver(static_cast<PaintOver>(m_paintOverCombo->currentData().toInt()), m_paintOverLabelSpin->value()); });
     connect(m_paintOverLabelSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value)
@@ -7340,6 +7359,62 @@ long long ManualSeedSelector::swapLabels(int a, int b)
     return remapLabelOperation("Swap labels", {{a, b}, {b, a}});
 }
 
+void ManualSeedSelector::setFillTolerance(double tolerance)
+{
+    m_fillTolerance = std::max(0.0, tolerance);
+    if (m_fillToleranceSpin && m_fillToleranceSpin->value() != m_fillTolerance)
+    {
+        QSignalBlocker blocker(m_fillToleranceSpin);
+        m_fillToleranceSpin->setValue(m_fillTolerance);
+    }
+}
+
+long long ManualSeedSelector::floodFillAt(int x, int y, int z, int planeAxis)
+{
+    const unsigned sx = m_image.getSizeX();
+    const unsigned sy = m_image.getSizeY();
+    const unsigned sz = m_image.getSizeZ();
+    if (sx == 0 || !m_image.buffer() || x < 0 || y < 0 || z < 0 || unsigned(x) >= sx || unsigned(y) >= sy ||
+        unsigned(z) >= sz)
+        return 0;
+    commitMaskEdit();
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
+    if (m_maskData.empty())
+    {
+        m_maskData.assign(size_t(sx) * sy * sz, 0);
+        m_maskDimX = sx;
+        m_maskDimY = sy;
+        m_maskDimZ = sz;
+    }
+    if (m_maskDimX != sx || m_maskDimY != sy || m_maskDimZ != sz)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText("Fill needs a mask on the image's grid.");
+        return 0;
+    }
+    const int label = activeLabel();
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    const size_t seed = size_t(x) + size_t(y) * sx + size_t(z) * sx * sy;
+    const double value = m_image.buffer()[seed];
+    std::vector<size_t> region;
+    const flood_fill::Outcome outcome =
+        flood_fill::region(m_maskData, m_image.buffer(), {sx, sy, sz}, seed, value - m_fillTolerance,
+                           value + m_fillTolerance, planeAxis, kFloodFillMaxVoxels, region);
+    if (outcome == flood_fill::Outcome::TooLarge)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Fill stopped: the region passed %1 voxels. Lower the tolerance, or fill on one slice.")
+                                       .arg(QLocale().toString(qulonglong(kFloodFillMaxVoxels))));
+        return 0;
+    }
+    return writeLabelOperation("Fill", region, label, true);
+}
+
 long long ManualSeedSelector::fillBetweenSlices(int label, int normalAxis)
 {
     if (label <= 0 || normalAxis < 0 || normalAxis > 2 || !editedMaskReady())
@@ -7887,6 +7962,18 @@ void ManualSeedSelector::paintMaskAt(SlicePlane plane, int u, int v)
             return {pu, pv, m_axialSlider->value()};
         }
     };
+    if (m_maskMode == 3)
+    {
+        // A fill happens once, on the press; the moves of the same press do nothing.
+        if (!m_lastBrushStamp)
+        {
+            const std::array<int, 3> voxel = centerAt(u, v);
+            const int normal = 3 - axes.first - axes.second;
+            floodFillAt(voxel[0], voxel[1], voxel[2], m_brushSphere ? -1 : normal);
+        }
+        m_lastBrushStamp = BrushStamp{plane, u, v};
+        return;
+    }
     const bool erase = (m_maskMode == 2);
     const int label = m_labelSelector->value();
 
@@ -8024,7 +8111,7 @@ void ManualSeedSelector::setBrushSphere(bool sphere)
 
 void ManualSeedSelector::drawBrushOutline(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const
 {
-    if (!m_brushHover || m_brushHover->plane != plane || !isMaskTabActive() || m_maskMode == 0)
+    if (!m_brushHover || m_brushHover->plane != plane || !isMaskTabActive() || m_maskMode == 0 || m_maskMode == 3)
         return;
     const std::array<double, 3> spacing = brushSpacing();
     int au = 0;
