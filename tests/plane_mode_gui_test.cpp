@@ -580,6 +580,13 @@ int main(int argc, char **argv)
         check(wroteSlice, "slice run fixtures written");
 
         ManualSeedSelector slice("");
+        // The runs leave unsaved edits, so switching image or mask afterwards asks about
+        // them; these checks are about the runs, so every question is answered Discard.
+        int unsavedPrompts = 0;
+        slice.setUnsavedEditsPrompt([&unsavedPrompts](const QString &, const QStringList &)
+                                    {
+            ++unsavedPrompts;
+            return ManualSeedSelector::UnsavedEditsChoice::Discard; });
         slice.addImagesFromPaths({ballPath, otherPath});
         QListWidget *list = slice.findChild<QListWidget *>("imageList");
         QListWidget *masks = slice.findChild<QListWidget *>("maskList");
@@ -663,6 +670,7 @@ int main(int argc, char **argv)
         check(imageChanged.arrived && !imageChanged.success && imageChanged.message.contains("image changed"),
               "image switched during the run: result discarded, image named");
         check(slice.activeMaskLabels() == voxelsOf(otherMaskValue), "image switched: the other image's mask is untouched");
+        check(unsavedPrompts > 0, "switching image after a paste asked about the unsaved edits");
 
         prepare();
         slice.applyMaskFromPath(maskBPath.toStdString());

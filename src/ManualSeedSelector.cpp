@@ -1708,6 +1708,12 @@ void ManualSeedSelector::setupUi()
             {
         int currentRow = m_niftiList->currentRow();
         if (currentRow >= 0 && currentRow < static_cast<int>(m_images.size())) {
+            if (currentRow == m_currentImageIndex) {
+                MaskEditLoss loss;
+                loss.everything = true;
+                if (!confirmMaskEditLoss("Removing the image", loss))
+                    return;
+            }
             const QString removedName = QFileInfo(QString::fromStdString(m_images[currentRow].imagePath)).fileName();
             m_images.erase(m_images.begin() + currentRow);
             delete m_niftiList->takeItem(currentRow);
@@ -1737,6 +1743,10 @@ void ManualSeedSelector::setupUi()
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
         if (answer != QMessageBox::Yes)
+            return;
+        MaskEditLoss loss;
+        loss.everything = true;
+        if (!confirmMaskEditLoss("Removing all images", loss))
             return;
 
         m_images.clear();
@@ -1869,6 +1879,10 @@ void ManualSeedSelector::setupUi()
         const QString path = QDir::cleanPath(QFileInfo(item->data(kPathRole).toString()).absoluteFilePath());
         const QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
         const bool removingActiveMask = (!activeMaskPath.isEmpty() && path == activeMaskPath);
+        MaskEditLoss loss;
+        loss.path = path;
+        if (!confirmMaskEditLoss(QString("Removing %1").arg(QFileInfo(path).fileName()), loss))
+            return;
         if (!forgetMaskPath(path, item->data(kMaskSourceImageRole).toInt())) {
             QMessageBox::warning(this, "Remove Mask", "Selected mask is not present in the internal list.");
             return;
@@ -1896,6 +1910,10 @@ void ManualSeedSelector::setupUi()
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
         if (answer != QMessageBox::Yes)
+            return;
+        MaskEditLoss loss;
+        loss.everything = true;
+        if (!confirmMaskEditLoss("Removing all masks", loss))
             return;
 
         std::vector<std::unordered_set<std::string>> perImageToRemove(m_images.size());
@@ -2010,7 +2028,10 @@ void ManualSeedSelector::setupUi()
             return;
         }
 
-        selectActiveMask(maskPath);
+        if (!selectActiveMask(maskPath)) {
+            updateMaskSeedLists(); // the row goes back to the mask still edited
+            return;
+        }
 
         // Read the row before refreshing the list: that rebuild deletes every
         // item, this one included.
@@ -2780,6 +2801,20 @@ void ManualSeedSelector::selectImageRow(int row)
     if (m_imageLoad)
         return;
 
+    // Every mask of the current image goes with it.
+    MaskEditLoss loss;
+    loss.everything = true;
+    if (!confirmMaskEditLoss(QString("Opening %1").arg(QFileInfo(QString::fromStdString(m_images[size_t(row)].imagePath)).fileName()),
+                             loss))
+    {
+        if (m_niftiList)
+        {
+            QSignalBlocker blocker(m_niftiList);
+            m_niftiList->setCurrentRow(m_currentImageIndex);
+        }
+        return;
+    }
+
     // Persist current slice positions before switching images.
     if (m_currentImageIndex >= 0 && m_currentImageIndex < static_cast<int>(m_images.size()))
     {
@@ -2841,7 +2876,22 @@ void ManualSeedSelector::finishBackgroundImageLoad(const std::shared_ptr<ImageLo
     else if (!job->ok)
         reportImageLoadFailure(job->data.imagePath, job->error);
     else
+    {
+        // The previous image stayed editable while this one was read.
+        MaskEditLoss loss;
+        loss.everything = true;
+        if (!confirmMaskEditLoss(QString("Opening %1").arg(QFileInfo(path).fileName()), loss))
+        {
+            if (m_niftiList)
+            {
+                QSignalBlocker blocker(m_niftiList);
+                m_niftiList->setCurrentRow(m_currentImageIndex);
+            }
+            emit imageLoadFinished(false, path);
+            return;
+        }
         applyLoadedImage(row, std::move(job->image), job->data.isNumpy ? &job->report : nullptr);
+    }
     emit imageLoadFinished(row >= 0 && job->ok, path);
 
     // The user may have selected another row meanwhile.
@@ -3985,6 +4035,13 @@ void ManualSeedSelector::expandDefaultSections()
 
 void ManualSeedSelector::closeEvent(QCloseEvent *event)
 {
+    MaskEditLoss loss;
+    loss.everything = true;
+    if (!confirmMaskEditLoss("Closing the window", loss))
+    {
+        event->ignore();
+        return;
+    }
     saveUiState();
     QMainWindow::closeEvent(event);
 }
@@ -5982,7 +6039,23 @@ void ManualSeedSelector::toggleMaskVisible(const QString &absolutePath)
     updateViews();
 }
 
-void ManualSeedSelector::selectActiveMask(const QString &absolutePath)
+bool ManualSeedSelector::selectActiveMask(const QString &absolutePath)
+{
+    const QString key = QDir::cleanPath(QFileInfo(absolutePath.trimmed()).absoluteFilePath());
+    if (key.isEmpty() || key.toStdString() == m_loadedMaskPath)
+    {
+        switchActiveMask(absolutePath);
+        return true;
+    }
+    MaskEditLoss loss;
+    loss.releasesEdited = true;
+    if (!confirmMaskEditLoss(QString("Editing %1").arg(QFileInfo(key).fileName()), loss))
+        return false;
+    switchActiveMask(absolutePath);
+    return true;
+}
+
+void ManualSeedSelector::switchActiveMask(const QString &absolutePath)
 {
     const QString key = QDir::cleanPath(QFileInfo(absolutePath.trimmed()).absoluteFilePath());
     if (key.isEmpty())
@@ -6696,7 +6769,8 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     QString activeMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(m_loadedMaskPath)).absoluteFilePath());
     if (!selectedMaskPath.isEmpty() && selectedMaskPath != activeMaskPath)
     {
-        selectActiveMask(selectedMaskPath);
+        if (!selectActiveMask(selectedMaskPath))
+            return;
         activeMaskPath = selectedMaskPath;
     }
     // Thresholding a mask is pointless without seeing what it did to it, and
@@ -6977,7 +7051,7 @@ bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *erro
     }
 }
 
-void ManualSeedSelector::saveMaskToFile()
+bool ManualSeedSelector::saveMaskToFile()
 {
     const QString niftiFilter = "NIfTI files (*.nii *.nii.gz)";
     const QString pngFilter = "PNG label image (*.png)";
@@ -6985,18 +7059,29 @@ void ManualSeedSelector::saveMaskToFile()
     QString selected = niftiFilter;
     QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", filters, &selected);
     if (f.isEmpty())
-        return;
+        return false;
     if (selected == pngFilter && QFileInfo(f).suffix().isEmpty())
         f += ".png";
     QString error;
     if (!saveActiveMaskTo(f.toStdString(), &error))
+    {
         QMessageBox::critical(this, "Save Mask", error);
+        return false;
+    }
+    return true;
 }
 
 bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
 {
     const QString absoluteMaskPath = QDir::cleanPath(QFileInfo(QString::fromStdString(path)).absoluteFilePath());
     const bool hasImage = (m_image.getSizeX() > 0 && m_image.getSizeY() > 0 && m_image.getSizeZ() > 0);
+
+    // The read replaces the edited buffer and, for a drawn mask, that mask's voxels.
+    MaskEditLoss loss;
+    loss.releasesEdited = true;
+    loss.path = absoluteMaskPath;
+    if (!confirmMaskEditLoss(QString("Loading %1").arg(QFileInfo(absoluteMaskPath).fileName()), loss))
+        return false;
 
     // Read first, take the buffer over second: a failed read must not cost the
     // mask that is already loaded.
@@ -7577,6 +7662,148 @@ void ManualSeedSelector::updateMaskUndoControls()
     apply(m_btnMaskUndo, m_maskHistory.canUndo(), describe("Undo", m_maskHistory.undoName(), "Ctrl+Z"));
     apply(m_btnMaskRedo, m_maskHistory.canRedo(),
           describe("Redo", m_maskHistory.redoName(), "Ctrl+Shift+Z or Ctrl+Y"));
+}
+
+bool ManualSeedSelector::hasUnsavedMaskEdits() const
+{
+    if (m_maskHistory.isDirty())
+        return true;
+    for (const MaskLayer &layer : m_maskLayers)
+    {
+        if (layer.history.isDirty())
+            return true;
+    }
+    return false;
+}
+
+bool ManualSeedSelector::editedMaskReleaseDrops() const
+{
+    if (m_loadedMaskPath.empty())
+        return true;
+    const MaskLayer *layer = findMaskLayer(QString::fromStdString(m_loadedMaskPath));
+    return !layer || !layer->visible;
+}
+
+bool ManualSeedSelector::confirmMaskEditLoss(const QString &action, const MaskEditLoss &loss)
+{
+    commitMaskEdit(); // a stroke in progress is an edit too
+    const QString editedPath = QString::fromStdString(m_loadedMaskPath);
+    const QString lostPath = loss.path.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(loss.path).absoluteFilePath());
+
+    QStringList layerPaths;
+    for (const MaskLayer &layer : m_maskLayers)
+    {
+        if (!layer.history.isDirty() || layer.path.isEmpty() || layer.path == editedPath)
+            continue;
+        if (loss.everything || layer.path == lostPath)
+            layerPaths << layer.path;
+    }
+    bool edited = false;
+    if (m_maskHistory.isDirty() && !activeMaskPending())
+    {
+        edited = loss.everything || (loss.releasesEdited && editedMaskReleaseDrops()) ||
+                 (!lostPath.isEmpty() && lostPath == editedPath) ||
+                 // Saving a drawn mask goes through the edited buffer, which it releases.
+                 (!layerPaths.isEmpty() && editedMaskReleaseDrops());
+    }
+    if (!edited && layerPaths.isEmpty())
+        return true;
+
+    QStringList names;
+    if (edited)
+        names << (editedPath.isEmpty() ? QString("the mask painted on this image (no file yet)")
+                                       : QFileInfo(editedPath).fileName());
+    for (const QString &path : layerPaths)
+        names << QFileInfo(path).fileName();
+
+    const UnsavedEditsChoice choice = m_unsavedEditsPrompt ? m_unsavedEditsPrompt(action, names)
+                                                           : askUnsavedMaskEdits(action, names);
+    if (choice == UnsavedEditsChoice::Cancel)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("%1 cancelled: unsaved mask edits kept.").arg(action));
+        return false;
+    }
+    if (choice == UnsavedEditsChoice::Discard)
+    {
+        // The user has let them go; the action that follows must not ask again, even
+        // when it completes later (a background image read).
+        if (edited)
+            m_maskHistory.markSaved();
+        for (MaskLayer &layer : m_maskLayers)
+        {
+            if (layerPaths.contains(layer.path))
+                layer.history.markSaved();
+        }
+        updateMaskUndoControls();
+        return true;
+    }
+    return saveMaskEditsBeforeLoss(edited, layerPaths);
+}
+
+bool ManualSeedSelector::saveMaskEditsBeforeLoss(bool edited, const QStringList &layerPaths)
+{
+    if (edited)
+    {
+        if (m_loadedMaskPath.empty())
+        {
+            if (!saveMaskToFile())
+                return false;
+        }
+        else
+        {
+            QString error;
+            if (!saveActiveMaskTo(m_loadedMaskPath, &error))
+            {
+                QMessageBox::critical(this, "Save Mask", error);
+                return false;
+            }
+        }
+    }
+    if (layerPaths.isEmpty())
+        return true;
+
+    // A drawn mask is written through the edited buffer: edit it, save it, move on, and
+    // edit the first mask again at the end.
+    const QString previous = QString::fromStdString(m_loadedMaskPath);
+    bool ok = true;
+    for (const QString &path : layerPaths)
+    {
+        switchActiveMask(path);
+        QString error;
+        if (!saveActiveMaskTo(path.toStdString(), &error))
+        {
+            QMessageBox::critical(this, "Save Mask", error);
+            ok = false;
+            break;
+        }
+    }
+    if (!previous.isEmpty())
+        switchActiveMask(previous);
+    updateMaskUndoControls();
+    return ok;
+}
+
+ManualSeedSelector::UnsavedEditsChoice ManualSeedSelector::askUnsavedMaskEdits(const QString &action,
+                                                                               const QStringList &masks)
+{
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle("Unsaved mask edits");
+    box.setText(QString("%1 would discard unsaved mask edits.").arg(action));
+    box.setInformativeText(QString("Not saved: %1.\n\nSave them first?").arg(masks.join(", ")));
+    box.setStandardButtons(QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Save);
+    box.setEscapeButton(QMessageBox::Cancel);
+    switch (box.exec())
+    {
+    case QMessageBox::Save:
+        return UnsavedEditsChoice::Save;
+    case QMessageBox::Discard:
+        return UnsavedEditsChoice::Discard;
+    default:
+        return UnsavedEditsChoice::Cancel;
+    }
 }
 
 void ManualSeedSelector::updateMaskSeedLists()
