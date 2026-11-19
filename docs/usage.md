@@ -72,6 +72,18 @@
   smallest in-plane radius, so a fast stroke leaves no gap; the stroke is still one undo step.
 - Before this, the radius was in voxels (1 to 50, default 5).
 
+## Fill
+- `Fill` (in `Drawing Mode`, beside `Draw` and `Erase`): a click gives the active label to the
+  region under the pointer: the voxels reachable through their faces that hold the clicked
+  voxel's label (background included) and whose intensity is within `Fill ±` of the clicked
+  voxel's (image units, HU on CT; default 100). The moves of the same press do nothing.
+- Without `Ball` the region stays on the slice clicked; with `Ball` it spreads through the
+  volume.
+- It writes like a brush stroke: locked labels stay as they are and `Over` decides what it may
+  paint over. It is one undo step.
+- It stops, changing nothing, once the region passes 20,000,000 voxels, with a message: lower
+  the tolerance or fill on one slice. A 3D click in air on a CBCT otherwise floods the room.
+
 ## Label table
 - The `Labels` section lists one row per label of the edited mask, and one per label of the
   loaded names: a box that shows or hides the label, a box that locks it, its colour and value,

@@ -30,6 +30,9 @@
  - `LabelOps` (src/LabelOps.*)
    - 26-connected pieces of one label, free of the window: `pieces()` (largest first, with a seed voxel each) and `pieceAt()`, flooding with one bit of scratch per voxel (40 MB for 704 x 704 x 640). In the window, `writeLabelOperation()` and `remapLabelOperation()` turn the piece and label operations into one undo step each, through `maskWriteAllowed()`. Pinned by `label_ops` and `label_ops_gui`.
 
+ - `FloodFill` (src/FloodFill.*)
+   - The fill region, free of the window: face-connected voxels holding the seed's label within an intensity window, on one slice or in 3D, abandoned past a size limit (`kFloodFillMaxVoxels`). The window's `floodFillAt()` writes it through `writeLabelOperation()` with the brush rule; `paintMaskAt()` calls it once per press in mode 3. Pinned by `flood_fill` and `flood_fill_gui`.
+
  - `SliceFill` (src/SliceFill.*)
    - Fill between slices, free of the window: `signedDistance2D()` (exact Euclidean distances in mm from Felzenszwalb and Huttenlocher's separable transform, negative inside) and `fillBetweenSlices()`, which finds the slices holding a label along one axis and, for each run of empty slices between two of them, thresholds the weighted mean of their signed distance maps at 0 inside the union of their boxes. In the window, `fillBetweenSlices()` writes the result through `writeLabelOperation()` with the brush rule. Pinned by `slice_fill` (against brute-force distances, discs carried, grown, moved, and the non-overlap limit) and `slice_fill_gui`.
 
