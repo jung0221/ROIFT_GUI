@@ -27,6 +27,9 @@
  - Brush (`ManualSeedSelector::paintMaskAt()`, `applyBrushToMask()`)
    - The radius is in millimetres; `applyBrushToMask()` turns it into a per-axis voxel reach from `brushSpacing()` and paints the voxels whose centre is within the radius, on the view's plane or, for `Ball`, through it. Depth is mapped per voxel with `mapDepthIndex()`, as for a mask whose depth differs from the image's. `paintMaskAt()` stamps along the segment from the stroke's last position (`m_lastBrushStamp`, reset by `commitMaskEdit()`). `OrthogonalView::setWheelHandler()` lets the window take Ctrl+wheel before the view zooms. Pinned by `brush_mm_gui`.
 
+ - `LabelOps` (src/LabelOps.*)
+   - 26-connected pieces of one label, free of the window: `pieces()` (largest first, with a seed voxel each) and `pieceAt()`, flooding with one bit of scratch per voxel (40 MB for 704 x 704 x 640). In the window, `writeLabelOperation()` and `remapLabelOperation()` turn the piece and label operations into one undo step each, through `maskWriteAllowed()`. Pinned by `label_ops` and `label_ops_gui`.
+
  - `LabelTable` (src/LabelTable.*)
    - Label names, free of the window: an nnU-Net `dataset.json` (`labels`; background and region lists left out; the `ignore` value kept apart) or an ITK-SNAP label file (with its colours). `matches()` is the find rule. Pinned by `label_table`.
    - In the window, `m_labelCounts` is filled by one scan in `rebuildMaskLabelFilter()` and then moved by `applyMaskLabelDelta()` with `MaskEditHistory::lastLabelDelta()` after each commit, record, undo and redo. `refreshLabelPanel()` rebuilds the `Labels` rows only when the set of labels changed, and otherwise rewrites their counts. Pinned by `label_table_gui`.
