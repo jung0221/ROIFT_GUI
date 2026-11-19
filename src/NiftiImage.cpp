@@ -1157,6 +1157,16 @@ double NiftiImage::getSpacingX() const { return m_spacingX; }
 double NiftiImage::getSpacingY() const { return m_spacingY; }
 double NiftiImage::getSpacingZ() const { return m_spacingZ; }
 
+bool NiftiImage::copyGeometryTo(itk::ImageBase<3> *out) const
+{
+    if (!m_image || !out)
+        return false;
+    out->SetOrigin(m_image->GetOrigin());
+    out->SetSpacing(m_image->GetSpacing());
+    out->SetDirection(m_image->GetDirection());
+    return true;
+}
+
 float NiftiImage::getGlobalMin() const { return m_min; }
 float NiftiImage::getGlobalMax() const { return m_max; }
 
