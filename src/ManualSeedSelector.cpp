@@ -39,6 +39,7 @@
 #include <QFontMetrics>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QLocale>
 #include <QShortcut>
 #include <QKeySequence>
 #include <QMessageBox>
@@ -1005,9 +1006,7 @@ void ManualSeedSelector::setupUi()
     }
 
     // ---- Section: Labels (mask-label visibility filter) ----
-    // The whole section is hidden until a mask with more than one label is
-    // present (see rebuildMaskLabelFilter). The per-label list lives directly
-    // in the section and grows freely; the tool sidebar scroll handles overflow.
+    // One row per label of the edited mask or of the loaded label table; see refreshLabelPanel.
     {
         m_maskLabelSection = new CollapsibleSection("Labels", "labels");
         QVBoxLayout *labelsLayout = new QVBoxLayout();
@@ -1025,19 +1024,72 @@ void ManualSeedSelector::setupUi()
                 { setAllMaskLabelsVisible(false); });
         maskLabelButtons->addWidget(btnLabelsAll);
         maskLabelButtons->addWidget(btnLabelsNone);
+        QPushButton *btnLabelTable = new QPushButton("Names...");
+        btnLabelTable->setObjectName("labelTableButton");
+        btnLabelTable->setToolTip("Load label names from an nnU-Net dataset.json or an ITK-SNAP label file");
+        connect(btnLabelTable, &QPushButton::clicked, this, [this]()
+                {
+            const QString path = QFileDialog::getOpenFileName(this, "Label Names", "",
+                                                              "Label tables (*.json *.txt *.label);;All files (*)");
+            if (path.isEmpty())
+                return;
+            QString error;
+            if (!loadLabelTable(path, &error))
+                QMessageBox::warning(this, "Label Names", error); });
+        maskLabelButtons->addWidget(btnLabelTable);
         labelsLayout->addLayout(maskLabelButtons);
 
-        QWidget *maskLabelContent = new QWidget();
-        m_maskLabelFilterLayout = new QVBoxLayout(maskLabelContent);
-        m_maskLabelFilterLayout->setSpacing(2);
-        m_maskLabelFilterLayout->setContentsMargins(2, 2, 2, 2);
-        m_maskLabelFilterLayout->addStretch();
-        labelsLayout->addWidget(maskLabelContent);
+        m_labelFilterEdit = new QLineEdit();
+        m_labelFilterEdit->setObjectName("labelFilter");
+        m_labelFilterEdit->setPlaceholderText("Find: name or number, Enter to paint with it");
+        m_labelFilterEdit->setClearButtonEnabled(true);
+        connect(m_labelFilterEdit, &QLineEdit::textChanged, this, &ManualSeedSelector::filterLabelRows);
+        connect(m_labelFilterEdit, &QLineEdit::returnPressed, this, &ManualSeedSelector::pickFilteredLabel);
+        labelsLayout->addWidget(m_labelFilterEdit);
+
+        m_labelTree = new QTreeWidget();
+        m_labelTree->setObjectName("labelTable");
+        m_labelTree->setColumnCount(4);
+        m_labelTree->setHeaderLabels({"Show", "Label", "Name", "Voxels"});
+        m_labelTree->setRootIsDecorated(false);
+        m_labelTree->setUniformRowHeights(true);
+        m_labelTree->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_labelTree->setMinimumHeight(160);
+        m_labelTree->setToolTip("Click a row to paint with its label; the box shows or hides it");
+        connect(m_labelTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int column)
+                {
+            if (column != 0)
+                return;
+            const int label = item->data(1, Qt::UserRole).toInt();
+            m_maskLabelVisibility[label] = (item->checkState(0) == Qt::Checked);
+            m_mask3DDirty = true;
+            updateViews(); });
+        connect(m_labelTree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int column)
+                {
+            if (item && column != 0)
+                setActiveLabel(item->data(1, Qt::UserRole).toInt()); });
+        labelsLayout->addWidget(m_labelTree);
+
+        // Find a label from anywhere in the window.
+        QShortcut *findLabel = new QShortcut(QKeySequence::Find, this);
+        connect(findLabel, &QShortcut::activated, this, [this]()
+                {
+            if (m_maskLabelSection)
+                m_maskLabelSection->setExpanded(true);
+            m_labelFilterEdit->setFocus();
+            m_labelFilterEdit->selectAll(); });
 
         m_maskLabelSection->setContentLayout(labelsLayout);
         toolSidebarLayout->addWidget(m_maskLabelSection);
         m_toolSections.push_back(m_maskLabelSection);
-        m_maskLabelSection->setVisible(false);
+
+        // The label names of the last session, when that file is still there.
+        const QString labelTablePath = QSettings().value("labels/tablePath").toString();
+        if (!labelTablePath.isEmpty() && QFileInfo::exists(labelTablePath) &&
+            !m_labelTable.load(labelTablePath, nullptr))
+            m_labelTable.clear();
+        refreshLabelPanel();
+        updateActiveLabelName();
     }
 
     // ---- Section: Segmentation ----
@@ -1613,6 +1665,15 @@ void ManualSeedSelector::setupUi()
     labelLayout->addWidget(m_labelColorIndicator);
 
     connect(m_labelSelector, QOverload<int>::of(&QSpinBox::valueChanged), this, &ManualSeedSelector::updateLabelColor);
+
+    m_activeLabelName = new QLabel();
+    m_activeLabelName->setObjectName("activeLabelName");
+    m_activeLabelName->setMinimumWidth(60);
+    m_activeLabelName->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    labelLayout->addWidget(m_activeLabelName, 1);
+    connect(m_labelSelector, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int)
+            { updateActiveLabelName(); });
+    updateActiveLabelName(); // the table may have been restored before this row existed
 
     sidebarSplitter->addWidget(labelGroup);
 
@@ -2530,6 +2591,11 @@ void ManualSeedSelector::setupUi()
     // Mouse events for views
     connect(m_axialView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (b == Qt::LeftButton && (QApplication::keyboardModifiers() & Qt::ControlModifier))
+        {
+            pickActiveLabelAt(x, y, m_axialSlider->value()); // Ctrl+click: paint with the label under the cursor
+            return;
+        }
         if (handleRulerMousePress(SlicePlane::Axial, x, y, b))
             return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
@@ -2569,6 +2635,11 @@ void ManualSeedSelector::setupUi()
 
     connect(m_sagittalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (b == Qt::LeftButton && (QApplication::keyboardModifiers() & Qt::ControlModifier))
+        {
+            pickActiveLabelAt(m_sagittalSlider->value(), x, y); // Ctrl+click: paint with the label under the cursor
+            return;
+        }
         if (handleRulerMousePress(SlicePlane::Sagittal, x, y, b))
             return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
@@ -2608,6 +2679,11 @@ void ManualSeedSelector::setupUi()
 
     connect(m_coronalView, &OrthogonalView::mousePressed, this, [this](int x, int y, Qt::MouseButton b)
             {
+        if (b == Qt::LeftButton && (QApplication::keyboardModifiers() & Qt::ControlModifier))
+        {
+            pickActiveLabelAt(x, m_coronalSlider->value(), y); // Ctrl+click: paint with the label under the cursor
+            return;
+        }
         if (handleRulerMousePress(SlicePlane::Coronal, x, y, b))
             return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
@@ -4453,6 +4529,9 @@ void ManualSeedSelector::updateHoverStatus(SlicePlane plane, int x, int y, int z
                             .arg(z)
                             .arg(QString::number(static_cast<double>(voxelValue), 'f', 3));
 
+    if (const int label = editedLabelAt(x, y, z); label > 0)
+        hoverText += QString(" | Mask: %1").arg(labelDisplayName(label));
+
     // 2 voxels: about the radius a seed is drawn with when the slice fits the view.
     const Seed *seed = findSeedNearCursor(x, y, z, plane, 2);
     if (seed)
@@ -4610,6 +4689,9 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
 
     QMenu menu(this);
     QAction *copyVoxelAction = menu.addAction("Copy coordinates and value");
+    QAction *pickLabelAction = nullptr;
+    if (const int here = editedLabelAt(vx, vy, vz); here > 0 && here != activeLabel())
+        pickLabelAction = menu.addAction(QString("Paint with %1 (Ctrl+click)").arg(labelDisplayName(here)));
     QAction *segmentAction = nullptr;
     QAction *nodeAction = nullptr;
     // Two voxels of slack: the click lands on the vessel wall as often as inside it.
@@ -4634,6 +4716,11 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     QAction *selected = menu.exec(globalPos);
     if (!selected)
         return;
+    if (pickLabelAction && selected == pickLabelAction)
+    {
+        pickActiveLabelAt(vx, vy, vz);
+        return;
+    }
 
     if (segmentAction && selected == segmentAction)
     {
@@ -5582,7 +5669,7 @@ QString ManualSeedSelector::pastePlaneResult(const PlaneRunPins &pins, const std
         planeBefore.push_back(index < m_maskData.size() ? m_maskData[index] : 0);
     if (!planar::pastePlaneLabels(pins.geometry, labels, runLabels, m_maskData))
         return "Slice result discarded: the label plane does not fit the slice.";
-    m_maskHistory.record(m_maskData, planeIndices, planeBefore, "Slice segmentation");
+    const bool pasted = m_maskHistory.record(m_maskData, planeIndices, planeBefore, "Slice segmentation");
     updateMaskUndoControls();
 
     const std::set<int> written(labels.begin(), labels.end());
@@ -5594,7 +5681,8 @@ QString ManualSeedSelector::pastePlaneResult(const PlaneRunPins &pins, const std
         noteActiveMaskLabel(label);
         writtenNames << QString::number(label);
     }
-    rebuildMaskLabelFilter(); // the paste can clear a label from the whole mask
+    if (pasted)
+        applyMaskLabelDelta(m_maskHistory.lastLabelDelta()); // the paste can clear a label from the whole mask
     m_mask3DDirty = true;
     setActiveMaskVisible();
     updateViews();
@@ -6648,9 +6736,9 @@ void ManualSeedSelector::cleanMask()
             if (m_maskData[i] != 0)
                 m_maskHistory.write(m_maskData, i, 0);
         }
-        m_maskHistory.commit();
+        if (m_maskHistory.commit())
+            applyMaskLabelDelta(m_maskHistory.lastLabelDelta());
         m_mask3DDirty = true;
-        rebuildMaskLabelFilter();
         updateMaskUndoControls();
         return;
     }
@@ -6691,17 +6779,58 @@ void ManualSeedSelector::setAllMaskLabelsVisible(bool visible)
 {
     for (auto &entry : m_maskLabelVisibility)
         entry.second = visible;
-    rebuildMaskLabelFilter(); // refresh checkbox states to match
+    refreshLabelPanel(); // refresh checkbox states to match
     m_mask3DDirty = true;
     updateViews();
 }
 
 void ManualSeedSelector::rebuildMaskLabelFilter()
 {
-    // The one place that reads the buffer's labels back: it fills both the
-    // filter rows and the active style, so nothing else scans the buffer.
-    const std::vector<int> present = distinctMaskLabels(m_maskData);
-    const std::set<int> presentLabels(present.begin(), present.end());
+    // The one full scan of the buffer's labels; edits after it arrive as deltas.
+    m_labelCounts.clear();
+    std::vector<long long> small(1024, 0); // direct counts for the usual label range
+    for (const int v : m_maskData)
+    {
+        if (v == 0)
+            continue;
+        if (v > 0 && v < static_cast<int>(small.size()))
+            ++small[static_cast<size_t>(v)];
+        else
+            ++m_labelCounts[v];
+    }
+    for (size_t v = 1; v < small.size(); ++v)
+        if (small[v] > 0)
+            m_labelCounts[static_cast<int>(v)] = small[v];
+    refreshLabelPanel();
+}
+
+void ManualSeedSelector::applyMaskLabelDelta(const std::unordered_map<int, long long> &delta)
+{
+    for (const auto &[label, change] : delta)
+    {
+        if (label == 0 || change == 0)
+            continue;
+        long long &count = m_labelCounts[label];
+        count += change;
+        if (count <= 0)
+            m_labelCounts.erase(label);
+    }
+    refreshLabelPanel();
+}
+
+QString ManualSeedSelector::labelDisplayName(int value) const
+{
+    const QString name = m_labelTable.nameFor(value);
+    return name.isEmpty() ? QString("Label %1").arg(value) : QString("%1 %2").arg(value).arg(name);
+}
+
+void ManualSeedSelector::refreshLabelPanel()
+{
+    std::vector<int> present;
+    present.reserve(m_labelCounts.size());
+    for (const auto &[label, count] : m_labelCounts)
+        if (count > 0)
+            present.push_back(label);
 
     // The style record of whatever is in the editable buffer follows those
     // labels: the Auto colour rule reads how many there are.
@@ -6715,60 +6844,177 @@ void ManualSeedSelector::rebuildMaskLabelFilter()
         }
     }
 
-    if (!m_maskLabelSection || !m_maskLabelFilterLayout)
-        return;
+    std::set<int> rows(present.begin(), present.end());
+    for (const LabelTable::Entry &entry : m_labelTable.entries())
+        rows.insert(entry.value);
 
-    // Keep prior visibility for labels that persist; new labels default visible;
-    // drop labels that no longer exist so the map never grows unbounded.
-    std::map<int, bool> updated;
-    for (int label : presentLabels)
+    // Keep visibility for labels that persist; new labels default visible.
+    std::map<int, bool> visibility;
+    for (int label : rows)
     {
         auto it = m_maskLabelVisibility.find(label);
-        updated[label] = (it == m_maskLabelVisibility.end()) ? true : it->second;
+        visibility[label] = (it == m_maskLabelVisibility.end()) ? true : it->second;
     }
-    m_maskLabelVisibility.swap(updated);
+    m_maskLabelVisibility.swap(visibility);
 
-    // Clear existing rows (leave the trailing stretch in place).
-    while (QLayoutItem *item = m_maskLabelFilterLayout->takeAt(0))
+    if (!m_labelTree)
+        return;
+    QSignalBlocker blocker(m_labelTree);
+    bool sameRows = rows.size() == m_labelRows.size();
+    for (auto it = m_labelRows.begin(); sameRows && it != m_labelRows.end(); ++it)
+        sameRows = rows.count(it->first) > 0;
+    if (!sameRows)
     {
-        if (QWidget *w = item->widget())
-            w->deleteLater();
-        delete item;
+        m_labelTree->clear();
+        m_labelRows.clear();
+        for (int label : rows)
+        {
+            auto *item = new QTreeWidgetItem(m_labelTree);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+            item->setData(1, Qt::UserRole, label);
+            QPixmap swatch(12, 12);
+            swatch.fill(colorForLabel(label));
+            item->setIcon(1, QIcon(swatch));
+            item->setText(1, QString::number(label));
+            item->setText(2, m_labelTable.nameFor(label));
+            item->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
+            m_labelRows[label] = item;
+        }
+        m_labelTree->resizeColumnToContents(0);
+        m_labelTree->resizeColumnToContents(1);
     }
-
-    for (int label : presentLabels)
+    const QColor absent = palette().color(QPalette::Disabled, QPalette::Text);
+    const QColor here = palette().color(QPalette::Active, QPalette::Text);
+    for (auto &[label, item] : m_labelRows)
     {
-        const QColor color = colorForLabel(label);
-
-        // One row: [color swatch] [checkbox "Label N"]. A row widget keeps
-        // teardown simple (takeAt(0)->widget()).
-        QWidget *row = new QWidget();
-        QHBoxLayout *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(6);
-
-        QLabel *swatch = new QLabel();
-        swatch->setFixedSize(14, 14);
-        swatch->setStyleSheet(QString("background-color: %1; border: 1px solid %2; border-radius: 4px;")
-                                  .arg(color.name())
-                                  .arg(Theme::kHairline));
-        rowLayout->addWidget(swatch, 0);
-
-        QCheckBox *check = new QCheckBox(QString("Label %1").arg(label));
-        check->setChecked(m_maskLabelVisibility[label]);
-        connect(check, &QCheckBox::toggled, this, [this, label](bool on)
-                {
-            m_maskLabelVisibility[label] = on;
-            m_mask3DDirty = true;
-            updateViews(); });
-        rowLayout->addWidget(check, 1);
-
-        m_maskLabelFilterLayout->addWidget(row);
+        auto count = m_labelCounts.find(label);
+        const long long voxels = (count == m_labelCounts.end()) ? 0 : count->second;
+        item->setText(3, voxels > 0 ? QLocale().toString(voxels) : QString());
+        item->setCheckState(0, m_maskLabelVisibility[label] ? Qt::Checked : Qt::Unchecked);
+        for (int column = 1; column < 4; ++column)
+            item->setForeground(column, voxels > 0 ? here : absent);
     }
-    m_maskLabelFilterLayout->addStretch();
+    if (auto active = m_labelRows.find(activeLabel()); active != m_labelRows.end())
+        m_labelTree->setCurrentItem(active->second);
+    else
+        m_labelTree->setCurrentItem(nullptr);
+    if (m_labelFilterEdit)
+        filterLabelRows(m_labelFilterEdit->text());
+}
 
-    // Only useful for multi-label masks.
-    m_maskLabelSection->setVisible(presentLabels.size() > 1);
+void ManualSeedSelector::filterLabelRows(const QString &query)
+{
+    for (auto &[label, item] : m_labelRows)
+        item->setHidden(!LabelTable::matches(label, m_labelTable.nameFor(label), query));
+}
+
+void ManualSeedSelector::pickFilteredLabel()
+{
+    const QString query = m_labelFilterEdit ? m_labelFilterEdit->text().trimmed() : QString();
+    if (query.isEmpty())
+        return;
+    int byValue = -1;
+    for (const auto &[label, item] : m_labelRows)
+    {
+        if (item->isHidden())
+            continue;
+        const QString name = m_labelTable.nameFor(label);
+        if (!name.isEmpty() && name.contains(query, Qt::CaseInsensitive))
+        {
+            setActiveLabel(label);
+            return;
+        }
+        if (byValue < 0 && QString::number(label) == query)
+            byValue = label;
+    }
+    if (byValue >= 0)
+        setActiveLabel(byValue);
+}
+
+int ManualSeedSelector::activeLabel() const
+{
+    return m_labelSelector ? m_labelSelector->value() : 0;
+}
+
+void ManualSeedSelector::setActiveLabel(int value)
+{
+    if (!m_labelSelector)
+        return;
+    if (value < m_labelSelector->minimum() || value > m_labelSelector->maximum())
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Label %1 is outside what the brush can paint (%2 to %3).")
+                                       .arg(value)
+                                       .arg(m_labelSelector->minimum())
+                                       .arg(m_labelSelector->maximum()));
+        return;
+    }
+    m_labelSelector->setValue(value);
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Painting with %1.").arg(labelDisplayName(value)));
+}
+
+void ManualSeedSelector::updateActiveLabelName()
+{
+    const int label = activeLabel();
+    if (m_activeLabelName)
+    {
+        const QString name = m_labelTable.nameFor(label);
+        m_activeLabelName->setText(name);
+        m_activeLabelName->setToolTip(name);
+    }
+    if (m_labelTree)
+    {
+        QSignalBlocker blocker(m_labelTree);
+        auto row = m_labelRows.find(label);
+        m_labelTree->setCurrentItem(row == m_labelRows.end() ? nullptr : row->second);
+        if (row != m_labelRows.end())
+            m_labelTree->scrollToItem(row->second);
+    }
+}
+
+bool ManualSeedSelector::loadLabelTable(const QString &path, QString *error)
+{
+    LabelTable table;
+    if (!table.load(path, error))
+        return false;
+    m_labelTable = std::move(table);
+    QSettings().setValue("labels/tablePath", QFileInfo(path).absoluteFilePath());
+    m_labelRows.clear(); // names change in place, so the rows are rebuilt
+    if (m_labelTree)
+        m_labelTree->clear();
+    refreshLabelPanel();
+    updateActiveLabelName();
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Label names from %1: %2 label(s).")
+                                   .arg(QFileInfo(path).fileName())
+                                   .arg(m_labelTable.entries().size()));
+    return true;
+}
+
+int ManualSeedSelector::editedLabelAt(int x, int y, int z) const
+{
+    if (activeMaskPending() || m_maskData.empty() || x < 0 || y < 0 || z < 0 ||
+        m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() ||
+        x >= static_cast<int>(m_maskDimX) || y >= static_cast<int>(m_maskDimY) ||
+        z >= static_cast<int>(m_image.getSizeZ()))
+        return -1;
+    const unsigned mappedZ = mapDepthIndex(static_cast<unsigned>(z), m_image.getSizeZ(), m_maskDimZ);
+    const size_t index = size_t(x) + size_t(y) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
+    return index < m_maskData.size() ? m_maskData[index] : -1;
+}
+
+bool ManualSeedSelector::pickActiveLabelAt(int x, int y, int z)
+{
+    const int label = editedLabelAt(x, y, z);
+    if (label <= 0)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText("No label of the edited mask here.");
+        return false;
+    }
+    setActiveLabel(label);
+    return activeLabel() == label;
 }
 
 void ManualSeedSelector::filterActiveMaskByThreshold()
@@ -6850,13 +7096,13 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
             }
         }
     }
-    m_maskHistory.commit();
+    if (m_maskHistory.commit())
+        applyMaskLabelDelta(m_maskHistory.lastLabelDelta()); // a label may have been fully removed
     updateMaskUndoControls();
 
     QApplication::restoreOverrideCursor();
 
     m_mask3DDirty = true;
-    rebuildMaskLabelFilter(); // a label may have been fully removed
     updateViews();
 
     const QString maskName = !activeMaskPath.isEmpty()
@@ -7606,7 +7852,8 @@ void ManualSeedSelector::commitMaskEdit()
 {
     if (m_maskHistory.hasOpenOperation())
     {
-        m_maskHistory.commit();
+        if (m_maskHistory.commit())
+            applyMaskLabelDelta(m_maskHistory.lastLabelDelta());
         updateMaskUndoControls();
     }
 }
@@ -7646,7 +7893,7 @@ bool ManualSeedSelector::redoMaskEdit()
 void ManualSeedSelector::afterMaskReplay(const QString &verb, const std::string &name)
 {
     m_mask3DDirty = true;
-    rebuildMaskLabelFilter(); // an undo can bring a label back or take one away
+    applyMaskLabelDelta(m_maskHistory.lastLabelDelta()); // a label can come back or go
     updateViews();
     updateMaskUndoControls();
     if (m_statusLabel)

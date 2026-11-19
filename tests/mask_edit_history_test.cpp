@@ -232,6 +232,46 @@ void testRecordAndMismatch()
     check(history.canUndo(), "and keeps the operation");
 }
 
+// Per-label deltas: summed over operations they must equal the change of a histogram.
+void testLabelDelta()
+{
+    std::mt19937 rng(11);
+    std::vector<int> buffer(2048);
+    std::uniform_int_distribution<int> label(0, 6);
+    for (int &v : buffer)
+        v = label(rng);
+    auto histogram = [](const std::vector<int> &b)
+    {
+        std::vector<long long> h(7, 0);
+        for (int v : b)
+            ++h[std::size_t(v)];
+        return h;
+    };
+    MaskEditHistory history;
+    std::vector<long long> counts = histogram(buffer);
+    auto apply = [&counts](const std::unordered_map<int, long long> &delta)
+    {
+        for (const auto &[l, d] : delta)
+            counts[std::size_t(l)] += d;
+    };
+    bool consistent = true;
+    for (int i = 0; i < 100; ++i)
+    {
+        randomOperation(history, buffer, rng);
+        apply(history.lastLabelDelta());
+        consistent = consistent && counts == histogram(buffer);
+        if (i % 3 == 0 && history.undo(buffer))
+        {
+            apply(history.lastLabelDelta());
+            consistent = consistent && counts == histogram(buffer);
+            history.redo(buffer);
+            apply(history.lastLabelDelta());
+            consistent = consistent && counts == histogram(buffer);
+        }
+    }
+    check(consistent, "label deltas of commit, undo and redo track a histogram");
+}
+
 } // namespace
 
 int main()
@@ -242,6 +282,7 @@ int main()
     testByteCap();
     testSavedStateDroppedByCap();
     testRecordAndMismatch();
+    testLabelDelta();
     std::printf("%d failure(s)\n", failures);
     return failures == 0 ? 0 : 1;
 }

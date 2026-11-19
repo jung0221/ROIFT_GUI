@@ -172,6 +172,7 @@ QVBoxLayout *ManualSeedSelector::buildSolverNetworkSection()
     layout->addWidget(m_solverSearch);
 
     m_solverTree = new QTreeWidget();
+    m_solverTree->setObjectName("solverNetworkTree");
     m_solverTree->setColumnCount(4);
     m_solverTree->setHeaderLabels({"Segment", "L", "Ø", "BC"});
     m_solverTree->headerItem()->setToolTip(1, "Length, mm");
