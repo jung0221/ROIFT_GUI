@@ -176,6 +176,10 @@ public:
     void setBrushSphere(bool sphere);
     bool brushSphere() const { return m_brushSphere; }
 
+    // Draw only the edge of each label in the slice views, so the image stays visible inside.
+    void setMaskOutlineOnly(bool outline);
+    bool maskOutlineOnly() const { return m_maskOutlineOnly; }
+
     // A locked label keeps every voxel as it is: no brush, erase, Clear, Threshold or slice
     // paste changes, removes or grows it. Undo and redo still replay it.
     void setLabelLocked(int label, bool locked);
@@ -796,6 +800,8 @@ private:
     QPushButton *m_btnMaskErase = nullptr;
     QPushButton *m_btnMaskFill = nullptr;
     double m_fillTolerance = 100.0;
+    bool m_maskOutlineOnly = false;
+    QCheckBox *m_maskOutlineCheck = nullptr;
     QDoubleSpinBox *m_fillToleranceSpin = nullptr;
     QPushButton *m_btnMaskOff = nullptr;
     QPushButton *m_btnMaskUndo = nullptr;

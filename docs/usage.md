@@ -72,6 +72,13 @@
   smallest in-plane radius, so a fast stroke leaves no gap; the stroke is still one undo step.
 - Before this, the radius was in voxels (1 to 50, default 5).
 
+## Outlines only
+- `Outlines only` (in the `Brush` group, or the `O` key) draws only the edge of each label in
+  the slice views: a voxel whose four in-slice neighbours do not all hold its label, at full
+  colour. The image stays visible inside the label, which is where a boundary is judged. The
+  3D view and the ignore label's hatching are unaffected; with outlines on the ignore label is
+  outlined too.
+
 ## Fill
 - `Fill` (in `Drawing Mode`, beside `Draw` and `Erase`): a click gives the active label to the
   region under the pointer: the voxels reachable through their faces that hold the clicked
