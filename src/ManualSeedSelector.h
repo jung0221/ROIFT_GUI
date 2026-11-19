@@ -20,6 +20,7 @@
 #include <set>
 #include <thread>
 #include <vector>
+#include "LabelTable.h"
 #include "MaskAutosave.h"
 #include "MaskEditHistory.h"
 #include "MaskLayers.h"
@@ -151,6 +152,19 @@ public:
     // Crash copies of the edited mask (docs/usage.md, "Autosave"): written in the background
     // at this interval while it holds unsaved edits, offered back when its image is opened.
     static constexpr int kMaskAutosaveIntervalMs = 2 * 60 * 1000;
+    // Names for label values, from an nnU-Net dataset.json or an ITK-SNAP label file; the path
+    // is remembered for the next session. False, table unchanged, when it cannot be read.
+    bool loadLabelTable(const QString &path, QString *error = nullptr);
+    const LabelTable &labelTable() const { return m_labelTable; }
+    // The label the brush paints and seeds take.
+    int activeLabel() const;
+    void setActiveLabel(int value);
+    // Makes the edited mask's label under a voxel the active one (Ctrl+click). False when
+    // there is none there.
+    bool pickActiveLabelAt(int x, int y, int z);
+    // Voxels per label of the edited mask (background left out), kept current edit by edit.
+    const std::map<int, long long> &maskLabelCounts() const { return m_labelCounts; }
+
     // Writes the copy now, on this thread. False when nothing was unsaved or the write failed.
     bool autosaveMaskNow();
     // 0 turns autosave off.
@@ -649,12 +663,12 @@ private:
     OrthogonalView *m_axialView;
     OrthogonalView *m_sagittalView;
     OrthogonalView *m_coronalView;
-    QSlider *m_axialSlider;
-    QSlider *m_sagittalSlider;
-    QSlider *m_coronalSlider;
-    QLabel *m_axialLabel;
-    QLabel *m_sagittalLabel;
-    QLabel *m_coronalLabel;
+    QSlider *m_axialSlider = nullptr;
+    QSlider *m_sagittalSlider = nullptr;
+    QSlider *m_coronalSlider = nullptr;
+    QLabel *m_axialLabel = nullptr;
+    QLabel *m_sagittalLabel = nullptr;
+    QLabel *m_coronalLabel = nullptr;
     // The 2x2 view grid and its panels; applySliceLayout() hides three for a one-slice image.
     QWidget *m_axialPanel = nullptr;
     QWidget *m_sagittalPanel = nullptr;
@@ -662,9 +676,9 @@ private:
     QWidget *m_renderPanel = nullptr;
     QWidget *m_axialSliderRow = nullptr;
     QGridLayout *m_viewGrid = nullptr;
-    QSpinBox *m_labelSelector;
-    QLabel *m_labelColorIndicator;
-    QLabel *m_statusLabel;
+    QSpinBox *m_labelSelector = nullptr;
+    QLabel *m_labelColorIndicator = nullptr;
+    QLabel *m_statusLabel = nullptr;
     bool m_seedNoteTipShown = false;
     QPlainTextEdit *m_logConsole = nullptr;
     // backup copy used to undo destructive edits like threshold
@@ -720,7 +734,24 @@ private:
     // the layout holds one swatch+checkbox row per present label, rebuilt on
     // mask change.
     CollapsibleSection *m_maskLabelSection = nullptr;
-    QVBoxLayout *m_maskLabelFilterLayout = nullptr;
+    // The label table: one row per label of the edited mask or of m_labelTable.
+    QTreeWidget *m_labelTree = nullptr;
+    QLineEdit *m_labelFilterEdit = nullptr;
+    QLabel *m_activeLabelName = nullptr;
+    std::map<int, QTreeWidgetItem *> m_labelRows;
+    LabelTable m_labelTable;
+    std::map<int, long long> m_labelCounts;
+    // Rebuilds the rows when the set of labels changed, else only refreshes their counts.
+    void refreshLabelPanel();
+    void applyMaskLabelDelta(const std::unordered_map<int, long long> &delta);
+    void filterLabelRows(const QString &query);
+    // Enter in the filter: the first row whose name matches, else the row whose value does.
+    void pickFilteredLabel();
+    void updateActiveLabelName();
+    // The edited mask's label at a voxel, or -1 (no voxels, or not on the image's grid).
+    int editedLabelAt(int x, int y, int z) const;
+    // "18 Upper Left First Molar (26)", or "Label 18" without a table entry.
+    QString labelDisplayName(int value) const;
     QProgressBar *m_segmentationProgressBar = nullptr;
     QTimer *m_viewUpdateTimer = nullptr;
     unsigned m_pendingPlanes = 0; // PlaneMask bits waiting for the hold to end

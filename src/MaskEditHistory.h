@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // Undo history of one label buffer, free of Qt and of the window. An operation keeps the
@@ -43,6 +44,9 @@ public:
     std::size_t redoCount() const { return m_redo.size(); }
     // Name and changed-voxel count of the operation the last undo or redo replayed.
     std::size_t lastReplayedVoxels() const { return m_lastReplayed; }
+    // Voxels gained (positive) or lost per label by the last commit, record, undo or redo
+    // that changed the buffer, so per-label counts follow an edit without a rescan.
+    const std::unordered_map<int, long long> &lastLabelDelta() const { return m_lastDelta; }
 
     // Forgets every operation. The buffer as it now stands is the saved state when saved
     // is true, and otherwise differs from it until markSaved().
@@ -76,6 +80,7 @@ private:
     static void compact(Operation &op);
     static std::size_t operationBytes(const Operation &op);
     void push(Operation &&op);
+    void setDelta(const Operation &op, bool forward);
     void enforceCap();
     std::uint64_t stateId() const;
 
@@ -91,4 +96,5 @@ private:
     std::uint64_t m_savedId = 0;
     std::size_t m_bytes = 0;
     std::size_t m_lastReplayed = 0;
+    std::unordered_map<int, long long> m_lastDelta;
 };

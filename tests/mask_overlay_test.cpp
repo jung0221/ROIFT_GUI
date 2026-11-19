@@ -342,7 +342,7 @@ int main(int argc, char **argv)
     check(visibilityOf(QFileInfo(segmentsPath).fileName()) == MaskVisibility::Visible &&
               visibilityOf(QFileInfo(lumenPath).fileName()) != MaskVisibility::Visible,
           "the territory map is drawn, the lumen map is not");
-    QTreeWidget *tree = window.findChild<QTreeWidget *>();
+    QTreeWidget *tree = window.findChild<QTreeWidget *>("solverNetworkTree");
     int items = 0;
     if (tree)
         for (QTreeWidgetItemIterator it(tree); *it; ++it)

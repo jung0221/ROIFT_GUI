@@ -10,6 +10,8 @@
 ## Mouse
 - Left-click in a view to add seeds (when seed mode is draw)
 - Hold left-drag to draw mask strokes when in mask mode
+- Ctrl+click in any view to paint with the edited mask's label under the cursor; see
+  [Label table](#label-table)
 - Right-click to erase (or use mask dialog's erase mode)
 
 ## Locate a 3D surface point on the slices
@@ -53,6 +55,24 @@
   grid changes under them.
 - Each drawn mask is a full label volume in memory, so opening several large masks is
   answered with a size warning before it happens.
+
+## Label table
+- The `Labels` section lists one row per label of the edited mask, and one per label of the
+  loaded names: a box that shows or hides the label, its colour and value, its name, and how
+  many voxels of the edited mask hold it. A named label absent from the mask is listed greyed,
+  without a count, so it can still be chosen.
+- `Names...` reads label names from an nnU-Net `dataset.json` (its `labels` object; background
+  and region lists are left out) or from an ITK-SNAP label description file. The file is
+  remembered and read again at the next start, if it still exists. The colours are still the
+  viewer's own, not the file's.
+- Choosing the label to paint with: click a row; type a name or a number in the find box
+  (`Ctrl+F` from anywhere) and press Enter, which takes the first row whose name contains the
+  text and only then the row whose value equals it, so `26` finds the tooth named "(26)" before
+  label 26; `Ctrl+click` a voxel of the edited mask, or right-click it and choose
+  `Paint with ...`. The name of the active label shows beside the label number.
+- The hover line in the status bar names the edited mask's label under the cursor.
+- The counts are taken by one scan when a mask is loaded, and then follow each edit, undo and
+  redo by the voxels it changed, so they stay current without rescanning the volume.
 
 ## Undo and redo
 - Every edit of the edited mask is one step of its history: a brush stroke or an erase stroke

@@ -92,12 +92,23 @@ bool MaskEditHistory::record(const std::vector<int> &buffer, const std::vector<s
     return true;
 }
 
+void MaskEditHistory::setDelta(const Operation &op, bool forward)
+{
+    m_lastDelta.clear();
+    for (const Change &change : op.changes)
+    {
+        m_lastDelta[change.before] += forward ? -1 : 1;
+        m_lastDelta[change.after] += forward ? 1 : -1;
+    }
+}
+
 void MaskEditHistory::push(Operation &&op)
 {
     for (const Operation &dropped : m_redo)
         m_bytes -= operationBytes(dropped);
     m_redo.clear();
     op.id = m_nextId++;
+    setDelta(op, true);
     m_bytes += operationBytes(op);
     m_undo.push_back(std::move(op));
     enforceCap();
@@ -129,6 +140,7 @@ bool MaskEditHistory::undo(std::vector<int> &buffer)
     for (const Change &change : op.changes)
         buffer[change.index] = change.before;
     m_lastReplayed = op.changes.size();
+    setDelta(op, false);
     m_redo.push_back(std::move(op));
     return true;
 }
@@ -148,6 +160,7 @@ bool MaskEditHistory::redo(std::vector<int> &buffer)
     for (const Change &change : op.changes)
         buffer[change.index] = change.after;
     m_lastReplayed = op.changes.size();
+    setDelta(op, true);
     m_undo.push_back(std::move(op));
     return true;
 }
@@ -172,6 +185,7 @@ void MaskEditHistory::reset(bool saved)
     m_hasOpen = false;
     m_bytes = 0;
     m_lastReplayed = 0;
+    m_lastDelta.clear();
     // A fresh base id, so a state saved before the reset can never match after it.
     m_baseId = m_nextId++;
     m_savedId = saved ? m_baseId : kUnreachable;

@@ -225,6 +225,14 @@ if(BUILD_ROIFT_TESTS)
   target_include_directories(mask_edit_history_test PRIVATE src)
   add_test(NAME mask_edit_history COMMAND mask_edit_history_test)
 
+  add_executable(label_table_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_table_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/LabelTable.cpp
+  )
+  target_include_directories(label_table_test PRIVATE src)
+  target_link_libraries(label_table_test PRIVATE Qt6::Gui)
+  add_test(NAME label_table COMMAND label_table_test)
+
   add_executable(seed_slice_index_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/seed_slice_index_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/SeedSliceIndex.cpp
@@ -319,6 +327,12 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(mask_save_geometry_test PRIVATE roift_gui_test_objects)
   add_test(NAME mask_save_geometry COMMAND mask_save_geometry_test)
   set_tests_properties(mask_save_geometry PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+  # The label table: names, counts that follow edits, finding and picking labels.
+  add_executable(label_table_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_table_gui_test.cpp)
+  target_link_libraries(label_table_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME label_table_gui COMMAND label_table_gui_test)
+  set_tests_properties(label_table_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test

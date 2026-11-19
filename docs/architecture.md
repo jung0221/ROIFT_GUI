@@ -24,6 +24,10 @@
    - Crash copies, free of the window: `takeSnapshot()` narrows the labels to uint8 (int16 above 255), `write()` writes the volume under a partial name, renames it, then writes the JSON sidecar, so a copy is listed only once complete; `findForImage()` and `read()` bring it back. The key is a hash of the image and mask paths.
    - In the window, `autosaveTick()` (every `kMaskAutosaveIntervalMs`) takes the snapshot on the GUI thread and writes it on `m_autosaveWorker`; `noteMaskSaved()` removes the copy of a mask just written to its file; `m_sessionAutosaves` lists the copies this window wrote, the only ones it removes when their mask turns clean or the window closes, so a copy left by a crash waits for its restore. `applyLoadedImage()` queues `offerMaskAutosaves()`. Pinned by `mask_autosave`.
 
+ - `LabelTable` (src/LabelTable.*)
+   - Label names, free of the window: an nnU-Net `dataset.json` (`labels`; background and region lists left out; the `ignore` value kept apart) or an ITK-SNAP label file (with its colours). `matches()` is the find rule. Pinned by `label_table`.
+   - In the window, `m_labelCounts` is filled by one scan in `rebuildMaskLabelFilter()` and then moved by `applyMaskLabelDelta()` with `MaskEditHistory::lastLabelDelta()` after each commit, record, undo and redo. `refreshLabelPanel()` rebuilds the `Labels` rows only when the set of labels changed, and otherwise rewrites their counts. Pinned by `label_table_gui`.
+
  - `MaskListDelegate` (src/MaskListDelegate.*)
    - Paints the mask list row: eye, colour swatch, name. The eye's hit target (`eyeRect()`) is shared with the viewport event filter in `ManualSeedSelector::eventFilter`, which turns a click there into a visibility toggle instead of a selection.
 
