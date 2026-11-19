@@ -100,6 +100,18 @@
   holding its label: `Any unlocked label` (the default), `Background only`, or `One label`
   (the number beside it). It applies to brush strokes; `Clear`, `Threshold` and slice runs
   follow the locks only.
+- **Tools** acts on the active label of the edited mask, each operation one undo step that
+  leaves locked labels as they are; the status bar says how many voxels changed and how many
+  the locks kept:
+  - `Pieces of ...` lists its pieces (26-connected: voxels touching at a face, an edge or a
+    corner belong together), largest first, with their volume in mm³ and a voxel of each.
+  - `Remove small pieces of ...` turns every piece up to a volume in mm³ into background.
+  - `Keep only the largest piece of ...` turns every other piece into background.
+  - `Swap ... with` exchanges two labels everywhere; `Merge ... into` gives every voxel of the
+    active label another one (0 clears it).
+- Right-click a voxel of the edited mask and choose `Give this piece of ... the label ...` to
+  give the whole piece under the pointer the active label: the fix for a tooth that a model
+  numbered as its mirror (21 for 11).
 - The counts are taken by one scan when a mask is loaded, and then follow each edit, undo and
   redo by the voxels it changed, so they stay current without rescanning the volume.
 

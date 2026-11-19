@@ -21,6 +21,7 @@
 #include <set>
 #include <thread>
 #include <vector>
+#include "LabelOps.h"
 #include "LabelTable.h"
 #include "MaskAutosave.h"
 #include "MaskEditHistory.h"
@@ -186,6 +187,19 @@ public:
     };
     void setPaintOver(PaintOver target, int label = 0);
     PaintOver paintOver() const { return m_paintOver; }
+
+    // Pieces (26-connected components) of a label of the edited mask, largest first.
+    std::vector<label_ops::Piece> labelPieces(int label);
+    // Label operations on the edited mask. Each is one undo step, keeps locked labels as they
+    // are, and returns the voxels it changed (0 when there was nothing to do or it was refused).
+    // Pieces of label no larger than maxMm3 become background.
+    long long removeLabelIslands(int label, double maxMm3);
+    // Every piece of label but the largest becomes background.
+    long long keepLargestPiece(int label);
+    // The piece holding the voxel takes newLabel (a tooth given its mirror number).
+    long long relabelPieceAt(int x, int y, int z, int newLabel);
+    long long swapLabels(int a, int b);
+    long long mergeLabelInto(int from, int to);
 
     // Voxels per label of the edited mask (background left out), kept current edit by edit.
     const std::map<int, long long> &maskLabelCounts() const { return m_labelCounts; }
@@ -793,6 +807,15 @@ private:
     bool maskWriteAllowed(int before, int after, bool brush) const;
     // Status line for a stroke refused because its label is locked.
     void reportLockedLabel(int label);
+    // The edited mask's voxels (read first if pending), or false when there are none.
+    bool editedMaskReady();
+    // One undo step setting each voxel of indices to newValue, or each voxel to remap(value);
+    // locked labels are left as they are. Returns the voxels changed.
+    long long writeLabelOperation(const char *name, const std::vector<std::size_t> &indices, int newValue);
+    long long remapLabelOperation(const char *name, const std::map<int, int> &remap);
+    long long finishLabelOperation(const char *name, long long changed, long long refused);
+    double voxelVolumeMm3() const;
+    void showLabelPieces(int label);
     // Rebuilds the rows when the set of labels changed, else only refreshes their counts.
     void refreshLabelPanel();
     void applyMaskLabelDelta(const std::unordered_map<int, long long> &delta);

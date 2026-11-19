@@ -233,6 +233,13 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(label_table_test PRIVATE Qt6::Gui)
   add_test(NAME label_table COMMAND label_table_test)
 
+  add_executable(label_ops_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_ops_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/LabelOps.cpp
+  )
+  target_include_directories(label_ops_test PRIVATE src)
+  add_test(NAME label_ops COMMAND label_ops_test)
+
   add_executable(seed_slice_index_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/seed_slice_index_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/SeedSliceIndex.cpp
@@ -345,6 +352,12 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(brush_mm_gui_test PRIVATE roift_gui_test_objects)
   add_test(NAME brush_mm_gui COMMAND brush_mm_gui_test)
   set_tests_properties(brush_mm_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
+  # Pieces, small-piece removal, relabelling a piece, swap and merge; each one undo step.
+  add_executable(label_ops_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_ops_gui_test.cpp)
+  target_link_libraries(label_ops_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME label_ops_gui COMMAND label_ops_gui_test)
+  set_tests_properties(label_ops_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test

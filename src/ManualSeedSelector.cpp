@@ -1070,6 +1070,46 @@ void ManualSeedSelector::setupUi()
             if (!loadLabelTable(path, &error))
                 QMessageBox::warning(this, "Label Names", error); });
         maskLabelButtons->addWidget(btnLabelTable);
+        QToolButton *labelTools = new QToolButton();
+        labelTools->setObjectName("labelToolsButton");
+        labelTools->setText("Tools");
+        labelTools->setToolTip("Operations on the active label of the edited mask; each is one undo step");
+        labelTools->setPopupMode(QToolButton::InstantPopup);
+        QMenu *labelToolsMenu = new QMenu(labelTools);
+        connect(labelToolsMenu, &QMenu::aboutToShow, this, [this, labelToolsMenu]()
+                {
+            labelToolsMenu->clear();
+            const int label = activeLabel();
+            const QString name = labelDisplayName(label);
+            labelToolsMenu->addAction(QString("Pieces of %1").arg(name), this, [this, label]()
+                                      { showLabelPieces(label); });
+            labelToolsMenu->addAction(QString("Remove small pieces of %1...").arg(name), this, [this, label]()
+                                      {
+                bool ok = false;
+                const double mm3 = QInputDialog::getDouble(this, "Remove small pieces",
+                                                           "Pieces up to this volume become background (mm³):",
+                                                           10.0, 0.0, 1e9, 2, &ok);
+                if (ok)
+                    removeLabelIslands(label, mm3); });
+            labelToolsMenu->addAction(QString("Keep only the largest piece of %1").arg(name), this, [this, label]()
+                                      { keepLargestPiece(label); });
+            labelToolsMenu->addSeparator();
+            labelToolsMenu->addAction(QString("Swap %1 with...").arg(name), this, [this, label]()
+                                      {
+                bool ok = false;
+                const int other = QInputDialog::getInt(this, "Swap labels", QString("Swap %1 with label:").arg(labelDisplayName(label)),
+                                                       label, 1, 65535, 1, &ok);
+                if (ok)
+                    swapLabels(label, other); });
+            labelToolsMenu->addAction(QString("Merge %1 into...").arg(name), this, [this, label]()
+                                      {
+                bool ok = false;
+                const int other = QInputDialog::getInt(this, "Merge labels", QString("Every voxel of %1 becomes label:").arg(labelDisplayName(label)),
+                                                       0, 0, 65535, 1, &ok);
+                if (ok)
+                    mergeLabelInto(label, other); }); });
+        labelTools->setMenu(labelToolsMenu);
+        maskLabelButtons->addWidget(labelTools);
         labelsLayout->addLayout(maskLabelButtons);
 
         m_labelFilterEdit = new QLineEdit();
@@ -4750,8 +4790,13 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     QMenu menu(this);
     QAction *copyVoxelAction = menu.addAction("Copy coordinates and value");
     QAction *pickLabelAction = nullptr;
+    QAction *relabelPieceAction = nullptr;
     if (const int here = editedLabelAt(vx, vy, vz); here > 0 && here != activeLabel())
+    {
         pickLabelAction = menu.addAction(QString("Paint with %1 (Ctrl+click)").arg(labelDisplayName(here)));
+        relabelPieceAction = menu.addAction(QString("Give this piece of %1 the label %2")
+                                                .arg(labelDisplayName(here), labelDisplayName(activeLabel())));
+    }
     QAction *segmentAction = nullptr;
     QAction *nodeAction = nullptr;
     // Two voxels of slack: the click lands on the vessel wall as often as inside it.
@@ -4779,6 +4824,11 @@ void ManualSeedSelector::showViewContextMenu(SlicePlane plane, int planeX, int p
     if (pickLabelAction && selected == pickLabelAction)
     {
         pickActiveLabelAt(vx, vy, vz);
+        return;
+    }
+    if (relabelPieceAction && selected == relabelPieceAction)
+    {
+        relabelPieceAt(vx, vy, vz, activeLabel());
         return;
     }
 
@@ -7144,6 +7194,176 @@ void ManualSeedSelector::reportLockedLabel(int label)
 {
     if (m_statusLabel)
         m_statusLabel->setText(QString("%1 is locked: unlock it in Labels to paint or erase it.").arg(labelDisplayName(label)));
+}
+
+bool ManualSeedSelector::editedMaskReady()
+{
+    commitMaskEdit();
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
+    return !m_maskData.empty() && m_maskDimX > 0 && m_maskDimY > 0 && m_maskDimZ > 0 &&
+           m_maskData.size() == size_t(m_maskDimX) * m_maskDimY * m_maskDimZ;
+}
+
+double ManualSeedSelector::voxelVolumeMm3() const
+{
+    const std::array<double, 3> spacing = brushSpacing();
+    return spacing[0] * spacing[1] * spacing[2];
+}
+
+std::vector<label_ops::Piece> ManualSeedSelector::labelPieces(int label)
+{
+    if (!editedMaskReady())
+        return {};
+    return label_ops::pieces(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label);
+}
+
+long long ManualSeedSelector::finishLabelOperation(const char *name, long long changed, long long refused)
+{
+    if (m_maskHistory.commit())
+        applyMaskLabelDelta(m_maskHistory.lastLabelDelta());
+    m_mask3DDirty = true;
+    updateMaskUndoControls();
+    updateViews();
+    if (m_statusLabel)
+    {
+        QString text = QString("%1: %2 voxel(s) changed").arg(name).arg(QLocale().toString(changed));
+        if (refused > 0)
+            text += QString(", %1 kept by locks").arg(QLocale().toString(refused));
+        m_statusLabel->setText(text + ".");
+    }
+    return changed;
+}
+
+long long ManualSeedSelector::writeLabelOperation(const char *name, const std::vector<std::size_t> &indices,
+                                                  int newValue)
+{
+    m_maskHistory.begin(name);
+    long long changed = 0;
+    long long refused = 0;
+    for (const std::size_t index : indices)
+    {
+        if (m_maskData[index] == newValue)
+            continue;
+        if (maskWriteAllowed(m_maskData[index], newValue, false))
+        {
+            m_maskHistory.write(m_maskData, index, newValue);
+            ++changed;
+        }
+        else
+            ++refused;
+    }
+    return finishLabelOperation(name, changed, refused);
+}
+
+long long ManualSeedSelector::remapLabelOperation(const char *name, const std::map<int, int> &remap)
+{
+    m_maskHistory.begin(name);
+    long long changed = 0;
+    long long refused = 0;
+    for (std::size_t i = 0; i < m_maskData.size(); ++i)
+    {
+        const auto it = remap.find(m_maskData[i]);
+        if (it == remap.end())
+            continue;
+        if (it->second == m_maskData[i])
+            continue;
+        if (maskWriteAllowed(m_maskData[i], it->second, false))
+        {
+            m_maskHistory.write(m_maskData, i, it->second);
+            ++changed;
+        }
+        else
+            ++refused;
+    }
+    return finishLabelOperation(name, changed, refused);
+}
+
+long long ManualSeedSelector::removeLabelIslands(int label, double maxMm3)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    const std::array<unsigned, 3> dims{m_maskDimX, m_maskDimY, m_maskDimZ};
+    const double voxelMm3 = voxelVolumeMm3();
+    std::vector<std::size_t> islands;
+    for (const label_ops::Piece &piece : label_ops::pieces(m_maskData, dims, label))
+    {
+        if (piece.voxels * voxelMm3 > maxMm3)
+            continue;
+        const std::vector<std::size_t> voxels = label_ops::pieceAt(m_maskData, dims, piece.seed);
+        islands.insert(islands.end(), voxels.begin(), voxels.end());
+    }
+    return writeLabelOperation("Remove islands", islands, 0);
+}
+
+long long ManualSeedSelector::keepLargestPiece(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    const std::array<unsigned, 3> dims{m_maskDimX, m_maskDimY, m_maskDimZ};
+    const std::vector<label_ops::Piece> found = label_ops::pieces(m_maskData, dims, label);
+    std::vector<std::size_t> rest;
+    for (std::size_t i = 1; i < found.size(); ++i)
+    {
+        const std::vector<std::size_t> voxels = label_ops::pieceAt(m_maskData, dims, found[i].seed);
+        rest.insert(rest.end(), voxels.begin(), voxels.end());
+    }
+    return writeLabelOperation("Keep largest piece", rest, 0);
+}
+
+long long ManualSeedSelector::relabelPieceAt(int x, int y, int z, int newLabel)
+{
+    if (newLabel < 0 || !editedMaskReady())
+        return 0;
+    const int here = editedLabelAt(x, y, z);
+    if (here <= 0 || here == newLabel)
+        return 0;
+    const unsigned mappedZ = mapDepthIndex(static_cast<unsigned>(z), m_image.getSizeZ(), m_maskDimZ);
+    const size_t seed = size_t(x) + size_t(y) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
+    return writeLabelOperation("Relabel piece",
+                               label_ops::pieceAt(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, seed), newLabel);
+}
+
+long long ManualSeedSelector::swapLabels(int a, int b)
+{
+    if (a <= 0 || b <= 0 || a == b || !editedMaskReady())
+        return 0;
+    return remapLabelOperation("Swap labels", {{a, b}, {b, a}});
+}
+
+long long ManualSeedSelector::mergeLabelInto(int from, int to)
+{
+    if (from <= 0 || to < 0 || from == to || !editedMaskReady())
+        return 0;
+    return remapLabelOperation("Merge labels", {{from, to}});
+}
+
+void ManualSeedSelector::showLabelPieces(int label)
+{
+    const std::vector<label_ops::Piece> found = labelPieces(label);
+    const double voxelMm3 = voxelVolumeMm3();
+    QStringList lines;
+    const size_t shown = std::min<size_t>(found.size(), 12);
+    for (size_t i = 0; i < shown; ++i)
+    {
+        const size_t seed = found[i].seed;
+        const size_t plane = size_t(m_maskDimX) * m_maskDimY;
+        lines << QString("%1. %2 mm³ (%3 voxels), from x %4 y %5 z %6")
+                     .arg(i + 1)
+                     .arg(found[i].voxels * voxelMm3, 0, 'f', 1)
+                     .arg(QLocale().toString(found[i].voxels))
+                     .arg(seed % m_maskDimX)
+                     .arg((seed / m_maskDimX) % m_maskDimY)
+                     .arg(seed / plane);
+    }
+    if (found.size() > shown)
+        lines << QString("... and %1 more").arg(found.size() - shown);
+    QMessageBox::information(this, "Pieces",
+                             found.empty() ? QString("%1 is not in the edited mask.").arg(labelDisplayName(label))
+                                           : QString("%1 is in %2 piece(s):\n\n%3")
+                                                 .arg(labelDisplayName(label))
+                                                 .arg(found.size())
+                                                 .arg(lines.join('\n')));
 }
 
 bool ManualSeedSelector::pickActiveLabelAt(int x, int y, int z)
