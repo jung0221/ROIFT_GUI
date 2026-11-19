@@ -631,6 +631,11 @@ int main(int argc, char **argv)
         check(log->toPlainText().contains("2 seed(s) used, 1 on other slices ignored"),
               "the log counts 2 seeds used and 1 ignored");
 
+        // The paste is one undo step: undo restores the plane, redo puts the result back.
+        const std::vector<int> pasted = after;
+        check(slice.undoMaskEdit() && slice.activeMaskLabels() == before, "undo restores the mask before the paste");
+        check(slice.redoMaskEdit() && slice.activeMaskLabels() == pasted, "redo puts the pasted plane back");
+
         // Plane y = 10 holds no seed; the refusal comes before any task.
         const std::vector<int> beforeRefusal = slice.activeMaskLabels();
         coronal->setValue(10);

@@ -19,6 +19,7 @@
 #include <set>
 #include <thread>
 #include <vector>
+#include "MaskEditHistory.h"
 #include "MaskLayers.h"
 #include "NiftiImage.h"
 #include "OrthogonalView.h"
@@ -124,6 +125,12 @@ public:
     // Loads a seed file and lists it in the current image's seed groups, as the Load
     // Seeds button does (used by the command line).
     bool applySeedsFromPath(const std::string &path);
+    // Undo and redo of the edited mask. A brush or erase stroke, Clear, Threshold and a
+    // slice-run paste are one step each. False when there was nothing to undo or redo.
+    bool undoMaskEdit();
+    bool redoMaskEdit();
+    // The edited mask's history; isDirty() says whether the buffer differs from its file.
+    const MaskEditHistory &maskEditHistory() const { return m_maskHistory; }
     // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
     // 8-bit or 16-bit label image. Returns false and sets *error on failure. A deferred mask that
     // cannot be read still raises the Load Mask dialog.
@@ -231,6 +238,11 @@ private slots:
     void paintSagittalMask(int x, int y);
     void paintCoronalMask(int x, int y);
     void applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, int radius, int labelValue, bool erase = false);
+    // Closes the open brush stroke, if any, as one undo step.
+    void commitMaskEdit();
+    void updateMaskUndoControls();
+    // After an undo or redo changed the buffer: labels, 3D surface, views, status line.
+    void afterMaskReplay(const QString &verb, const std::string &name);
     void resetWindowToFullRange();
     void applyWindowFromValues(float low, float high, bool fromSlider);
 
@@ -593,6 +605,9 @@ private:
     std::vector<std::array<int, 3>> m_colorLUT;
     // mask buffer: linearized X * Y * Z, 0 means empty, positive integers are label values
     std::vector<int> m_maskData;
+    // History of m_maskData. It moves with the voxels: into a drawn layer when another mask is
+    // edited, back when this one is selected again; it is reset whenever the buffer is replaced.
+    MaskEditHistory m_maskHistory;
     unsigned int m_maskDimX = 0;
     unsigned int m_maskDimY = 0;
     unsigned int m_maskDimZ = 0;
@@ -621,6 +636,8 @@ private:
     QPushButton *m_btnMaskDraw = nullptr;
     QPushButton *m_btnMaskErase = nullptr;
     QPushButton *m_btnMaskOff = nullptr;
+    QPushButton *m_btnMaskUndo = nullptr;
+    QPushButton *m_btnMaskRedo = nullptr;
     QSpinBox *m_seedBrushSpin = nullptr;
     QSpinBox *m_seedDisplaySpacingSpin = nullptr;
     QSlider *m_maskBrushSpin = nullptr;

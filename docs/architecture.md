@@ -15,6 +15,10 @@
  - `MaskLayers` (src/MaskLayers.*)
    - The mask volume model, free of the window: `MaskVolume` (label buffer + grid), `readMaskVolume()` (one reader for ITK formats and NumPy), and `MaskLayer` — a drawn mask plus the rule (`MaskColorMode`) that turns its labels into colours.
 
+ - `MaskEditHistory` (src/MaskEditHistory.*)
+   - Undo history of one label buffer, free of Qt. An operation stores the before and after value of each voxel it changed, so undo and redo replay a sparse diff; `begin()` continues an open operation of the same name, which is how one brush stroke over many pointer events stays one step, and `record()` takes a write made elsewhere (the slice paste) from a snapshot of the voxels it may touch. A byte cap (512 MB) drops the oldest operations; `isDirty()` compares the current state with the one marked saved, so undoing back to a save is clean again.
+   - In the window, every write to `m_maskData` that is an edit goes through `m_maskHistory`; anything that replaces the buffer resets it. When another mask is selected, a drawn layer takes the history over with the voxels (`MaskLayer::history`) and hands both back on reselection. Pinned by the `mask_edit_history` and `mask_edit_gui` tests and by the undo checks of `plane_mode_gui`.
+
  - `MaskListDelegate` (src/MaskListDelegate.*)
    - Paints the mask list row: eye, colour swatch, name. The eye's hit target (`eyeRect()`) is shared with the viewport event filter in `ManualSeedSelector::eventFilter`, which turns a click there into a visibility toggle instead of a selection.
 
