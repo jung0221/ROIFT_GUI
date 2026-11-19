@@ -240,6 +240,13 @@ if(BUILD_ROIFT_TESTS)
   target_include_directories(label_ops_test PRIVATE src)
   add_test(NAME label_ops COMMAND label_ops_test)
 
+  add_executable(slice_fill_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_fill_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SliceFill.cpp
+  )
+  target_include_directories(slice_fill_test PRIVATE src)
+  add_test(NAME slice_fill COMMAND slice_fill_test)
+
   add_executable(seed_slice_index_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/seed_slice_index_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/SeedSliceIndex.cpp
@@ -358,6 +365,12 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(label_ops_gui_test PRIVATE roift_gui_test_objects)
   add_test(NAME label_ops_gui COMMAND label_ops_gui_test)
   set_tests_properties(label_ops_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
+  # Fill between slices in the window: one undo step, locks and "Over" respected.
+  add_executable(slice_fill_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_fill_gui_test.cpp)
+  target_link_libraries(slice_fill_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME slice_fill_gui COMMAND slice_fill_gui_test)
+  set_tests_properties(slice_fill_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test

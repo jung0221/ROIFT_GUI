@@ -1094,6 +1094,15 @@ void ManualSeedSelector::setupUi()
             labelToolsMenu->addAction(QString("Keep only the largest piece of %1").arg(name), this, [this, label]()
                                       { keepLargestPiece(label); });
             labelToolsMenu->addSeparator();
+            const std::pair<const char *, int> fillAxes[] = {{"axial", 2}, {"coronal", 1}, {"sagittal", 0}};
+            for (const auto &[axisName, axis] : fillAxes)
+            {
+                const int normal = axis;
+                labelToolsMenu->addAction(QString("Fill between %1 slices of %2").arg(axisName, name), this,
+                                          [this, label, normal]()
+                                          { fillBetweenSlices(label, normal); });
+            }
+            labelToolsMenu->addSeparator();
             labelToolsMenu->addAction(QString("Swap %1 with...").arg(name), this, [this, label]()
                                       {
                 bool ok = false;
@@ -7236,7 +7245,7 @@ long long ManualSeedSelector::finishLabelOperation(const char *name, long long c
 }
 
 long long ManualSeedSelector::writeLabelOperation(const char *name, const std::vector<std::size_t> &indices,
-                                                  int newValue)
+                                                  int newValue, bool brushRule)
 {
     m_maskHistory.begin(name);
     long long changed = 0;
@@ -7245,7 +7254,7 @@ long long ManualSeedSelector::writeLabelOperation(const char *name, const std::v
     {
         if (m_maskData[index] == newValue)
             continue;
-        if (maskWriteAllowed(m_maskData[index], newValue, false))
+        if (maskWriteAllowed(m_maskData[index], newValue, brushRule))
         {
             m_maskHistory.write(m_maskData, index, newValue);
             ++changed;
@@ -7329,6 +7338,39 @@ long long ManualSeedSelector::swapLabels(int a, int b)
     if (a <= 0 || b <= 0 || a == b || !editedMaskReady())
         return 0;
     return remapLabelOperation("Swap labels", {{a, b}, {b, a}});
+}
+
+long long ManualSeedSelector::fillBetweenSlices(int label, int normalAxis)
+{
+    if (label <= 0 || normalAxis < 0 || normalAxis > 2 || !editedMaskReady())
+        return 0;
+    if (m_maskDimZ != m_image.getSizeZ())
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText("Fill between slices needs a mask with the image's depth.");
+        return 0;
+    }
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    const slice_fill::Result fill =
+        slice_fill::fillBetweenSlices(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, brushSpacing(), label, normalAxis);
+    const long long changed = writeLabelOperation("Fill between slices", fill.voxels, label, true);
+    if (m_statusLabel)
+    {
+        if (fill.gaps.empty())
+            m_statusLabel->setText(QString("Fill between slices: %1 has no empty slices between two drawn ones on that axis.")
+                                       .arg(labelDisplayName(label)));
+        else
+            m_statusLabel->setText(QString("Fill between slices: %1 voxel(s) of %2 in %3 slice(s) across %4 gap(s).")
+                                       .arg(QLocale().toString(changed))
+                                       .arg(labelDisplayName(label))
+                                       .arg(fill.filledSlices)
+                                       .arg(fill.gaps.size()));
+    }
+    return changed;
 }
 
 long long ManualSeedSelector::mergeLabelInto(int from, int to)

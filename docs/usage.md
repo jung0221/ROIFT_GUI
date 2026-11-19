@@ -109,6 +109,16 @@
   - `Keep only the largest piece of ...` turns every other piece into background.
   - `Swap ... with` exchanges two labels everywhere; `Merge ... into` gives every voxel of the
     active label another one (0 clears it).
+  - `Fill between axial (coronal, sagittal) slices of ...`: draw the label on a few slices
+    along one axis and each run of empty slices between two drawn ones is filled with a shape
+    blended from the two outlines (each slice takes the average of their signed distance maps
+    in mm, weighted by how near it is to each). The fill writes like a brush stroke: locked
+    labels stay as they are, and `Over` decides what it may paint over. Slices that already
+    hold the label count as drawn, so on a mask with the label on every slice nothing is
+    filled. There is no preview: look at the result and undo it if it is wrong.
+  - The failure mode of the blend: outlines on two drawn slices that do not overlap blend to
+    nothing in between, so a structure that moves farther than its own width between two
+    drawn slices is not carried. Draw slices closer together where it moves fast.
 - Right-click a voxel of the edited mask and choose `Give this piece of ... the label ...` to
   give the whole piece under the pointer the active label: the fix for a tooth that a model
   numbered as its mirror (21 for 11).
