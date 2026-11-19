@@ -308,6 +308,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME mask_unsaved_prompt COMMAND mask_unsaved_prompt_test)
   set_tests_properties(mask_unsaved_prompt PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+  # Crash copies of the edited mask: written, offered back, restored, removed.
+  add_executable(mask_autosave_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_autosave_test.cpp)
+  target_link_libraries(mask_autosave_test PRIVATE roift_gui_test_objects)
+  add_test(NAME mask_autosave COMMAND mask_autosave_test)
+  set_tests_properties(mask_autosave PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
   # A saved mask keeps its image's origin, spacing and direction, and every label.
   add_executable(mask_save_geometry_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_save_geometry_test.cpp)
   target_link_libraries(mask_save_geometry_test PRIVATE roift_gui_test_objects)

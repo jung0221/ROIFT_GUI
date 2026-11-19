@@ -159,6 +159,7 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
 
 ManualSeedSelector::~ManualSeedSelector()
 {
+    waitForAutosave();
     stopSegmentationWorker(true);
     // A read cannot be interrupted; its result is dropped with the window's
     // event queue, but the thread has to be gone before the members it reads.
@@ -867,6 +868,11 @@ void ManualSeedSelector::setupUi()
                 { redoMaskEdit(); });
     }
     updateMaskUndoControls();
+
+    m_autosaveTimer = new QTimer(this);
+    m_autosaveTimer->setInterval(kMaskAutosaveIntervalMs);
+    connect(m_autosaveTimer, &QTimer::timeout, this, &ManualSeedSelector::autosaveTick);
+    m_autosaveTimer->start();
 
     // Brush group
     SectionGroup *maskBrushGroup = new SectionGroup("Brush");
@@ -2981,6 +2987,12 @@ void ManualSeedSelector::applyLoadedImage(int row, NiftiImage &&image, const Npz
         m_mask3DView->restoreCameraState(preservedCamera, true);
     if (m_statusLabel)
         m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(m_path)));
+
+    // After the event loop has drawn the image, and only if it is still the open one.
+    QTimer::singleShot(0, this, [this, path = m_path]()
+                       {
+        if (m_path == path)
+            offerMaskAutosaves(); });
 }
 
 std::string ManualSeedSelector::nativeImagePath()
@@ -4042,6 +4054,11 @@ void ManualSeedSelector::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+    // Everything unsaved was saved or let go just now, so this session's copies are stale.
+    waitForAutosave();
+    for (const QString &pair : std::as_const(m_sessionAutosaves))
+        mask_autosave::remove(pair.section('\n', 0, 0), pair.section('\n', 1));
+    m_sessionAutosaves.clear();
     saveUiState();
     QMainWindow::closeEvent(event);
 }
@@ -6950,10 +6967,7 @@ bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *erro
         {
             const bool saved = savePngLabels(path, error);
             if (saved)
-            {
-                m_maskHistory.markSaved();
-                updateMaskUndoControls();
-            }
+                noteMaskSaved();
             return saved;
         }
 
@@ -7041,8 +7055,7 @@ bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *erro
         writer->SetFileName(outpath);
         writer->SetInput(out);
         writer->Update();
-        m_maskHistory.markSaved();
-        updateMaskUndoControls();
+        noteMaskSaved();
         return true;
     }
     catch (const std::exception &e)
@@ -7729,11 +7742,17 @@ bool ManualSeedSelector::confirmMaskEditLoss(const QString &action, const MaskEd
         // The user has let them go; the action that follows must not ask again, even
         // when it completes later (a background image read).
         if (edited)
+        {
             m_maskHistory.markSaved();
+            forgetSessionAutosave(editedPath);
+        }
         for (MaskLayer &layer : m_maskLayers)
         {
             if (layerPaths.contains(layer.path))
+            {
                 layer.history.markSaved();
+                forgetSessionAutosave(layer.path);
+            }
         }
         updateMaskUndoControls();
         return true;
@@ -7804,6 +7823,203 @@ ManualSeedSelector::UnsavedEditsChoice ManualSeedSelector::askUnsavedMaskEdits(c
     default:
         return UnsavedEditsChoice::Cancel;
     }
+}
+
+void ManualSeedSelector::waitForAutosave()
+{
+    if (m_autosaveWorker.joinable())
+        m_autosaveWorker.join();
+}
+
+void ManualSeedSelector::forgetSessionAutosave(const QString &maskPath)
+{
+    const QString imagePath = QString::fromStdString(m_path);
+    const QString pair = imagePath + QLatin1Char('\n') + maskPath;
+    if (!m_sessionAutosaves.contains(pair))
+        return;
+    waitForAutosave();
+    mask_autosave::remove(imagePath, maskPath);
+    m_sessionAutosaves.remove(pair);
+}
+
+void ManualSeedSelector::noteMaskSaved()
+{
+    m_maskHistory.markSaved();
+    updateMaskUndoControls();
+    // Whoever wrote it, a copy of this mask is now older than its file.
+    waitForAutosave();
+    const QString imagePath = QString::fromStdString(m_path);
+    const QString maskPath = QString::fromStdString(m_loadedMaskPath);
+    mask_autosave::remove(imagePath, maskPath);
+    m_sessionAutosaves.remove(imagePath + QLatin1Char('\n') + maskPath);
+}
+
+void ManualSeedSelector::autosaveTick()
+{
+    if (!hasImage() || m_autosaveBusy.load() || m_maskHistory.hasOpenOperation() || activeMaskPending())
+        return;
+    const QString maskPath = QString::fromStdString(m_loadedMaskPath);
+    if (!m_maskHistory.isDirty() || m_maskData.empty())
+    {
+        forgetSessionAutosave(maskPath); // back to its file, by undo
+        return;
+    }
+    waitForAutosave();
+    const QString imagePath = QString::fromStdString(m_path);
+    // The copy is taken here, a byte a voxel; only the compression and the write leave the thread.
+    auto snapshot = std::make_shared<mask_autosave::Snapshot>(
+        mask_autosave::takeSnapshot(imagePath, maskPath, m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}));
+    m_sessionAutosaves.insert(imagePath + QLatin1Char('\n') + maskPath);
+    m_autosaveBusy.store(true);
+    m_autosaveWorker = std::thread([this, snapshot]()
+                                   {
+        QString error;
+        const bool ok = mask_autosave::write(*snapshot, &error);
+        m_autosaveBusy.store(false);
+        if (!ok)
+            QMetaObject::invokeMethod(this, [this, error]()
+                                      {
+                if (m_statusLabel)
+                    m_statusLabel->setText(QString("Autosave failed: %1").arg(error)); }, Qt::QueuedConnection); });
+}
+
+void ManualSeedSelector::setMaskAutosaveInterval(int milliseconds)
+{
+    if (!m_autosaveTimer)
+        return;
+    if (milliseconds <= 0)
+    {
+        m_autosaveTimer->stop();
+        return;
+    }
+    m_autosaveTimer->start(milliseconds);
+}
+
+bool ManualSeedSelector::autosaveMaskNow()
+{
+    commitMaskEdit();
+    if (!hasImage() || activeMaskPending() || !m_maskHistory.isDirty() || m_maskData.empty())
+        return false;
+    waitForAutosave();
+    const QString imagePath = QString::fromStdString(m_path);
+    const QString maskPath = QString::fromStdString(m_loadedMaskPath);
+    m_sessionAutosaves.insert(imagePath + QLatin1Char('\n') + maskPath);
+    QString error;
+    const bool ok = mask_autosave::write(
+        mask_autosave::takeSnapshot(imagePath, maskPath, m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}), &error);
+    if (!ok && m_statusLabel)
+        m_statusLabel->setText(QString("Autosave failed: %1").arg(error));
+    return ok;
+}
+
+bool ManualSeedSelector::offerMaskAutosaves()
+{
+    if (!hasImage())
+        return false;
+    for (const mask_autosave::Entry &entry : mask_autosave::findForImage(QString::fromStdString(m_path)))
+    {
+        const QString name = entry.maskPath.isEmpty() ? QString("the mask painted without a file")
+                                                      : QFileInfo(entry.maskPath).fileName();
+        const AutosaveChoice choice = m_autosavePrompt ? m_autosavePrompt(name, entry.savedAt)
+                                                       : askRestoreAutosave(name, entry.savedAt);
+        if (choice == AutosaveChoice::Later)
+            continue;
+        if (choice == AutosaveChoice::Discard)
+        {
+            mask_autosave::remove(entry.imagePath, entry.maskPath);
+            continue;
+        }
+        if (restoreMaskAutosave(entry))
+            return true;
+    }
+    return false;
+}
+
+bool ManualSeedSelector::restoreMaskAutosave(const mask_autosave::Entry &entry)
+{
+    std::vector<int> labels;
+    QString error;
+    if (!mask_autosave::read(entry, labels, &error))
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(QString("Autosave not restored: %1").arg(error));
+        return false;
+    }
+    const QString name = entry.maskPath.isEmpty() ? QString("a mask painted without a file")
+                                                  : QFileInfo(entry.maskPath).fileName();
+
+    if (!entry.maskPath.isEmpty() && QFileInfo::exists(entry.maskPath))
+    {
+        // On top of the file, as one undoable step, so undo shows what the file holds.
+        if (!loadMaskFromFile(entry.maskPath.toStdString()))
+            return false;
+        if (m_maskData.size() != labels.size())
+        {
+            if (m_statusLabel)
+                m_statusLabel->setText(QString("Autosave not restored: %1 is no longer the size of its copy.").arg(name));
+            return false;
+        }
+        m_maskHistory.begin("Restore autosave");
+        for (std::size_t i = 0; i < labels.size(); ++i)
+            m_maskHistory.write(m_maskData, i, labels[i]);
+        m_maskHistory.commit();
+    }
+    else
+    {
+        if (entry.dims[0] != m_image.getSizeX() || entry.dims[1] != m_image.getSizeY() ||
+            entry.dims[2] != m_image.getSizeZ())
+        {
+            if (m_statusLabel)
+                m_statusLabel->setText("Autosave not restored: it is not the size of the image.");
+            return false;
+        }
+        MaskEditLoss loss;
+        loss.releasesEdited = true;
+        if (!confirmMaskEditLoss("Restoring the autosave", loss))
+            return false;
+        releaseActiveMaskLayer();
+        m_loadedMaskPath.clear();
+        m_pendingActiveMaskPath.clear();
+        m_unsavedMaskStyle = MaskLayer();
+        m_maskData = std::move(labels);
+        m_maskDimX = entry.dims[0];
+        m_maskDimY = entry.dims[1];
+        m_maskDimZ = entry.dims[2];
+        m_maskSpacingX = m_image.getSpacingX();
+        m_maskSpacingY = m_image.getSpacingY();
+        m_maskSpacingZ = m_image.getSpacingZ();
+        m_maskHistory.reset(false); // in no file
+    }
+
+    setActiveMaskVisible();
+    m_mask3DDirty = true;
+    rebuildMaskLabelFilter();
+    updateViews();
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("Restored the autosave of %1 from %2: unsaved until Save Mask.")
+                                   .arg(name, entry.savedAt.toString("yyyy-MM-dd HH:mm")));
+    return true;
+}
+
+ManualSeedSelector::AutosaveChoice ManualSeedSelector::askRestoreAutosave(const QString &mask, const QDateTime &savedAt)
+{
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle("Restore autosave");
+    box.setText(QString("Unsaved edits of %1 were autosaved on %2 and never saved.")
+                    .arg(mask, savedAt.toString("yyyy-MM-dd HH:mm")));
+    box.setInformativeText("Restore them as unsaved edits, discard them, or decide when this image is next opened?");
+    QPushButton *restore = box.addButton("Restore", QMessageBox::AcceptRole);
+    QPushButton *discard = box.addButton("Discard", QMessageBox::DestructiveRole);
+    QPushButton *later = box.addButton("Later", QMessageBox::RejectRole);
+    box.setDefaultButton(restore);
+    box.setEscapeButton(later);
+    box.exec();
+    if (box.clickedButton() == restore)
+        return AutosaveChoice::Restore;
+    if (box.clickedButton() == discard)
+        return AutosaveChoice::Discard;
+    return AutosaveChoice::Later;
 }
 
 void ManualSeedSelector::updateMaskSeedLists()

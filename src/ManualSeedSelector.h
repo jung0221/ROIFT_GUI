@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QColor>
 #include <QStringList>
+#include <QSet>
 #include <array>
 #include <functional>
 #include <deque>
@@ -19,6 +20,7 @@
 #include <set>
 #include <thread>
 #include <vector>
+#include "MaskAutosave.h"
 #include "MaskEditHistory.h"
 #include "MaskLayers.h"
 #include "NiftiImage.h"
@@ -145,6 +147,25 @@ public:
     // their own, since a modal dialog would block them.
     using UnsavedEditsPrompt = std::function<UnsavedEditsChoice(const QString &action, const QStringList &masks)>;
     void setUnsavedEditsPrompt(UnsavedEditsPrompt prompt) { m_unsavedEditsPrompt = std::move(prompt); }
+
+    // Crash copies of the edited mask (docs/usage.md, "Autosave"): written in the background
+    // at this interval while it holds unsaved edits, offered back when its image is opened.
+    static constexpr int kMaskAutosaveIntervalMs = 2 * 60 * 1000;
+    // Writes the copy now, on this thread. False when nothing was unsaved or the write failed.
+    bool autosaveMaskNow();
+    // 0 turns autosave off.
+    void setMaskAutosaveInterval(int milliseconds);
+    enum class AutosaveChoice
+    {
+        Restore,
+        Discard,
+        Later
+    };
+    using AutosavePrompt = std::function<AutosaveChoice(const QString &mask, const QDateTime &savedAt)>;
+    void setAutosavePrompt(AutosavePrompt prompt) { m_autosavePrompt = std::move(prompt); }
+    // Offers the open image's copies, newest first, and restores at most one, since a second
+    // would replace the first in the edited buffer. True when one was restored.
+    bool offerMaskAutosaves();
     // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
     // 8-bit or 16-bit label image. Returns false and sets *error on failure. A deferred mask that
     // cannot be read still raises the Load Mask dialog.
@@ -437,6 +458,22 @@ private:
     bool saveMaskEditsBeforeLoss(bool edited, const QStringList &layerPaths);
     UnsavedEditsChoice askUnsavedMaskEdits(const QString &action, const QStringList &masks);
     UnsavedEditsPrompt m_unsavedEditsPrompt;
+
+    void autosaveTick();
+    bool restoreMaskAutosave(const mask_autosave::Entry &entry);
+    AutosaveChoice askRestoreAutosave(const QString &mask, const QDateTime &savedAt);
+    // After the edited mask was written to its file: the copy is superseded.
+    void noteMaskSaved();
+    // Removes the copy of (current image, mask) if this window wrote it.
+    void forgetSessionAutosave(const QString &maskPath);
+    void waitForAutosave();
+    QTimer *m_autosaveTimer = nullptr;
+    std::thread m_autosaveWorker;
+    std::atomic<bool> m_autosaveBusy{false};
+    // "image\nmask" of every copy this window wrote: only those are removed when their mask
+    // turns clean, so a copy left by a crash survives until it is restored or discarded.
+    QSet<QString> m_sessionAutosaves;
+    AutosavePrompt m_autosavePrompt;
     // Pay off a pending read. False when the buffer is still unusable after it.
     bool ensureActiveMaskLoaded();
 

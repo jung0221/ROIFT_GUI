@@ -95,6 +95,28 @@
 - While another image is read in the background, the open image stays editable; edits made
   meanwhile are asked about when the read completes.
 
+## Autosave
+- Every two minutes, while the edited mask holds unsaved edits, a copy of it is written in the
+  background: the labels are copied at a byte a voxel (two above label 255), then compressed and
+  written on a worker thread, so the window keeps answering. Nothing is written while a stroke
+  is in progress, or while the mask is unchanged since its file.
+- The copies live in `autosave/` under the application's data directory (on Linux
+  `~/.local/share/ROIFT/roift_gui/autosave/`), or in `ROIFT_AUTOSAVE_DIR` when that is set; never
+  beside the data. One copy per image and mask: a volume and a JSON sidecar naming both.
+- A copy outlives the window only when the window ends without its edits being saved or
+  discarded, which is what a crash does. Opening that image again offers it: `Restore` puts the
+  edits back as unsaved (on top of the mask's file, as one undo step, so `Undo` shows what the
+  file holds; a mask painted without a file comes back without one), `Discard` deletes the copy,
+  `Later` keeps it for the next time. One copy is restored per opening, since a second would
+  replace the first in the edited mask.
+- A copy is deleted when its mask is saved, when its edits are discarded in the unsaved-edits
+  question, and when the window closes normally. If undo brings a mask back to its file, the
+  next tick deletes the copy that window wrote.
+- Only the edited mask is copied. A drawn mask holding edits while another one is edited is not,
+  until it is edited again.
+- A copy is restored only onto an image of the same size, and, for a mask with a file, onto a
+  file of the same size; otherwise it is kept and the status bar says why.
+
 ## Mask I/O
 - The `Save` and `Load` buttons in the `File` group of the `Mask` section open `Save Mask`
   and `Open Mask`. NIfTI is the default format and is written with int16 samples; a label
