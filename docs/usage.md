@@ -120,7 +120,10 @@
 ## Mask I/O
 - The `Save` and `Load` buttons in the `File` group of the `Mask` section open `Save Mask`
   and `Open Mask`. NIfTI is the default format and is written with int16 samples; a label
-  outside -32768 to 32767 is clamped to that range without a warning. A name that does not
+  outside -32768 to 32767 is clamped to that range without a warning. The mask is written on
+  the image's grid, with the image's origin, spacing and direction, so it overlays the image in
+  any other program. Masks saved by v1.1.14 and earlier have 1 mm spacing, origin 0 and no orientation;
+  their voxels are right, their header is not. A name that does not
   end in `.nii` or `.nii.gz` gets `.nii.gz` appended. The test is case-sensitive, so
   `mask.NII.GZ` is saved as `mask.NII.GZ.nii.gz`.
 - **PNG label images.** While the image has one slice, `Save Mask` also offers

@@ -113,6 +113,9 @@ public:
     double getSpacingX() const;
     double getSpacingY() const;
     double getSpacingZ() const;
+    // Gives out the read image's origin, spacing and direction, so a file written on its
+    // grid lands where the image is. False, out untouched, when nothing is loaded.
+    bool copyGeometryTo(itk::ImageBase<3> *out) const;
 
     float getGlobalMin() const;
     float getGlobalMax() const;
