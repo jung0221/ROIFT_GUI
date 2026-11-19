@@ -150,6 +150,20 @@ QString planeName(planar::Plane plane)
 }
 } // namespace
 
+namespace
+{
+// Columns of the Labels table; the label value is stored on its own column as Qt::UserRole.
+enum LabelColumn
+{
+    kLabelShowColumn = 0,
+    kLabelLockColumn,
+    kLabelValueColumn,
+    kLabelNameColumn,
+    kLabelVoxelsColumn,
+    kLabelColumnCount
+};
+} // namespace
+
 ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *parent)
     : QMainWindow(parent)
 {
@@ -884,6 +898,7 @@ void ManualSeedSelector::setupUi()
 
     maskBrushLayout->addWidget(new QLabel("Radius:"), 0, 0);
     m_maskBrushSpin = new QSlider(Qt::Horizontal);
+    m_maskBrushSpin->setObjectName("maskBrushRadius");
     m_maskBrushSpin->setRange(1, 50);
     m_maskBrushSpin->setValue(5);
     m_maskBrushSpin->setSingleStep(1);
@@ -924,6 +939,27 @@ void ManualSeedSelector::setupUi()
         updateViews(); });
     maskBrushLayout->addWidget(m_maskOpacitySlider, 1, 1);
     maskBrushLayout->addWidget(opacityValue, 1, 2);
+
+    maskBrushLayout->addWidget(new QLabel("Over:"), 2, 0);
+    m_paintOverCombo = new QComboBox();
+    m_paintOverCombo->setObjectName("paintOverCombo");
+    m_paintOverCombo->addItem("Any unlocked label", int(PaintOver::AnyUnlocked));
+    m_paintOverCombo->addItem("Background only", int(PaintOver::Background));
+    m_paintOverCombo->addItem("One label", int(PaintOver::OneLabel));
+    m_paintOverCombo->setToolTip("What a brush stroke may paint over, besides its own label. Locked labels are never painted over");
+    maskBrushLayout->addWidget(m_paintOverCombo, 2, 1);
+    m_paintOverLabelSpin = new QSpinBox();
+    m_paintOverLabelSpin->setObjectName("paintOverLabel");
+    m_paintOverLabelSpin->setRange(0, 65535);
+    m_paintOverLabelSpin->setEnabled(false);
+    m_paintOverLabelSpin->setToolTip("The one label a stroke may paint over");
+    maskBrushLayout->addWidget(m_paintOverLabelSpin, 2, 2);
+    connect(m_paintOverCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int)
+            { setPaintOver(static_cast<PaintOver>(m_paintOverCombo->currentData().toInt()), m_paintOverLabelSpin->value()); });
+    connect(m_paintOverLabelSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value)
+            {
+        if (m_paintOver == PaintOver::OneLabel)
+            m_paintOverLabel = value; });
 
     maskSecLayout->addWidget(maskBrushGroup);
 
@@ -1049,25 +1085,30 @@ void ManualSeedSelector::setupUi()
 
         m_labelTree = new QTreeWidget();
         m_labelTree->setObjectName("labelTable");
-        m_labelTree->setColumnCount(4);
-        m_labelTree->setHeaderLabels({"Show", "Label", "Name", "Voxels"});
+        m_labelTree->setColumnCount(kLabelColumnCount);
+        m_labelTree->setHeaderLabels({"Show", "Lock", "Label", "Name", "Voxels"});
         m_labelTree->setRootIsDecorated(false);
         m_labelTree->setUniformRowHeights(true);
         m_labelTree->setSelectionMode(QAbstractItemView::SingleSelection);
         m_labelTree->setMinimumHeight(160);
-        m_labelTree->setToolTip("Click a row to paint with its label; the box shows or hides it");
+        m_labelTree->setToolTip("Click a row to paint with its label. Show hides or shows it; Lock keeps every voxel of it as it is");
         connect(m_labelTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int column)
                 {
-            if (column != 0)
+            const int label = item->data(kLabelValueColumn, Qt::UserRole).toInt();
+            if (column == kLabelLockColumn)
+            {
+                setLabelLocked(label, item->checkState(kLabelLockColumn) == Qt::Checked);
                 return;
-            const int label = item->data(1, Qt::UserRole).toInt();
-            m_maskLabelVisibility[label] = (item->checkState(0) == Qt::Checked);
+            }
+            if (column != kLabelShowColumn)
+                return;
+            m_maskLabelVisibility[label] = (item->checkState(kLabelShowColumn) == Qt::Checked);
             m_mask3DDirty = true;
             updateViews(); });
         connect(m_labelTree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int column)
                 {
-            if (item && column != 0)
-                setActiveLabel(item->data(1, Qt::UserRole).toInt()); });
+            if (item && column != kLabelShowColumn && column != kLabelLockColumn)
+                setActiveLabel(item->data(kLabelValueColumn, Qt::UserRole).toInt()); });
         labelsLayout->addWidget(m_labelTree);
 
         // Find a label from anywhere in the window.
@@ -5669,6 +5710,13 @@ QString ManualSeedSelector::pastePlaneResult(const PlaneRunPins &pins, const std
         planeBefore.push_back(index < m_maskData.size() ? m_maskData[index] : 0);
     if (!planar::pastePlaneLabels(pins.geometry, labels, runLabels, m_maskData))
         return "Slice result discarded: the label plane does not fit the slice.";
+    // The paste writes the buffer itself, so locked labels are put back afterwards.
+    for (std::size_t i = 0; i < planeIndices.size(); ++i)
+    {
+        int &value = m_maskData[planeIndices[i]];
+        if (!maskWriteAllowed(planeBefore[i], value, false))
+            value = planeBefore[i];
+    }
     const bool pasted = m_maskHistory.record(m_maskData, planeIndices, planeBefore, "Slice segmentation");
     updateMaskUndoControls();
 
@@ -6733,7 +6781,7 @@ void ManualSeedSelector::cleanMask()
         m_maskHistory.begin("Clear");
         for (std::size_t i = 0; i < m_maskData.size(); ++i)
         {
-            if (m_maskData[i] != 0)
+            if (m_maskData[i] != 0 && maskWriteAllowed(m_maskData[i], 0, false))
                 m_maskHistory.write(m_maskData, i, 0);
         }
         if (m_maskHistory.commit())
@@ -6871,17 +6919,18 @@ void ManualSeedSelector::refreshLabelPanel()
         {
             auto *item = new QTreeWidgetItem(m_labelTree);
             item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
-            item->setData(1, Qt::UserRole, label);
+            item->setData(kLabelValueColumn, Qt::UserRole, label);
             QPixmap swatch(12, 12);
             swatch.fill(colorForLabel(label));
-            item->setIcon(1, QIcon(swatch));
-            item->setText(1, QString::number(label));
-            item->setText(2, m_labelTable.nameFor(label));
-            item->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
+            item->setIcon(kLabelValueColumn, QIcon(swatch));
+            item->setText(kLabelValueColumn, QString::number(label));
+            item->setText(kLabelNameColumn, m_labelTable.nameFor(label));
+            item->setTextAlignment(kLabelVoxelsColumn, Qt::AlignRight | Qt::AlignVCenter);
             m_labelRows[label] = item;
         }
-        m_labelTree->resizeColumnToContents(0);
-        m_labelTree->resizeColumnToContents(1);
+        m_labelTree->resizeColumnToContents(kLabelShowColumn);
+        m_labelTree->resizeColumnToContents(kLabelLockColumn);
+        m_labelTree->resizeColumnToContents(kLabelValueColumn);
     }
     const QColor absent = palette().color(QPalette::Disabled, QPalette::Text);
     const QColor here = palette().color(QPalette::Active, QPalette::Text);
@@ -6889,9 +6938,10 @@ void ManualSeedSelector::refreshLabelPanel()
     {
         auto count = m_labelCounts.find(label);
         const long long voxels = (count == m_labelCounts.end()) ? 0 : count->second;
-        item->setText(3, voxels > 0 ? QLocale().toString(voxels) : QString());
-        item->setCheckState(0, m_maskLabelVisibility[label] ? Qt::Checked : Qt::Unchecked);
-        for (int column = 1; column < 4; ++column)
+        item->setText(kLabelVoxelsColumn, voxels > 0 ? QLocale().toString(voxels) : QString());
+        item->setCheckState(kLabelShowColumn, m_maskLabelVisibility[label] ? Qt::Checked : Qt::Unchecked);
+        item->setCheckState(kLabelLockColumn, labelLocked(label) ? Qt::Checked : Qt::Unchecked);
+        for (int column = kLabelValueColumn; column < kLabelColumnCount; ++column)
             item->setForeground(column, voxels > 0 ? here : absent);
     }
     if (auto active = m_labelRows.find(activeLabel()); active != m_labelRows.end())
@@ -7004,6 +7054,62 @@ int ManualSeedSelector::editedLabelAt(int x, int y, int z) const
     return index < m_maskData.size() ? m_maskData[index] : -1;
 }
 
+void ManualSeedSelector::setLabelLocked(int label, bool locked)
+{
+    if (label <= 0 || locked == labelLocked(label))
+        return;
+    if (locked)
+        m_lockedLabels.insert(label);
+    else
+        m_lockedLabels.erase(label);
+    refreshLabelPanel();
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("%1 %2.").arg(labelDisplayName(label), locked ? "locked" : "unlocked"));
+}
+
+void ManualSeedSelector::setPaintOver(PaintOver target, int label)
+{
+    m_paintOver = target;
+    m_paintOverLabel = label;
+    if (m_paintOverCombo)
+    {
+        QSignalBlocker blocker(m_paintOverCombo);
+        m_paintOverCombo->setCurrentIndex(m_paintOverCombo->findData(int(target)));
+    }
+    if (m_paintOverLabelSpin)
+    {
+        QSignalBlocker blocker(m_paintOverLabelSpin);
+        m_paintOverLabelSpin->setValue(label);
+        m_paintOverLabelSpin->setEnabled(target == PaintOver::OneLabel);
+    }
+}
+
+bool ManualSeedSelector::maskWriteAllowed(int before, int after, bool brush) const
+{
+    if (before == after)
+        return true;
+    if (labelLocked(before) || labelLocked(after))
+        return false;
+    if (!brush)
+        return true;
+    switch (m_paintOver)
+    {
+    case PaintOver::Background:
+        return before == 0;
+    case PaintOver::OneLabel:
+        return before == m_paintOverLabel;
+    case PaintOver::AnyUnlocked:
+        break;
+    }
+    return true;
+}
+
+void ManualSeedSelector::reportLockedLabel(int label)
+{
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("%1 is locked: unlock it in Labels to paint or erase it.").arg(labelDisplayName(label)));
+}
+
 bool ManualSeedSelector::pickActiveLabelAt(int x, int y, int z)
 {
     const int label = editedLabelAt(x, y, z);
@@ -7088,7 +7194,8 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
                 const size_t maskIdx = size_t(x) + rowOffset + maskZOffset;
                 if (m_maskData[maskIdx] == 0)
                     continue;
-                if (m_image.getVoxelValue(x, y, z) >= static_cast<float>(threshold))
+                if (m_image.getVoxelValue(x, y, z) >= static_cast<float>(threshold) &&
+                    maskWriteAllowed(m_maskData[maskIdx], 0, false))
                 {
                     m_maskHistory.write(m_maskData, maskIdx, 0);
                     ++removedCount;
@@ -7480,6 +7587,11 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
     const unsigned int maskSY = m_maskDimY;
     const unsigned int maskSZ = m_maskDimZ;
 
+    if (labelLocked(labelValue))
+    {
+        reportLockedLabel(labelValue);
+        return;
+    }
     // Continues the stroke's operation; the mouse release commits it.
     m_maskHistory.begin(erase ? "Erase" : "Brush");
 
@@ -7512,7 +7624,7 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
                     if (m_maskData[idx] == labelValue)
                         m_maskHistory.write(m_maskData, idx, 0);
                 }
-                else
+                else if (maskWriteAllowed(m_maskData[idx], labelValue, true))
                 {
                     m_maskHistory.write(m_maskData, idx, labelValue);
                 }

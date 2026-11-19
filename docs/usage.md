@@ -58,8 +58,8 @@
 
 ## Label table
 - The `Labels` section lists one row per label of the edited mask, and one per label of the
-  loaded names: a box that shows or hides the label, its colour and value, its name, and how
-  many voxels of the edited mask hold it. A named label absent from the mask is listed greyed,
+  loaded names: a box that shows or hides the label, a box that locks it, its colour and value,
+  its name, and how many voxels of the edited mask hold it. A named label absent from the mask is listed greyed,
   without a count, so it can still be chosen.
 - `Names...` reads label names from an nnU-Net `dataset.json` (its `labels` object; background
   and region lists are left out) or from an ITK-SNAP label description file. The file is
@@ -71,6 +71,15 @@
   label 26; `Ctrl+click` a voxel of the edited mask, or right-click it and choose
   `Paint with ...`. The name of the active label shows beside the label number.
 - The hover line in the status bar names the edited mask's label under the cursor.
+- **Lock.** A locked label keeps every voxel as it is: a brush stroke of another label passes
+  around it, `Clear` and `Threshold` leave it, a slice run neither clears nor grows it, and
+  painting or erasing with it is refused with a message in the status bar. Undo and redo still
+  replay edits made before the lock. Locks hold for the session, across masks, and are not
+  saved.
+- **Over** (in the `Brush` group) is what a stroke may paint over, besides voxels already
+  holding its label: `Any unlocked label` (the default), `Background only`, or `One label`
+  (the number beside it). It applies to brush strokes; `Clear`, `Threshold` and slice runs
+  follow the locks only.
 - The counts are taken by one scan when a mask is loaded, and then follow each edit, undo and
   redo by the voxels it changed, so they stay current without rescanning the volume.
 

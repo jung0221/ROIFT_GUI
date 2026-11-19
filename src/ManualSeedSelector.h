@@ -162,6 +162,20 @@ public:
     // Makes the edited mask's label under a voxel the active one (Ctrl+click). False when
     // there is none there.
     bool pickActiveLabelAt(int x, int y, int z);
+    // A locked label keeps every voxel as it is: no brush, erase, Clear, Threshold or slice
+    // paste changes, removes or grows it. Undo and redo still replay it.
+    void setLabelLocked(int label, bool locked);
+    bool labelLocked(int label) const { return m_lockedLabels.count(label) > 0; }
+    // What a brush stroke may paint over, besides voxels already holding its label.
+    enum class PaintOver
+    {
+        AnyUnlocked,
+        Background,
+        OneLabel
+    };
+    void setPaintOver(PaintOver target, int label = 0);
+    PaintOver paintOver() const { return m_paintOver; }
+
     // Voxels per label of the edited mask (background left out), kept current edit by edit.
     const std::map<int, long long> &maskLabelCounts() const { return m_labelCounts; }
 
@@ -741,6 +755,16 @@ private:
     std::map<int, QTreeWidgetItem *> m_labelRows;
     LabelTable m_labelTable;
     std::map<int, long long> m_labelCounts;
+    std::set<int> m_lockedLabels;
+    PaintOver m_paintOver = PaintOver::AnyUnlocked;
+    int m_paintOverLabel = 0;
+    QComboBox *m_paintOverCombo = nullptr;
+    QSpinBox *m_paintOverLabelSpin = nullptr;
+    // The one rule every mask tool writes through: a voxel may go from before to after unless
+    // either is locked, and, for a brush, unless before is outside the paint target.
+    bool maskWriteAllowed(int before, int after, bool brush) const;
+    // Status line for a stroke refused because its label is locked.
+    void reportLockedLabel(int label);
     // Rebuilds the rows when the set of labels changed, else only refreshes their counts.
     void refreshLabelPanel();
     void applyMaskLabelDelta(const std::unordered_map<int, long long> &delta);

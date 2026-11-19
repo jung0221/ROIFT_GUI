@@ -96,7 +96,7 @@ std::map<int, long long> histogram(const std::vector<int> &labels)
 QTreeWidgetItem *rowFor(QTreeWidget *tree, int label)
 {
     for (int i = 0; i < tree->topLevelItemCount(); ++i)
-        if (tree->topLevelItem(i)->data(1, Qt::UserRole).toInt() == label)
+        if (tree->topLevelItem(i)->data(2, Qt::UserRole).toInt() == label)
             return tree->topLevelItem(i);
     return nullptr;
 }
@@ -159,10 +159,10 @@ int main(int argc, char **argv)
         check(window.loadLabelTable(json, &error), "the dataset.json loads");
         check(tree->topLevelItemCount() == 5, "with names: the mask's labels and the table's (ignore included)");
         QTreeWidgetItem *molar = rowFor(tree, 18);
-        check(molar && molar->text(2) == "Upper Left First Molar (26)", "names in the rows");
-        check(molar && molar->text(3) == QLocale().toString(qlonglong(2 * 2 * kDimZ)), "and voxel counts");
+        check(molar && molar->text(3) == "Upper Left First Molar (26)", "names in the rows");
+        check(molar && molar->text(4) == QLocale().toString(qlonglong(2 * 2 * kDimZ)), "and voxel counts");
         QTreeWidgetItem *pulp = rowFor(tree, 37);
-        check(pulp && pulp->text(3).isEmpty(), "a named label absent from the mask has no count");
+        check(pulp && pulp->text(4).isEmpty(), "a named label absent from the mask has no count");
 
         filter->setText("molar");
         check(visibleRows(tree) == 1 && !molar->isHidden(), "the filter keeps the rows whose name matches");
@@ -175,7 +175,7 @@ int main(int argc, char **argv)
         filter->clear();
         check(visibleRows(tree) == 5, "clearing the filter shows every row");
 
-        emit tree->itemClicked(rowFor(tree, 2), 2);
+        emit tree->itemClicked(rowFor(tree, 2), 3);
         check(window.activeLabel() == 2, "clicking a row paints with its label");
 
         // Paint with Pulp: the count follows the stroke, and the undo, without a rescan.
@@ -187,7 +187,7 @@ int main(int argc, char **argv)
         emit axial->mouseReleased(18, 16, Qt::LeftButton);
         const auto afterStroke = histogram(window.activeMaskLabels());
         check(afterStroke.count(37) && window.maskLabelCounts() == afterStroke, "a stroke updates the counts");
-        check(pulp && pulp->text(3) == QLocale().toString(qlonglong(afterStroke.at(37))), "and its row");
+        check(pulp && pulp->text(4) == QLocale().toString(qlonglong(afterStroke.at(37))), "and its row");
         window.undoMaskEdit();
         check(window.maskLabelCounts() == histogram(window.activeMaskLabels()) && !window.maskLabelCounts().count(37),
               "undo takes them back");

@@ -334,6 +334,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME label_table_gui COMMAND label_table_gui_test)
   set_tests_properties(label_table_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+  # Locks and paint targets: no tool changes a locked label.
+  add_executable(label_lock_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_lock_gui_test.cpp)
+  target_link_libraries(label_lock_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME label_lock_gui COMMAND label_lock_gui_test)
+  set_tests_properties(label_lock_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp
