@@ -30,6 +30,9 @@
  - `LabelOps` (src/LabelOps.*)
    - 26-connected pieces of one label, free of the window: `pieces()` (largest first, with a seed voxel each) and `pieceAt()`, flooding with one bit of scratch per voxel (40 MB for 704 x 704 x 640). In the window, `writeLabelOperation()` and `remapLabelOperation()` turn the piece and label operations into one undo step each, through `maskWriteAllowed()`. Pinned by `label_ops` and `label_ops_gui`.
 
+ - `SliceFill` (src/SliceFill.*)
+   - Fill between slices, free of the window: `signedDistance2D()` (exact Euclidean distances in mm from Felzenszwalb and Huttenlocher's separable transform, negative inside) and `fillBetweenSlices()`, which finds the slices holding a label along one axis and, for each run of empty slices between two of them, thresholds the weighted mean of their signed distance maps at 0 inside the union of their boxes. In the window, `fillBetweenSlices()` writes the result through `writeLabelOperation()` with the brush rule. Pinned by `slice_fill` (against brute-force distances, discs carried, grown, moved, and the non-overlap limit) and `slice_fill_gui`.
+
  - `LabelTable` (src/LabelTable.*)
    - Label names, free of the window: an nnU-Net `dataset.json` (`labels`; background and region lists left out; the `ignore` value kept apart) or an ITK-SNAP label file (with its colours). `matches()` is the find rule. Pinned by `label_table`.
    - In the window, `m_labelCounts` is filled by one scan in `rebuildMaskLabelFilter()` and then moved by `applyMaskLabelDelta()` with `MaskEditHistory::lastLabelDelta()` after each commit, record, undo and redo. `refreshLabelPanel()` rebuilds the `Labels` rows only when the set of labels changed, and otherwise rewrites their counts. Pinned by `label_table_gui`.

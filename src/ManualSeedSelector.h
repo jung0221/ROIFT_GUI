@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 #include "LabelOps.h"
+#include "SliceFill.h"
 #include "LabelTable.h"
 #include "MaskAutosave.h"
 #include "MaskEditHistory.h"
@@ -200,6 +201,10 @@ public:
     long long relabelPieceAt(int x, int y, int z, int newLabel);
     long long swapLabels(int a, int b);
     long long mergeLabelInto(int from, int to);
+    // Carries label through every run of empty slices between two slices holding it, along
+    // normalAxis (0 sagittal, 1 coronal, 2 axial), by blending the two outlines' signed
+    // distances. Writes like a brush stroke: locks and "Over" apply.
+    long long fillBetweenSlices(int label, int normalAxis);
 
     // Voxels per label of the edited mask (background left out), kept current edit by edit.
     const std::map<int, long long> &maskLabelCounts() const { return m_labelCounts; }
@@ -811,7 +816,8 @@ private:
     bool editedMaskReady();
     // One undo step setting each voxel of indices to newValue, or each voxel to remap(value);
     // locked labels are left as they are. Returns the voxels changed.
-    long long writeLabelOperation(const char *name, const std::vector<std::size_t> &indices, int newValue);
+    long long writeLabelOperation(const char *name, const std::vector<std::size_t> &indices, int newValue,
+                                  bool brushRule = false);
     long long remapLabelOperation(const char *name, const std::map<int, int> &remap);
     long long finishLabelOperation(const char *name, long long changed, long long refused);
     double voxelVolumeMm3() const;
