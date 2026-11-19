@@ -176,6 +176,10 @@ public:
     void setBrushSphere(bool sphere);
     bool brushSphere() const { return m_brushSphere; }
 
+    // Draw only the edge of each label in the slice views, so the image stays visible inside.
+    void setMaskOutlineOnly(bool outline);
+    bool maskOutlineOnly() const { return m_maskOutlineOnly; }
+
     // A locked label keeps every voxel as it is: no brush, erase, Clear, Threshold or slice
     // paste changes, removes or grows it. Undo and redo still replay it.
     void setLabelLocked(int label, bool locked);
@@ -202,6 +206,13 @@ public:
     long long relabelPieceAt(int x, int y, int z, int newLabel);
     long long swapLabels(int a, int b);
     long long mergeLabelInto(int from, int to);
+    // Morphology of a label of the edited mask, each one undo step. Filling holes and growing
+    // write like a brush stroke (locks and "Over"); shrinking only clears the label; smoothing
+    // does both. planeAxis < 0 fills holes in 3D, else on every slice across that axis.
+    long long fillLabelHoles(int label, int planeAxis);
+    long long growLabel(int label);
+    long long shrinkLabel(int label);
+    long long smoothLabel(int label);
     // Fill (the fourth drawing mode): the face-connected region under (x, y, z) that holds the
     // clicked voxel's label and lies within the fill tolerance of its intensity takes the
     // active label. planeAxis 0, 1 or 2 keeps it on that slice; -1 spreads it in 3D. Writes
@@ -796,6 +807,8 @@ private:
     QPushButton *m_btnMaskErase = nullptr;
     QPushButton *m_btnMaskFill = nullptr;
     double m_fillTolerance = 100.0;
+    bool m_maskOutlineOnly = false;
+    QCheckBox *m_maskOutlineCheck = nullptr;
     QDoubleSpinBox *m_fillToleranceSpin = nullptr;
     QPushButton *m_btnMaskOff = nullptr;
     QPushButton *m_btnMaskUndo = nullptr;

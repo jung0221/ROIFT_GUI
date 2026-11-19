@@ -970,6 +970,16 @@ void ManualSeedSelector::setupUi()
     connect(m_fillToleranceSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double t)
             { m_fillTolerance = t; });
     maskBrushLayout->addWidget(m_fillToleranceSpin, 3, 1);
+
+    m_maskOutlineCheck = new QCheckBox("Outlines only");
+    m_maskOutlineCheck->setObjectName("maskOutlineOnly");
+    m_maskOutlineCheck->setToolTip("Draw only the edge of each label in the slice views (O)");
+    connect(m_maskOutlineCheck, &QCheckBox::toggled, this, [this](bool on)
+            { setMaskOutlineOnly(on); });
+    maskBrushLayout->addWidget(m_maskOutlineCheck, 4, 0, 1, 3);
+    QShortcut *outlineShortcut = new QShortcut(QKeySequence(Qt::Key_O), this);
+    connect(outlineShortcut, &QShortcut::activated, this, [this]()
+            { setMaskOutlineOnly(!m_maskOutlineOnly); });
     connect(m_paintOverCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int)
             { setPaintOver(static_cast<PaintOver>(m_paintOverCombo->currentData().toInt()), m_paintOverLabelSpin->value()); });
     connect(m_paintOverLabelSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value)
@@ -1112,6 +1122,17 @@ void ManualSeedSelector::setupUi()
                     removeLabelIslands(label, mm3); });
             labelToolsMenu->addAction(QString("Keep only the largest piece of %1").arg(name), this, [this, label]()
                                       { keepLargestPiece(label); });
+            labelToolsMenu->addSeparator();
+            labelToolsMenu->addAction(QString("Fill holes of %1").arg(name), this, [this, label]()
+                                      { fillLabelHoles(label, -1); });
+            labelToolsMenu->addAction(QString("Fill holes of %1 on every axial slice").arg(name), this, [this, label]()
+                                      { fillLabelHoles(label, 2); });
+            labelToolsMenu->addAction(QString("Grow %1 by one voxel").arg(name), this, [this, label]()
+                                      { growLabel(label); });
+            labelToolsMenu->addAction(QString("Shrink %1 by one voxel").arg(name), this, [this, label]()
+                                      { shrinkLabel(label); });
+            labelToolsMenu->addAction(QString("Smooth %1").arg(name), this, [this, label]()
+                                      { smoothLabel(label); });
             labelToolsMenu->addSeparator();
             const std::pair<const char *, int> fillAxes[] = {{"axial", 2}, {"coronal", 1}, {"sagittal", 0}};
             for (const auto &[axisName, axis] : fillAxes)
@@ -6625,6 +6646,9 @@ void ManualSeedSelector::blendMaskOverlays(std::vector<unsigned char> &rgb,
     const int ignoreLabel = m_labelTable.ignoreValue();
     constexpr unsigned kHatchPeriod = 4;
     constexpr unsigned kHatchOn = 2;
+    // Outlines: a voxel is drawn only where one of its four in-slice neighbours holds another
+    // label (or lies outside the slice), and then at full strength, since a line is thin.
+    const bool outline = m_maskOutlineOnly;
 
     for (const MaskRenderItem &item : items)
     {
@@ -6661,6 +6685,8 @@ void ManualSeedSelector::blendMaskOverlays(std::vector<unsigned char> &rgb,
         for (unsigned int v = 0; v < outH; ++v)
         {
             const int *row = data + rowStart(v);
+            const int *above = v > 0 ? data + rowStart(v - 1) : nullptr;
+            const int *below = v + 1 < outH ? data + rowStart(v + 1) : nullptr;
             unsigned char *pix = rgb.data() + size_t(v) * outW * 3;
             for (unsigned int u = 0; u < outW; ++u, pix += 3)
             {
@@ -6669,6 +6695,19 @@ void ManualSeedSelector::blendMaskOverlays(std::vector<unsigned char> &rgb,
                     continue;
                 if (filterLabels && !maskLabelVisible(label))
                     continue;
+                if (outline)
+                {
+                    const bool edge = u == 0 || u + 1 == outW || !above || !below ||
+                                      row[size_t(u - 1) * uStride] != label ||
+                                      row[size_t(u + 1) * uStride] != label ||
+                                      above[size_t(u) * uStride] != label || below[size_t(u) * uStride] != label;
+                    if (!edge)
+                        continue;
+                    const unsigned char *color = colors.colorFor(label);
+                    for (int c = 0; c < 3; ++c)
+                        pix[c] = color[c];
+                    continue;
+                }
                 if (label == ignoreLabel && (u + v) % kHatchPeriod >= kHatchOn)
                     continue;
 
@@ -7352,11 +7391,89 @@ long long ManualSeedSelector::relabelPieceAt(int x, int y, int z, int newLabel)
                                label_ops::pieceAt(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, seed), newLabel);
 }
 
+long long ManualSeedSelector::fillLabelHoles(int label, int planeAxis)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    return writeLabelOperation(planeAxis < 0 ? "Fill holes" : "Fill holes on slices",
+                               label_ops::holes(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label, planeAxis),
+                               label, true);
+}
+
+long long ManualSeedSelector::growLabel(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    return writeLabelOperation("Grow by one voxel",
+                               label_ops::dilation(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label), label, true);
+}
+
+long long ManualSeedSelector::shrinkLabel(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    return writeLabelOperation("Shrink by one voxel",
+                               label_ops::erosion(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label), 0);
+}
+
+long long ManualSeedSelector::smoothLabel(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    const label_ops::Smoothing smooth = label_ops::majority(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label);
+    const char *name = "Smooth";
+    m_maskHistory.begin(name);
+    long long changed = 0;
+    long long refused = 0;
+    for (const std::size_t index : smooth.add)
+    {
+        if (maskWriteAllowed(m_maskData[index], label, true))
+        {
+            m_maskHistory.write(m_maskData, index, label);
+            ++changed;
+        }
+        else
+            ++refused;
+    }
+    for (const std::size_t index : smooth.remove)
+    {
+        m_maskHistory.write(m_maskData, index, 0);
+        ++changed;
+    }
+    return finishLabelOperation(name, changed, refused);
+}
+
 long long ManualSeedSelector::swapLabels(int a, int b)
 {
     if (a <= 0 || b <= 0 || a == b || !editedMaskReady())
         return 0;
     return remapLabelOperation("Swap labels", {{a, b}, {b, a}});
+}
+
+void ManualSeedSelector::setMaskOutlineOnly(bool outline)
+{
+    m_maskOutlineOnly = outline;
+    if (m_maskOutlineCheck && m_maskOutlineCheck->isChecked() != outline)
+    {
+        QSignalBlocker blocker(m_maskOutlineCheck);
+        m_maskOutlineCheck->setChecked(outline);
+    }
+    updateViews();
 }
 
 void ManualSeedSelector::setFillTolerance(double tolerance)
