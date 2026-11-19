@@ -15,6 +15,11 @@ public:
     /// The slice as last composed, mask overlay included.
     const QImage &image() const { return m_image; }
     void setOverlayDraw(std::function<void(QPainter &p, float scaleX, float scaleY)> func);
+    // Called with +1 or -1 per wheel step before the wheel zooms; returning true consumes it.
+    void setWheelHandler(std::function<bool(int steps, Qt::KeyboardModifiers modifiers)> handler)
+    {
+        m_wheelHandler = std::move(handler);
+    }
     // Physical aspect ratio of one voxel as displayed in this view:
     // (physical height per image row) / (physical width per image column).
     // Used so anisotropic volumes (e.g. thick-slice CT) render with correct
@@ -41,6 +46,7 @@ protected:
 private:
     QImage m_image;
     std::function<void(QPainter &p, float scaleX, float scaleY)> m_overlay;
+    std::function<bool(int steps, Qt::KeyboardModifiers modifiers)> m_wheelHandler;
     double m_pixelAspect = 1.0;
     float m_userZoom = 1.0f;
     QPoint m_pan{0,0};

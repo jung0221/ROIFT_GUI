@@ -340,6 +340,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME label_lock_gui COMMAND label_lock_gui_test)
   set_tests_properties(label_lock_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+  # The brush in millimetres: disc and ball on anisotropic voxels, gap-free strokes, Ctrl+wheel.
+  add_executable(brush_mm_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/brush_mm_gui_test.cpp)
+  target_link_libraries(brush_mm_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME brush_mm_gui COMMAND brush_mm_gui_test)
+  set_tests_properties(brush_mm_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp

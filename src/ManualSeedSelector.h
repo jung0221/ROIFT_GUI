@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <thread>
 #include <vector>
@@ -162,6 +163,16 @@ public:
     // Makes the edited mask's label under a voxel the active one (Ctrl+click). False when
     // there is none there.
     bool pickActiveLabelAt(int x, int y, int z);
+    // The brush, in millimetres so it paints the same anatomy on a 0.16 mm CBCT as on a 1 mm CT:
+    // a disc in the view's plane, or a ball through the neighbouring slices.
+    static constexpr double kBrushRadiusMinMm = 0.1;
+    static constexpr double kBrushRadiusMaxMm = 50.0;
+    static constexpr double kBrushDefaultRadiusMm = 2.0;
+    void setBrushRadiusMm(double radiusMm);
+    double brushRadiusMm() const { return m_brushRadiusMm; }
+    void setBrushSphere(bool sphere);
+    bool brushSphere() const { return m_brushSphere; }
+
     // A locked label keeps every voxel as it is: no brush, erase, Clear, Threshold or slice
     // paste changes, removes or grows it. Undo and redo still replay it.
     void setLabelLocked(int label, bool locked);
@@ -301,7 +312,9 @@ private slots:
     void paintAxialMask(int x, int y);
     void paintSagittalMask(int x, int y);
     void paintCoronalMask(int x, int y);
-    void applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, int radius, int labelValue, bool erase = false);
+    // One stamp of the brush at an image voxel, on the plane spanned by axes.
+    void applyBrushToMask(const std::array<int, 3> &center, const std::pair<int, int> &axes, double radiusMm,
+                          int labelValue, bool erase = false);
     // Closes the open brush stroke, if any, as one undo step.
     void commitMaskEdit();
     void updateMaskUndoControls();
@@ -317,6 +330,11 @@ private:
         Sagittal,
         Coronal
     };
+    // A pointer event of a stroke on a view, stamped from the stroke's last position to this one.
+    void paintMaskAt(SlicePlane plane, int u, int v);
+    // The image's voxel spacing, 1 mm on an axis where it is not positive.
+    std::array<double, 3> brushSpacing() const;
+    void drawBrushOutline(QPainter &p, float scaleX, float scaleY, SlicePlane plane) const;
     // Seed subset drawn across all views; orthogonal to the per-view Show Seeds toggles.
     enum class SeedTypeFilter
     {
@@ -714,7 +732,18 @@ private:
     unsigned int m_maskDimY = 0;
     unsigned int m_maskDimZ = 0;
     int m_maskMode = 0;
-    int m_maskBrushRadius = 6;
+    double m_brushRadiusMm = kBrushDefaultRadiusMm;
+    bool m_brushSphere = false;
+    QDoubleSpinBox *m_brushRadiusSpin = nullptr;
+    QCheckBox *m_brushSphereCheck = nullptr;
+    struct BrushStamp
+    {
+        SlicePlane plane;
+        int u;
+        int v;
+    };
+    std::optional<BrushStamp> m_lastBrushStamp; // the stroke in progress, reset by commitMaskEdit()
+    std::optional<BrushStamp> m_brushHover;     // where the brush outline is drawn
     float m_maskOpacity = 0.5f;
     // Mask-label visibility filter (Mask tab). Maps a label value to whether it
     // is shown in the 2D/3D viewers. Labels absent from the map default to
@@ -742,7 +771,6 @@ private:
     QPushButton *m_btnMaskRedo = nullptr;
     QSpinBox *m_seedBrushSpin = nullptr;
     QSpinBox *m_seedDisplaySpacingSpin = nullptr;
-    QSlider *m_maskBrushSpin = nullptr;
     QSlider *m_maskOpacitySlider = nullptr;
     // Mask-label filter UI: the section is shown only when the mask has >1 label;
     // the layout holds one swatch+checkbox row per present label, rebuilt on

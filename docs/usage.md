@@ -9,7 +9,8 @@
 
 ## Mouse
 - Left-click in a view to add seeds (when seed mode is draw)
-- Hold left-drag to draw mask strokes when in mask mode
+- Hold left-drag to draw mask strokes when in mask mode; see [Brush](#brush)
+- Ctrl+wheel over a view resizes the brush while the mask brush is on; otherwise the wheel zooms
 - Ctrl+click in any view to paint with the edited mask's label under the cursor; see
   [Label table](#label-table)
 - Right-click to erase (or use mask dialog's erase mode)
@@ -55,6 +56,21 @@
   grid changes under them.
 - Each drawn mask is a full label volume in memory, so opening several large masks is
   answered with a size warning before it happens.
+
+## Brush
+- The radius is in millimetres (0.1 to 50 mm, `Radius` in the `Brush` group), so the brush
+  covers the same anatomy on a 0.16 mm CBCT as on a 1 mm CT. A stamp paints every voxel whose
+  centre lies within the radius of the centre voxel's, using the image's spacing: on
+  anisotropic voxels it is an ellipse in voxel units. The centre voxel is always painted, so a
+  radius under one voxel paints that voxel.
+- `Ball` paints a ball through the neighbouring slices instead of a disc on the slice drawn on.
+  On a 0.5 x 0.5 x 2 mm image a 2 mm ball reaches one slice each way, and on those slices only
+  the centre voxel.
+- Ctrl+wheel over a view changes the radius by a tenth per step while the mask brush is on.
+- A white circle (dashed when erasing) shows the brush under the pointer.
+- Between two pointer events of a stroke the brush is stamped along the segment, at half its
+  smallest in-plane radius, so a fast stroke leaves no gap; the stroke is still one undo step.
+- Before this, the radius was in voxels (1 to 50, default 5).
 
 ## Label table
 - The `Labels` section lists one row per label of the edited mask, and one per label of the
