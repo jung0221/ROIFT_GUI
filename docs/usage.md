@@ -61,9 +61,8 @@
   `Ctrl+Shift+Z` or `Ctrl+Y` step through it; the buttons' tooltips name the step. A focused
   text field keeps `Ctrl+Z` for its own text.
 - The history belongs to the mask. Selecting another mask for editing while this one is drawn
-  keeps its history with it, and selecting it again restores it. It is forgotten when the
-  mask's voxels are: the mask is hidden when another is selected, removed, reloaded from its
-  file, or the image is switched. None of these asks first yet, so save before any of them.
+  keeps its edits and its history in memory with it, and selecting it again restores both. It
+  is forgotten when the mask's voxels are; see [Unsaved edits](#unsaved-edits).
 - Memory: a step stores only the voxels it changed, 16 bytes each. The history keeps the
   newest steps up to 512 MB and forgets the oldest beyond that; the newest step is always kept.
 - `Clear` is now an edit rather than a reset: it reads a selected mask first, so that it can be
@@ -71,6 +70,30 @@
   image is still discarded outright, and that cannot be undone.
 - `Save Mask` marks the mask as saved; undoing past that point marks it unsaved again, and
   redoing back to it marks it saved.
+
+## Unsaved edits
+- A mask holds unsaved edits from its first edit until `Save Mask`, or until undo brings it
+  back to what was saved. A drawn mask keeps them while another mask is edited.
+- Every action that would throw unsaved edits away asks first, naming the masks, with
+  `Save`, `Discard` and `Cancel`:
+
+  | action | masks it asks about |
+  |---|---|
+  | closing the window | every mask with unsaved edits |
+  | opening another image, removing the open image, `Remove All` images | every mask with unsaved edits |
+  | `Remove All` masks | every mask with unsaved edits |
+  | removing one mask from the list | that mask |
+  | selecting another mask for editing, `Threshold` on another mask | the edited mask, when it is hidden or has no file |
+  | `Load` mask, a run's result or the command line loading a mask | the edited mask when it is hidden or has no file, and the loaded file's own mask if it holds edits |
+
+- `Cancel` leaves everything as it was: the window stays open, the image and the list row stay,
+  the edited mask stays. `Discard` goes on. `Save` writes each mask to its own file, or opens
+  `Save Mask` for a mask painted without one, and goes on only if every write succeeded.
+- A run that loads its result into the edited mask, refused this way, leaves the result on disk
+  and reports it as not loaded; `Load` opens it later. Runs that only list their outputs do not
+  touch the edited mask and do not ask.
+- While another image is read in the background, the open image stays editable; edits made
+  meanwhile are asked about when the read completes.
 
 ## Mask I/O
 - The `Save` and `Load` buttons in the `File` group of the `Mask` section open `Save Mask`

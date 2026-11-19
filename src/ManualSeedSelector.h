@@ -131,6 +131,20 @@ public:
     bool redoMaskEdit();
     // The edited mask's history; isDirty() says whether the buffer differs from its file.
     const MaskEditHistory &maskEditHistory() const { return m_maskHistory; }
+    // True when the edited mask, or a drawn mask holding edits, differs from its file.
+    bool hasUnsavedMaskEdits() const;
+
+    // What to do with unsaved mask edits that an action is about to throw away.
+    enum class UnsavedEditsChoice
+    {
+        Save,
+        Discard,
+        Cancel
+    };
+    // Asked with the action and the masks it would lose. The default is a dialog; tests set
+    // their own, since a modal dialog would block them.
+    using UnsavedEditsPrompt = std::function<UnsavedEditsChoice(const QString &action, const QStringList &masks)>;
+    void setUnsavedEditsPrompt(UnsavedEditsPrompt prompt) { m_unsavedEditsPrompt = std::move(prompt); }
     // Writes the edited mask: a NIfTI, or for a .png path (one-slice image only) an
     // 8-bit or 16-bit label image. Returns false and sets *error on failure. A deferred mask that
     // cannot be read still raises the Load Mask dialog.
@@ -231,7 +245,8 @@ private slots:
     void setMaskMode(int mode);
     void setSeedMode(int mode);
     void cleanMask();
-    void saveMaskToFile();
+    // The Save Mask dialog. False when it was cancelled or the write failed.
+    bool saveMaskToFile();
     bool savePngLabels(const std::string &path, QString *error);
     bool loadMaskFromFile(const std::string &path);
     void paintAxialMask(int x, int y);
@@ -398,8 +413,30 @@ private:
     std::string m_pendingActiveMaskPath;
 
     // Make a listed mask the editable one without reading it: a mask already on
-    // screen hands its voxels straight over, and any other is left pending.
-    void selectActiveMask(const QString &absolutePath);
+    // screen hands its voxels straight over, and any other is left pending. Asks first
+    // when that would drop unsaved edits; false when the user kept them.
+    bool selectActiveMask(const QString &absolutePath);
+    // The switch itself, without asking.
+    void switchActiveMask(const QString &absolutePath);
+
+    // What an action is about to throw away: every mask (image switch, close), the
+    // edited buffer if releasing it drops it (another mask takes the buffer), and/or
+    // the mask at one path (it is reloaded or removed).
+    struct MaskEditLoss
+    {
+        bool everything = false;
+        bool releasesEdited = false;
+        QString path;
+    };
+    // Asks before unsaved edits in the loss are lost, and saves them if told to. True
+    // when the action may go on: nothing was at stake, it was discarded, or it was saved.
+    bool confirmMaskEditLoss(const QString &action, const MaskEditLoss &loss);
+    // True when releaseActiveMaskLayer() would drop the edited buffer: it belongs to no
+    // file, or its mask is not drawn.
+    bool editedMaskReleaseDrops() const;
+    bool saveMaskEditsBeforeLoss(bool edited, const QStringList &layerPaths);
+    UnsavedEditsChoice askUnsavedMaskEdits(const QString &action, const QStringList &masks);
+    UnsavedEditsPrompt m_unsavedEditsPrompt;
     // Pay off a pending read. False when the buffer is still unusable after it.
     bool ensureActiveMaskLoaded();
 
