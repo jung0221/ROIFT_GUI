@@ -308,6 +308,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME mask_unsaved_prompt COMMAND mask_unsaved_prompt_test)
   set_tests_properties(mask_unsaved_prompt PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+  # Crash copies of the edited mask: written, offered back, restored, removed.
+  add_executable(mask_autosave_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_autosave_test.cpp)
+  target_link_libraries(mask_autosave_test PRIVATE roift_gui_test_objects)
+  add_test(NAME mask_autosave COMMAND mask_autosave_test)
+  set_tests_properties(mask_autosave PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp
