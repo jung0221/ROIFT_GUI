@@ -54,6 +54,24 @@
 - Each drawn mask is a full label volume in memory, so opening several large masks is
   answered with a size warning before it happens.
 
+## Undo and redo
+- Every edit of the edited mask is one step of its history: a brush stroke or an erase stroke
+  (from the press to the release of the button), `Clear`, `Threshold` and the paste of a slice
+  run. `Undo` and `Redo` in the `History` group of the `Mask` section, `Ctrl+Z`, and
+  `Ctrl+Shift+Z` or `Ctrl+Y` step through it; the buttons' tooltips name the step. A focused
+  text field keeps `Ctrl+Z` for its own text.
+- The history belongs to the mask. Selecting another mask for editing while this one is drawn
+  keeps its history with it, and selecting it again restores it. It is forgotten when the
+  mask's voxels are: the mask is hidden when another is selected, removed, reloaded from its
+  file, or the image is switched. None of these asks first yet, so save before any of them.
+- Memory: a step stores only the voxels it changed, 16 bytes each. The history keeps the
+  newest steps up to 512 MB and forgets the oldest beyond that; the newest step is always kept.
+- `Clear` is now an edit rather than a reset: it reads a selected mask first, so that it can be
+  undone, and leaves an empty mask of the same size. A mask whose X/Y size differs from the
+  image is still discarded outright, and that cannot be undone.
+- `Save Mask` marks the mask as saved; undoing past that point marks it unsaved again, and
+  redoing back to it marks it saved.
+
 ## Mask I/O
 - The `Save` and `Load` buttons in the `File` group of the `Mask` section open `Save Mask`
   and `Open Mask`. NIfTI is the default format and is written with int16 samples; a label
@@ -279,8 +297,8 @@
   the result where the result is positive. Elsewhere, a pixel holding a label seeded in this
   run is cleared and any other label is kept. Nothing outside the slice changes. If no mask
   is being edited, a blank one is created. The edited mask is shown after every successful
-  paste. Nothing is written to disk until `Save Mask`. There is no undo: to revert, run again
-  or repaint.
+  paste. Nothing is written to disk until `Save Mask`. The paste is one undo step; see
+  [Undo and redo](#undo-and-redo).
 - **In the background.** The seeds, parameters and pixels are taken when `Run` is clicked.
   The run then happens in the background, queues behind other runs, and is cancelled when the
   window closes. If a different image, or a different mask for editing, is selected before

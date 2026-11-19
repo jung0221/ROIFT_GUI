@@ -808,16 +808,19 @@ void ManualSeedSelector::setupUi()
     QHBoxLayout *maskModeLayout = new QHBoxLayout(maskModeGroup);
 
     m_btnMaskDraw = new QPushButton("Draw");
+    m_btnMaskDraw->setObjectName("maskDrawButton");
     m_btnMaskDraw->setCheckable(true);
     m_btnMaskDraw->setToolTip("Draw mask regions");
     maskModeLayout->addWidget(m_btnMaskDraw);
 
     m_btnMaskErase = new QPushButton("Erase");
+    m_btnMaskErase->setObjectName("maskEraseButton");
     m_btnMaskErase->setCheckable(true);
     m_btnMaskErase->setToolTip("Erase mask regions");
     maskModeLayout->addWidget(m_btnMaskErase);
 
     m_btnMaskOff = new QPushButton("Off");
+    m_btnMaskOff->setObjectName("maskOffButton");
     m_btnMaskOff->setCheckable(true);
     m_btnMaskOff->setChecked(true);
     m_btnMaskOff->setToolTip("Disable mask editing");
@@ -834,6 +837,36 @@ void ManualSeedSelector::setupUi()
     maskSecLayout->setContentsMargins(0, 0, 0, 0);
     maskSecLayout->setSpacing(6);
     maskSecLayout->addWidget(maskModeGroup);
+
+    SectionGroup *maskHistoryGroup = new SectionGroup("History");
+    QHBoxLayout *maskHistoryLayout = new QHBoxLayout(maskHistoryGroup);
+    m_btnMaskUndo = new QPushButton("Undo");
+    m_btnMaskUndo->setObjectName("maskUndoButton");
+    connect(m_btnMaskUndo, &QPushButton::clicked, this, [this]()
+            { undoMaskEdit(); });
+    maskHistoryLayout->addWidget(m_btnMaskUndo);
+    m_btnMaskRedo = new QPushButton("Redo");
+    m_btnMaskRedo->setObjectName("maskRedoButton");
+    connect(m_btnMaskRedo, &QPushButton::clicked, this, [this]()
+            { redoMaskEdit(); });
+    maskHistoryLayout->addWidget(m_btnMaskRedo);
+    maskSecLayout->addWidget(maskHistoryGroup);
+    // Window-wide, but a focused text field keeps Ctrl+Z for its own text.
+    QShortcut *undoShortcut = new QShortcut(QKeySequence::Undo, this);
+    connect(undoShortcut, &QShortcut::activated, this, [this]()
+            { undoMaskEdit(); });
+    // Ctrl+Y as well, unless the platform's Redo already is it: two shortcuts on one key
+    // make the key ambiguous, and then neither fires.
+    QList<QKeySequence> redoBindings = QKeySequence::keyBindings(QKeySequence::Redo);
+    if (!redoBindings.contains(QKeySequence("Ctrl+Y")))
+        redoBindings.append(QKeySequence("Ctrl+Y"));
+    for (const QKeySequence &redoKeys : redoBindings)
+    {
+        QShortcut *redoShortcut = new QShortcut(redoKeys, this);
+        connect(redoShortcut, &QShortcut::activated, this, [this]()
+                { redoMaskEdit(); });
+    }
+    updateMaskUndoControls();
 
     // Brush group
     SectionGroup *maskBrushGroup = new SectionGroup("Brush");
@@ -943,7 +976,8 @@ void ManualSeedSelector::setupUi()
     maskFileLayout->addWidget(btnMaskLoad);
 
     QPushButton *btnMaskClear = new QPushButton("Clear");
-    btnMaskClear->setToolTip("Clear mask");
+    btnMaskClear->setObjectName("maskClearButton");
+    btnMaskClear->setToolTip("Clear mask (undoable)");
     connect(btnMaskClear, &QPushButton::clicked, [this]()
             {
         cleanMask();
@@ -1560,6 +1594,7 @@ void ManualSeedSelector::setupUi()
     labelLayout->setSpacing(6);
 
     m_labelSelector = new QSpinBox();
+    m_labelSelector->setObjectName("labelSelector");
     m_labelSelector->setRange(0, 255);
     m_labelSelector->setToolTip("Select label (0-255) for seeds and mask");
     labelLayout->addWidget(m_labelSelector);
@@ -1936,6 +1971,7 @@ void ManualSeedSelector::setupUi()
             m_loadedMaskPath.clear();
             m_pendingActiveMaskPath.clear();
             m_maskData.clear();
+            m_maskHistory.reset(true);
             m_maskDimX = 0;
             m_maskDimY = 0;
             m_maskDimZ = 0;
@@ -2470,7 +2506,10 @@ void ManualSeedSelector::setupUi()
         if (handleRulerMousePress(SlicePlane::Axial, x, y, b))
             return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
+        {
+            commitMaskEdit(); // a press always starts a new stroke
             paintAxialMask(x, y);
+        }
         else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
             beginSliceDrag(m_axialSliceDrag, y, m_axialSlider);
         else
@@ -2492,6 +2531,7 @@ void ManualSeedSelector::setupUi()
             endSliceDrag(m_axialSliceDrag); });
     connect(m_axialView, &OrthogonalView::mouseReleased, this, [this](int x, int y, Qt::MouseButton b)
             {
+        commitMaskEdit();
         if (handleRulerMouseRelease(SlicePlane::Axial, x, y, b))
         {
             requestViewUpdate(true);
@@ -2505,7 +2545,10 @@ void ManualSeedSelector::setupUi()
         if (handleRulerMousePress(SlicePlane::Sagittal, x, y, b))
             return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
+        {
+            commitMaskEdit(); // a press always starts a new stroke
             paintSagittalMask(x, y);
+        }
         else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
             beginSliceDrag(m_sagittalSliceDrag, y, m_sagittalSlider);
         else
@@ -2527,6 +2570,7 @@ void ManualSeedSelector::setupUi()
             endSliceDrag(m_sagittalSliceDrag); });
     connect(m_sagittalView, &OrthogonalView::mouseReleased, this, [this](int x, int y, Qt::MouseButton b)
             {
+        commitMaskEdit();
         if (handleRulerMouseRelease(SlicePlane::Sagittal, x, y, b))
         {
             requestViewUpdate(true);
@@ -2540,7 +2584,10 @@ void ManualSeedSelector::setupUi()
         if (handleRulerMousePress(SlicePlane::Coronal, x, y, b))
             return;
         if (isMaskTabActive() && m_maskMode != 0 && b == Qt::LeftButton)
+        {
+            commitMaskEdit(); // a press always starts a new stroke
             paintCoronalMask(x, y);
+        }
         else if (!isSeedsTabActive() && !isMaskTabActive() && b == Qt::LeftButton)
             beginSliceDrag(m_coronalSliceDrag, y, m_coronalSlider);
         else
@@ -2562,6 +2609,7 @@ void ManualSeedSelector::setupUi()
             endSliceDrag(m_coronalSliceDrag); });
     connect(m_coronalView, &OrthogonalView::mouseReleased, this, [this](int x, int y, Qt::MouseButton b)
             {
+        commitMaskEdit();
         if (handleRulerMouseRelease(SlicePlane::Coronal, x, y, b))
         {
             requestViewUpdate(true);
@@ -3569,6 +3617,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
     const size_t imagePlane = static_cast<size_t>(imageSX) * static_cast<size_t>(imageSY);
     const size_t imageTotal = imagePlane * static_cast<size_t>(imageSZ);
     m_maskData.assign(imageTotal, 0);
+    m_maskHistory.reset(true); // rebuilt from files, so nothing in it is unsaved work
     m_maskDimX = imageSX;
     m_maskDimY = imageSY;
     m_maskDimZ = imageSZ;
@@ -3681,6 +3730,7 @@ bool ManualSeedSelector::autoLoadAnatomyMasksForCurrentImage(QString *summary)
     if (loadedCount == 0)
     {
         m_maskData.clear();
+        m_maskHistory.reset(true);
         m_maskDimX = 0;
         m_maskDimY = 0;
         m_maskDimZ = 0;
@@ -4782,6 +4832,7 @@ bool ManualSeedSelector::forgetMaskPath(const QString &absolutePath, int imageIn
         m_loadedMaskPath.clear();
         m_pendingActiveMaskPath.clear();
         m_maskData.clear();
+        m_maskHistory.reset(true);
         m_maskDimX = 0;
         m_maskDimY = 0;
         m_maskDimZ = 0;
@@ -4862,6 +4913,7 @@ void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, floa
 
 void ManualSeedSelector::updateViews(unsigned planes)
 {
+    updateMaskUndoControls(); // the buffer may have been replaced, and its history with it
     m_pendingPlanes &= ~planes;
     unsigned int sizeX = m_image.getSizeX();
     unsigned int sizeY = m_image.getSizeY();
@@ -4918,6 +4970,7 @@ void ManualSeedSelector::updateViews(unsigned planes)
             dropMaskLayer(QString::fromStdString(m_loadedMaskPath));
         m_pendingActiveMaskPath.clear();
         m_maskData.clear();
+        m_maskHistory.reset(true);
         m_maskDimX = 0;
         m_maskDimY = 0;
         m_maskDimZ = 0;
@@ -5443,8 +5496,20 @@ QString ManualSeedSelector::pastePlaneResult(const PlaneRunPins &pins, const std
             .arg(dims[0])
             .arg(dims[1])
             .arg(dims[2]);
+    // The paste writes the buffer itself, so the plane is kept beforehand for the undo step.
+    std::vector<std::size_t> planeIndices;
+    std::vector<int> planeBefore;
+    planeIndices.reserve(std::size_t(pins.geometry.width) * std::size_t(pins.geometry.height));
+    for (int v = 0; v < pins.geometry.height; ++v)
+        for (int u = 0; u < pins.geometry.width; ++u)
+            planeIndices.push_back(planar::volumeIndex(pins.geometry, u, v));
+    planeBefore.reserve(planeIndices.size());
+    for (const std::size_t index : planeIndices)
+        planeBefore.push_back(index < m_maskData.size() ? m_maskData[index] : 0);
     if (!planar::pastePlaneLabels(pins.geometry, labels, runLabels, m_maskData))
         return "Slice result discarded: the label plane does not fit the slice.";
+    m_maskHistory.record(m_maskData, planeIndices, planeBefore, "Slice segmentation");
+    updateMaskUndoControls();
 
     const std::set<int> written(labels.begin(), labels.end());
     QStringList writtenNames;
@@ -5661,6 +5726,7 @@ void ManualSeedSelector::adoptActiveMaskLayer(const QString &absolutePath)
     // Labels are left to rebuildMaskLabelFilter(), the one place that syncs
     // them, so the buffer is not scanned twice per load.
     layer->volume = MaskVolume();
+    layer->history = MaskEditHistory();
     m_unsavedMaskStyle = MaskLayer(); // the buffer belongs to a file again
 }
 
@@ -5677,6 +5743,7 @@ void ManualSeedSelector::releaseActiveMaskLayer()
         {
             // Hidden: nothing to keep, and the style is rebuilt on reload.
             m_maskLayers.erase(it);
+            m_maskHistory.reset(true);
             return;
         }
         // Drawn: the layer takes the voxels over, and stays on screen while the
@@ -5685,6 +5752,9 @@ void ManualSeedSelector::releaseActiveMaskLayer()
         // here and every caller assigns or clears it straight after.
         it->volume.data = std::move(m_maskData);
         m_maskData.clear();
+        m_maskHistory.commit();
+        it->history = std::move(m_maskHistory);
+        m_maskHistory = MaskEditHistory();
         it->volume.dimX = m_maskDimX;
         it->volume.dimY = m_maskDimY;
         it->volume.dimZ = m_maskDimZ;
@@ -5719,6 +5789,7 @@ void ManualSeedSelector::clearImageOverlays()
     m_loadedMaskPath.clear();
     m_pendingActiveMaskPath.clear();
     m_maskData.clear();
+    m_maskHistory.reset(true);
     m_maskDimX = 0;
     m_maskDimY = 0;
     m_maskDimZ = 0;
@@ -5945,6 +6016,7 @@ void ManualSeedSelector::selectActiveMask(const QString &absolutePath)
             m_maskSpacingZ = layer->volume.spacingZ;
         }
         m_maskData = std::move(layer->volume.data);
+        m_maskHistory = std::move(layer->history);
         m_pendingActiveMaskPath.clear();
     }
     else
@@ -5952,6 +6024,7 @@ void ManualSeedSelector::selectActiveMask(const QString &absolutePath)
         // Nothing needs these voxels yet: reading them here is what made
         // picking a mask out of the list stall the window.
         m_maskData.clear();
+        m_maskHistory.reset(true);
         m_maskDimX = 0;
         m_maskDimY = 0;
         m_maskDimZ = 0;
@@ -6473,10 +6546,29 @@ void ManualSeedSelector::syncActiveTool()
 
 void ManualSeedSelector::cleanMask()
 {
-    // Clearing settles the buffer's contents, so a deferred read would only
-    // bring back what was just cleared.
+    // A buffer that fits the image is cleared in place, as one undo step; that needs its
+    // voxels, so a selected mask is read first.
+    if (activeMaskPending())
+        ensureActiveMaskLoaded();
+    if (!m_maskData.empty() && m_maskDimX == m_image.getSizeX() && m_maskDimY == m_image.getSizeY())
+    {
+        m_maskHistory.begin("Clear");
+        for (std::size_t i = 0; i < m_maskData.size(); ++i)
+        {
+            if (m_maskData[i] != 0)
+                m_maskHistory.write(m_maskData, i, 0);
+        }
+        m_maskHistory.commit();
+        m_mask3DDirty = true;
+        rebuildMaskLabelFilter();
+        updateMaskUndoControls();
+        return;
+    }
+
+    // Nothing to clear, or a buffer the brush cannot paint (another grid): start a blank one.
     m_pendingActiveMaskPath.clear();
     m_maskData.clear();
+    m_maskHistory.reset(true);
     m_maskDimX = m_image.getSizeX();
     m_maskDimY = m_image.getSizeY();
     m_maskDimZ = m_image.getSizeZ();
@@ -6646,6 +6738,7 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
     const size_t maskPlaneStride = size_t(m_maskDimX) * size_t(m_maskDimY);
 
     size_t removedCount = 0;
+    m_maskHistory.begin("Threshold");
     for (unsigned int z = 0; z < imageSZ; ++z)
     {
         const unsigned int mappedZ = mapDepthIndex(z, imageSZ, m_maskDimZ);
@@ -6660,12 +6753,14 @@ void ManualSeedSelector::filterActiveMaskByThreshold()
                     continue;
                 if (m_image.getVoxelValue(x, y, z) >= static_cast<float>(threshold))
                 {
-                    m_maskData[maskIdx] = 0;
+                    m_maskHistory.write(m_maskData, maskIdx, 0);
                     ++removedCount;
                 }
             }
         }
     }
+    m_maskHistory.commit();
+    updateMaskUndoControls();
 
     QApplication::restoreOverrideCursor();
 
@@ -6778,7 +6873,15 @@ bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *erro
     try
     {
         if (isPngPath(path))
-            return savePngLabels(path, error);
+        {
+            const bool saved = savePngLabels(path, error);
+            if (saved)
+            {
+                m_maskHistory.markSaved();
+                updateMaskUndoControls();
+            }
+            return saved;
+        }
 
         using PixelType = int16_t;
         using ImageType = itk::Image<PixelType, 3>;
@@ -6861,6 +6964,8 @@ bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *erro
         writer->SetFileName(outpath);
         writer->SetInput(out);
         writer->Update();
+        m_maskHistory.markSaved();
+        updateMaskUndoControls();
         return true;
     }
     catch (const std::exception &e)
@@ -6920,6 +7025,7 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
         m_loadedMaskPath.clear();
         m_pendingActiveMaskPath.clear();
         m_maskData.clear();
+        m_maskHistory.reset(true);
         m_maskDimX = 0;
         m_maskDimY = 0;
         m_maskDimZ = 0;
@@ -6948,6 +7054,7 @@ bool ManualSeedSelector::loadMaskFromFile(const std::string &path)
     m_maskDimY = volume.dimY;
     m_maskDimZ = volume.dimZ;
     m_maskData = std::move(volume.data);
+    m_maskHistory.reset(true);
     m_loadedMaskPath = absoluteMaskPath.toStdString();
     m_pendingActiveMaskPath.clear();
     adoptActiveMaskLayer(absoluteMaskPath);
@@ -7026,6 +7133,9 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
     const unsigned int maskSY = m_maskDimY;
     const unsigned int maskSZ = m_maskDimZ;
 
+    // Continues the stroke's operation; the mouse release commits it.
+    m_maskHistory.begin(erase ? "Erase" : "Brush");
+
     std::array<int, 3> mappedCenter = center;
     mappedCenter[2] = static_cast<int>(mapDepthIndex(static_cast<unsigned int>(std::max(0, center[2])), imageSZ, maskSZ));
 
@@ -7053,11 +7163,11 @@ void ManualSeedSelector::applyBrushToMask(const std::array<int, 3> &center, cons
                 if (erase)
                 {
                     if (m_maskData[idx] == labelValue)
-                        m_maskData[idx] = 0;
+                        m_maskHistory.write(m_maskData, idx, 0);
                 }
                 else
                 {
-                    m_maskData[idx] = labelValue;
+                    m_maskHistory.write(m_maskData, idx, labelValue);
                 }
             }
         }
@@ -7390,6 +7500,81 @@ void restoreScrollAnchor(QListWidget *list, const ListScrollAnchor &anchor)
     // The anchor row is gone (another image, another mask set): top is right.
 }
 } // namespace
+
+void ManualSeedSelector::commitMaskEdit()
+{
+    if (m_maskHistory.hasOpenOperation())
+    {
+        m_maskHistory.commit();
+        updateMaskUndoControls();
+    }
+}
+
+bool ManualSeedSelector::undoMaskEdit()
+{
+    commitMaskEdit();
+    const std::string name = m_maskHistory.undoName();
+    if (!m_maskHistory.undo(m_maskData))
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(m_maskHistory.canUndo() ? "Undo refused: the mask buffer does not match its history."
+                                                           : "Nothing to undo.");
+        updateMaskUndoControls();
+        return false;
+    }
+    afterMaskReplay("Undid", name);
+    return true;
+}
+
+bool ManualSeedSelector::redoMaskEdit()
+{
+    commitMaskEdit();
+    const std::string name = m_maskHistory.redoName();
+    if (!m_maskHistory.redo(m_maskData))
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText(m_maskHistory.canRedo() ? "Redo refused: the mask buffer does not match its history."
+                                                           : "Nothing to redo.");
+        updateMaskUndoControls();
+        return false;
+    }
+    afterMaskReplay("Redid", name);
+    return true;
+}
+
+void ManualSeedSelector::afterMaskReplay(const QString &verb, const std::string &name)
+{
+    m_mask3DDirty = true;
+    rebuildMaskLabelFilter(); // an undo can bring a label back or take one away
+    updateViews();
+    updateMaskUndoControls();
+    if (m_statusLabel)
+        m_statusLabel->setText(QString("%1 %2 (%3 voxel(s)).")
+                                   .arg(verb, QString::fromStdString(name))
+                                   .arg(m_maskHistory.lastReplayedVoxels()));
+}
+
+void ManualSeedSelector::updateMaskUndoControls()
+{
+    const auto describe = [](const QString &verb, const std::string &name, const QString &keys)
+    {
+        return name.empty() ? QString("Nothing to %1").arg(verb.toLower())
+                            : QString("%1 %2 (%3)").arg(verb, QString::fromStdString(name), keys);
+    };
+    // Called on every view update, so a control is only touched when its state changed.
+    const auto apply = [](QPushButton *button, bool enabled, const QString &tip)
+    {
+        if (!button)
+            return;
+        if (button->isEnabled() != enabled)
+            button->setEnabled(enabled);
+        if (button->toolTip() != tip)
+            button->setToolTip(tip);
+    };
+    apply(m_btnMaskUndo, m_maskHistory.canUndo(), describe("Undo", m_maskHistory.undoName(), "Ctrl+Z"));
+    apply(m_btnMaskRedo, m_maskHistory.canRedo(),
+          describe("Redo", m_maskHistory.redoName(), "Ctrl+Shift+Z or Ctrl+Y"));
+}
 
 void ManualSeedSelector::updateMaskSeedLists()
 {

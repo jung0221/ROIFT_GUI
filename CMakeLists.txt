@@ -218,6 +218,13 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(seed_files_test PRIVATE Qt6::Core)
   add_test(NAME seed_files COMMAND seed_files_test)
 
+  add_executable(mask_edit_history_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_edit_history_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/MaskEditHistory.cpp
+  )
+  target_include_directories(mask_edit_history_test PRIVATE src)
+  add_test(NAME mask_edit_history COMMAND mask_edit_history_test)
+
   add_executable(seed_slice_index_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/seed_slice_index_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/SeedSliceIndex.cpp
@@ -288,6 +295,12 @@ if(BUILD_ROIFT_TESTS)
     list(APPEND _plane_mode_gui_env "ROIFT_EXECUTABLE=$<TARGET_FILE:oiftrelax>")
   endif()
   set_tests_properties(plane_mode_gui PROPERTIES ENVIRONMENT "${_plane_mode_gui_env}")
+
+  # Brush, erase and Clear through the window's controls, each one undo step.
+  add_executable(mask_edit_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_edit_gui_test.cpp)
+  target_link_libraries(mask_edit_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME mask_edit_gui COMMAND mask_edit_gui_test)
+  set_tests_properties(mask_edit_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test

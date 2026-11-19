@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "MaskEditHistory.h"
 #include "NiftiImage.h" // NpzImportOptions
 
 /// A label volume on its own grid: C-order, X fastest, 0 = background.
@@ -76,6 +77,7 @@ struct MaskLayer
     QColor color;         ///< the mask's own colour: palette slot, or user override
     int colorSlot = 0;    ///< slot the colour came from, released when the layer goes
     bool visible = false; ///< the eye is open: draw it, whatever is being edited
+    MaskEditHistory history; ///< the edits of this mask while another one is edited
 
     /// Resolves Auto: a mask with more than one label reads better in the
     /// shared label palette than flattened into a single colour.
