@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 # The release line is v1.1.x; v1.0.0/v1.0.1 are the prebuilt-vcpkg bundles.
 # .github/workflows/release.yml bumps the patch here on every merge to main.
-project(roift_gui VERSION 1.1.14 LANGUAGES C CXX)
+project(roift_gui VERSION 1.1.15 LANGUAGES C CXX)
 
 # A configure that names no build type compiles without optimisation, and every
 # per-voxel loop in the viewer is then several times slower. CI and the release
@@ -307,6 +307,12 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(mask_unsaved_prompt_test PRIVATE roift_gui_test_objects)
   add_test(NAME mask_unsaved_prompt COMMAND mask_unsaved_prompt_test)
   set_tests_properties(mask_unsaved_prompt PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
+  # A saved mask keeps its image's origin, spacing and direction, and every label.
+  add_executable(mask_save_geometry_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_save_geometry_test.cpp)
+  target_link_libraries(mask_save_geometry_test PRIVATE roift_gui_test_objects)
+  add_test(NAME mask_save_geometry COMMAND mask_save_geometry_test)
+  set_tests_properties(mask_save_geometry PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
