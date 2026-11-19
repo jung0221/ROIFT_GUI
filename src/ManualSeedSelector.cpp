@@ -1123,6 +1123,17 @@ void ManualSeedSelector::setupUi()
             labelToolsMenu->addAction(QString("Keep only the largest piece of %1").arg(name), this, [this, label]()
                                       { keepLargestPiece(label); });
             labelToolsMenu->addSeparator();
+            labelToolsMenu->addAction(QString("Fill holes of %1").arg(name), this, [this, label]()
+                                      { fillLabelHoles(label, -1); });
+            labelToolsMenu->addAction(QString("Fill holes of %1 on every axial slice").arg(name), this, [this, label]()
+                                      { fillLabelHoles(label, 2); });
+            labelToolsMenu->addAction(QString("Grow %1 by one voxel").arg(name), this, [this, label]()
+                                      { growLabel(label); });
+            labelToolsMenu->addAction(QString("Shrink %1 by one voxel").arg(name), this, [this, label]()
+                                      { shrinkLabel(label); });
+            labelToolsMenu->addAction(QString("Smooth %1").arg(name), this, [this, label]()
+                                      { smoothLabel(label); });
+            labelToolsMenu->addSeparator();
             const std::pair<const char *, int> fillAxes[] = {{"axial", 2}, {"coronal", 1}, {"sagittal", 0}};
             for (const auto &[axisName, axis] : fillAxes)
             {
@@ -7378,6 +7389,73 @@ long long ManualSeedSelector::relabelPieceAt(int x, int y, int z, int newLabel)
     const size_t seed = size_t(x) + size_t(y) * m_maskDimX + size_t(mappedZ) * m_maskDimX * m_maskDimY;
     return writeLabelOperation("Relabel piece",
                                label_ops::pieceAt(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, seed), newLabel);
+}
+
+long long ManualSeedSelector::fillLabelHoles(int label, int planeAxis)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    return writeLabelOperation(planeAxis < 0 ? "Fill holes" : "Fill holes on slices",
+                               label_ops::holes(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label, planeAxis),
+                               label, true);
+}
+
+long long ManualSeedSelector::growLabel(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    return writeLabelOperation("Grow by one voxel",
+                               label_ops::dilation(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label), label, true);
+}
+
+long long ManualSeedSelector::shrinkLabel(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    return writeLabelOperation("Shrink by one voxel",
+                               label_ops::erosion(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label), 0);
+}
+
+long long ManualSeedSelector::smoothLabel(int label)
+{
+    if (label <= 0 || !editedMaskReady())
+        return 0;
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
+        return 0;
+    }
+    const label_ops::Smoothing smooth = label_ops::majority(m_maskData, {m_maskDimX, m_maskDimY, m_maskDimZ}, label);
+    const char *name = "Smooth";
+    m_maskHistory.begin(name);
+    long long changed = 0;
+    long long refused = 0;
+    for (const std::size_t index : smooth.add)
+    {
+        if (maskWriteAllowed(m_maskData[index], label, true))
+        {
+            m_maskHistory.write(m_maskData, index, label);
+            ++changed;
+        }
+        else
+            ++refused;
+    }
+    for (const std::size_t index : smooth.remove)
+    {
+        m_maskHistory.write(m_maskData, index, 0);
+        ++changed;
+    }
+    return finishLabelOperation(name, changed, refused);
 }
 
 long long ManualSeedSelector::swapLabels(int a, int b)

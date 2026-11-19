@@ -391,6 +391,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME mask_outline_gui COMMAND mask_outline_gui_test)
   set_tests_properties(mask_outline_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+  # Label morphology in the window: holes, grow, shrink, smooth; one undo step each.
+  add_executable(label_morphology_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_morphology_gui_test.cpp)
+  target_link_libraries(label_morphology_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME label_morphology_gui COMMAND label_morphology_gui_test)
+  set_tests_properties(label_morphology_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp

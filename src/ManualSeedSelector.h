@@ -206,6 +206,13 @@ public:
     long long relabelPieceAt(int x, int y, int z, int newLabel);
     long long swapLabels(int a, int b);
     long long mergeLabelInto(int from, int to);
+    // Morphology of a label of the edited mask, each one undo step. Filling holes and growing
+    // write like a brush stroke (locks and "Over"); shrinking only clears the label; smoothing
+    // does both. planeAxis < 0 fills holes in 3D, else on every slice across that axis.
+    long long fillLabelHoles(int label, int planeAxis);
+    long long growLabel(int label);
+    long long shrinkLabel(int label);
+    long long smoothLabel(int label);
     // Fill (the fourth drawing mode): the face-connected region under (x, y, z) that holds the
     // clicked voxel's label and lies within the fill tolerance of its intensity takes the
     // active label. planeAxis 0, 1 or 2 keeps it on that slice; -1 spreads it in 3D. Writes
