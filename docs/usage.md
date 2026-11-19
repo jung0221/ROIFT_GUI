@@ -128,6 +128,17 @@
   - `Keep only the largest piece of ...` turns every other piece into background.
   - `Swap ... with` exchanges two labels everywhere; `Merge ... into` gives every voxel of the
     active label another one (0 clears it).
+  - `Fill holes of ...`: background the label encloses in 3D takes the label; `... on every
+    axial slice` does the same slice by slice, which also closes a cavity that is open in 3D.
+    Voxels of another label inside (a pulp in a tooth) are never filled.
+  - `Grow ... by one voxel` gives the label to the voxels touching it through a face;
+    `Shrink ... by one voxel` clears its voxels that touch something else through a face.
+  - `Smooth ...` takes a 3 x 3 x 3 majority vote on the label: a voxel joins it when at least
+    14 of its 27 hold it, and leaves it when at most 13 do, which removes one-voxel spikes and
+    fills one-voxel notches.
+  - Filling holes, growing and the joining half of smoothing write like a brush stroke (locks
+    and `Over` apply); shrinking and the leaving half of smoothing only clear the label. Each
+    works inside the label's bounding box, so its cost follows the structure, not the volume.
   - `Fill between axial (coronal, sagittal) slices of ...`: draw the label on a few slices
     along one axis and each run of empty slices between two drawn ones is filled with a shape
     blended from the two outlines (each slice takes the average of their signed distance maps

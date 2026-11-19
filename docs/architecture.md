@@ -29,6 +29,7 @@
 
  - `LabelOps` (src/LabelOps.*)
    - 26-connected pieces of one label, free of the window: `pieces()` (largest first, with a seed voxel each) and `pieceAt()`, flooding with one bit of scratch per voxel (40 MB for 704 x 704 x 640). In the window, `writeLabelOperation()` and `remapLabelOperation()` turn the piece and label operations into one undo step each, through `maskWriteAllowed()`. Pinned by `label_ops` and `label_ops_gui`.
+   - Morphology of one label, inside its bounding box plus one voxel: `holes()` (flooding from the box's border through voxels outside the label; only background is listed), `dilation()` and `erosion()` (face neighbours; outside the volume is not the label), and `majority()` (three separable 3-tap sums give each voxel's 3 x 3 x 3 count). Pinned by `label_ops` and `label_morphology_gui`.
 
  - `FloodFill` (src/FloodFill.*)
    - The fill region, free of the window: face-connected voxels holding the seed's label within an intensity window, on one slice or in 3D, abandoned past a size limit (`kFloodFillMaxVoxels`). The window's `floodFillAt()` writes it through `writeLabelOperation()` with the brush rule; `paintMaskAt()` calls it once per press in mode 3. Pinned by `flood_fill` and `flood_fill_gui`.
