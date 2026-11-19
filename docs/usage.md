@@ -71,6 +71,10 @@
   label 26; `Ctrl+click` a voxel of the edited mask, or right-click it and choose
   `Paint with ...`. The name of the active label shows beside the label number.
 - The hover line in the status bar names the edited mask's label under the cursor.
+- The nnU-Net `ignore` label of a `dataset.json` (voxels nnU-Net neither trains on nor scores) is
+  drawn in the slice views as diagonal stripes, two voxels on and two off, and its name is in
+  italics, so it does not read as a structure. The 3D view draws it like any other label; its
+  `Show` box hides it there too.
 - **Lock.** A locked label keeps every voxel as it is: a brush stroke of another label passes
   around it, `Clear` and `Threshold` leave it, a slice run neither clears nor grows it, and
   painting or erasing with it is refused with a message in the status bar. Undo and redo still
