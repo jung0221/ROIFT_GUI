@@ -6905,6 +6905,9 @@ bool ManualSeedSelector::saveActiveMaskTo(const std::string &path, QString *erro
         region.SetIndex(start);
         region.SetSize(size);
         out->SetRegions(region);
+        // On the image's grid: without this the mask is written at the origin with 1 mm
+        // voxels and no orientation, and no longer lines up with its image anywhere else.
+        m_image.copyGeometryTo(out.GetPointer());
         out->Allocate();
 
         if (m_maskData.empty())
