@@ -289,6 +289,12 @@ if(BUILD_ROIFT_TESTS)
   endif()
   set_tests_properties(plane_mode_gui PROPERTIES ENVIRONMENT "${_plane_mode_gui_env}")
 
+  # A saved mask keeps its image's origin, spacing and direction, and every label.
+  add_executable(mask_save_geometry_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_save_geometry_test.cpp)
+  target_link_libraries(mask_save_geometry_test PRIVATE roift_gui_test_objects)
+  add_test(NAME mask_save_geometry COMMAND mask_save_geometry_test)
+  set_tests_properties(mask_save_geometry PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp
