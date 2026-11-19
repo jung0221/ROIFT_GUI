@@ -643,6 +643,21 @@ int main(int argc, char **argv)
         check(slice.undoMaskEdit() && slice.activeMaskLabels() == before, "undo restores the mask before the paste");
         check(slice.redoMaskEdit() && slice.activeMaskLabels() == pasted, "redo puts the pasted plane back");
 
+        // A locked label keeps its voxels through a paste: label 1 is neither cleared nor
+        // grown, and everything else is pasted as before.
+        slice.undoMaskEdit();
+        slice.setLabelLocked(1, true);
+        const Outcome lockedRun = runSlice(nullptr);
+        const std::vector<int> &lockedAfter = slice.activeMaskLabels();
+        bool lockedAsExpected = lockedRun.arrived && lockedRun.success && lockedAfter.size() == before.size();
+        for (std::size_t i = 0; lockedAsExpected && i < before.size(); ++i)
+        {
+            const int expected = (before[i] == 1 || pasted[i] == 1) ? before[i] : pasted[i];
+            lockedAsExpected = lockedAfter[i] == expected;
+        }
+        check(lockedAsExpected, "locked label 1: the paste neither clears nor grows it, and is otherwise the same");
+        slice.setLabelLocked(1, false);
+
         // Plane y = 10 holds no seed; the refusal comes before any task.
         const std::vector<int> beforeRefusal = slice.activeMaskLabels();
         coronal->setValue(10);

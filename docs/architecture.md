@@ -27,6 +27,7 @@
  - `LabelTable` (src/LabelTable.*)
    - Label names, free of the window: an nnU-Net `dataset.json` (`labels`; background and region lists left out; the `ignore` value kept apart) or an ITK-SNAP label file (with its colours). `matches()` is the find rule. Pinned by `label_table`.
    - In the window, `m_labelCounts` is filled by one scan in `rebuildMaskLabelFilter()` and then moved by `applyMaskLabelDelta()` with `MaskEditHistory::lastLabelDelta()` after each commit, record, undo and redo. `refreshLabelPanel()` rebuilds the `Labels` rows only when the set of labels changed, and otherwise rewrites their counts. Pinned by `label_table_gui`.
+   - Locks and the paint target live in one rule, `maskWriteAllowed(before, after, brush)`: no voxel goes from or to a locked label, and a brush voxel only from what `Over` allows. The brush, `Clear` and `Threshold` write through it; the slice paste, which writes the buffer itself, puts back afterwards every plane voxel the rule refuses. Pinned by `label_lock_gui` and by the locked run of `plane_mode_gui`.
 
  - `MaskListDelegate` (src/MaskListDelegate.*)
    - Paints the mask list row: eye, colour swatch, name. The eye's hit target (`eyeRect()`) is shared with the viewport event filter in `ManualSeedSelector::eventFilter`, which turns a click there into a visibility toggle instead of a selection.
