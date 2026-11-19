@@ -6520,6 +6520,11 @@ void ManualSeedSelector::blendMaskOverlays(std::vector<unsigned char> &rgb,
 
     const float opacity = std::max(0.0f, std::min(1.0f, m_maskOpacity));
     const float inverse = 1.0f - opacity;
+    // The nnU-Net ignore label is drawn as diagonal stripes, two voxels on and two off, so it
+    // reads as "not trained on" rather than as a structure; -1 when the names give none.
+    const int ignoreLabel = m_labelTable.ignoreValue();
+    constexpr unsigned kHatchPeriod = 4;
+    constexpr unsigned kHatchOn = 2;
 
     for (const MaskRenderItem &item : items)
     {
@@ -6563,6 +6568,8 @@ void ManualSeedSelector::blendMaskOverlays(std::vector<unsigned char> &rgb,
                 if (label == 0)
                     continue;
                 if (filterLabels && !maskLabelVisible(label))
+                    continue;
+                if (label == ignoreLabel && (u + v) % kHatchPeriod >= kHatchOn)
                     continue;
 
                 const unsigned char *color = colors.colorFor(label);
@@ -6925,6 +6932,13 @@ void ManualSeedSelector::refreshLabelPanel()
             item->setIcon(kLabelValueColumn, QIcon(swatch));
             item->setText(kLabelValueColumn, QString::number(label));
             item->setText(kLabelNameColumn, m_labelTable.nameFor(label));
+            if (label == m_labelTable.ignoreValue())
+            {
+                QFont italic = item->font(kLabelNameColumn);
+                italic.setItalic(true);
+                item->setFont(kLabelNameColumn, italic);
+                item->setToolTip(kLabelNameColumn, "Ignore: drawn hatched; nnU-Net neither trains on nor scores these voxels");
+            }
             item->setTextAlignment(kLabelVoxelsColumn, Qt::AlignRight | Qt::AlignVCenter);
             m_labelRows[label] = item;
         }

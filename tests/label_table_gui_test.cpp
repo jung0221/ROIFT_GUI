@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QFile>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -191,6 +192,27 @@ int main(int argc, char **argv)
         window.undoMaskEdit();
         check(window.maskLabelCounts() == histogram(window.activeMaskLabels()) && !window.maskLabelCounts().count(37),
               "undo takes them back");
+
+        // The ignore label is drawn hatched: on a run of it, some voxels are tinted and some not.
+        window.setActiveLabel(38);
+        emit axial->mousePressed(14, 20, Qt::LeftButton);
+        for (int x = 15; x <= 20; ++x)
+            emit axial->mouseMoved(x, 20, Qt::LeftButton);
+        emit axial->mouseReleased(20, 20, Qt::LeftButton);
+        auto *show = window.findChild<QPushButton *>("maskOffButton");
+        if (show)
+            show->click();
+        const QImage slice = axial->image();
+        int tinted = 0;
+        int plain = 0;
+        for (int x = 14; x <= 20; ++x)
+        {
+            const QColor pixel = slice.pixelColor(x, 20);
+            const bool grey = pixel.red() == pixel.green() && pixel.green() == pixel.blue();
+            (grey ? plain : tinted) += 1;
+        }
+        check(slice.width() == int(kDim) && tinted > 0 && plain > 0, "the ignore label is drawn hatched");
+        window.undoMaskEdit();
 
         const int z = slider->value();
         check(window.pickActiveLabelAt(2, 2, z) && window.activeLabel() == 1, "Ctrl+click picks the label under a voxel");
