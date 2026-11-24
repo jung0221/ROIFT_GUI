@@ -397,6 +397,29 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME label_morphology_gui COMMAND label_morphology_gui_test)
   set_tests_properties(label_morphology_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+  # The 3D surface builder on phantoms: labels, placement, closed edges, union colouring, cancel.
+  add_executable(mask_surface_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_surface_test.cpp)
+  target_link_libraries(mask_surface_test PRIVATE roift_gui_test_objects)
+  add_test(NAME mask_surface COMMAND mask_surface_test)
+
+  # Drawing with Show 3D on: one off-thread build per stroke, at its end; the camera stays.
+  add_executable(draw_3d_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/draw_3d_gui_test.cpp)
+  target_link_libraries(draw_3d_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME draw_3d_gui COMMAND draw_3d_gui_test)
+  set_tests_properties(draw_3d_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
+  # Shift+drag on the 3D view erases the selected label inside the rectangle; Shift+click locates.
+  add_executable(erase_3d_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/erase_3d_gui_test.cpp)
+  target_link_libraries(erase_3d_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME erase_3d_gui COMMAND erase_3d_gui_test)
+  set_tests_properties(erase_3d_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
+  # The slice keys from any focused widget that does not take text.
+  add_executable(slice_keys_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_keys_gui_test.cpp)
+  target_link_libraries(slice_keys_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME slice_keys_gui COMMAND slice_keys_gui_test)
+  set_tests_properties(slice_keys_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp

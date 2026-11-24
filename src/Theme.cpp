@@ -287,6 +287,29 @@ QListWidget::item:selected, QTreeWidget::item:selected {
     background-color: @accentfill;
     color: @onaccent;
 }
+/* Item check boxes look like QCheckBox. Without a rule of their own the check mark took the
+   row's text colour, which on the selection is @onaccent, dark on a dark box. */
+QTreeView::indicator, QListView::indicator {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid @hairline;
+    background-color: @well;
+}
+QTreeView::indicator:checked, QListView::indicator:checked {
+    background-color: @accentfill;
+    border-color: @accentfill;
+    image: none;
+}
+/* On the selection's accent an accent box would vanish: there a checked box is ink. */
+QTreeView::indicator:checked:selected, QListView::indicator:checked:selected {
+    background-color: @ink;
+    border-color: @ink;
+}
+QTreeView::indicator:unchecked:selected, QListView::indicator:unchecked:selected {
+    background-color: @well;
+    border-color: @onaccent;
+}
 
 /* ---------------------------------------------------------------------------
    Menus and tooltips: panels floating over the work area.

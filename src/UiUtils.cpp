@@ -10,20 +10,25 @@
 #include "Theme.h"
 #include "Version.h"
 
+#include <QAbstractSpinBox>
 #include <QColor>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QProcess>
 #include <QSlider>
 #include <QStandardPaths>
 #include <QString>
+#include <QTextEdit>
 #include <QToolButton>
 #include <QUrl>
 #include <QWidget>
@@ -809,6 +814,33 @@ QString stripImageSuffix(const QString &fileName)
             }
     }
     return baseName;
+}
+
+QString maskSaveStartPath(const QString &openMaskPath, bool planar)
+{
+    if (openMaskPath.isEmpty())
+        return QString();
+    const QFileInfo info(openMaskPath);
+    const QString name = info.fileName();
+    if (name.endsWith(".nii", Qt::CaseInsensitive) || name.endsWith(".nii.gz", Qt::CaseInsensitive) ||
+        (planar && name.endsWith(".png", Qt::CaseInsensitive)))
+        return openMaskPath;
+    return QDir(info.path()).filePath(stripImageSuffix(name) + ".nii.gz");
+}
+
+bool focusTakesText(const QWidget *focus)
+{
+    if (!focus)
+        return false;
+    if (const auto *edit = qobject_cast<const QLineEdit *>(focus))
+        return !edit->isReadOnly() && !qobject_cast<const QAbstractSpinBox *>(edit->parentWidget());
+    if (const auto *combo = qobject_cast<const QComboBox *>(focus))
+        return combo->isEditable();
+    if (const auto *text = qobject_cast<const QTextEdit *>(focus))
+        return !text->isReadOnly();
+    if (const auto *plain = qobject_cast<const QPlainTextEdit *>(focus))
+        return !plain->isReadOnly();
+    return false;
 }
 
 // ============================================================================

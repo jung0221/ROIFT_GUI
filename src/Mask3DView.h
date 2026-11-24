@@ -11,6 +11,8 @@
 #include <vtkSmartPointer.h>
 
 #include <array>
+#include <memory>
+#include <thread>
 
 QT_FORWARD_DECLARE_CLASS(QCheckBox)
 QT_FORWARD_DECLARE_CLASS(QComboBox)
@@ -22,7 +24,6 @@ class QVTKOpenGLNativeWidget;
 class vtkActor;
 class vtkTextActor;
 class vtkCellPicker;
-class vtkDiscreteFlyingEdges3D;
 class vtkGenericOpenGLRenderWindow;
 class vtkPointGaussianMapper;
 class vtkLookupTable;
@@ -30,7 +31,6 @@ class vtkPolyData;
 class vtkPolyDataMapper;
 class vtkRenderer;
 class vtkStaticCellLocator;
-class vtkWindowedSincPolyDataFilter;
 class QRubberBand;
 class QTimer;
 
@@ -58,6 +58,23 @@ struct Annotation3D
     QString text;
     QColor color = Qt::white;
     bool emphasised = false;
+};
+
+/// A rectangle drawn on the 3D view, with the projection it was drawn under. A voxel is inside
+/// when its centre (index * spacing, like the surface) projects into it, at any depth.
+struct ScreenRectangle
+{
+    std::array<double, 16> worldToView{}; // VTK composite projection, row-major: view = M * world
+    std::array<double, 3> spacing{1.0, 1.0, 1.0};
+    double left = 0.0, right = 0.0, bottom = 0.0, top = 0.0; // normalised view coordinates, -1..1
+    bool containsVoxel(int x, int y, int z) const;
+};
+
+/// Which labels a rectangle drawn on the 3D view erases.
+enum class RectangleErase
+{
+    SelectedLabel, // Shift+drag
+    ShownLabels,   // Ctrl+Shift+drag: every label whose Show box is ticked
 };
 
 /// A node-and-line graph drawn inside the surface, e.g. a 1D solver network.
@@ -97,11 +114,16 @@ public:
     };
 
     explicit Mask3DView(QWidget *parent = nullptr);
+    ~Mask3DView() override;
     /// Render one label volume. With several masks on screen the caller merges
     /// them into one volume of unique ids, and then the label values no longer
     /// carry their own colours or names — pass @p labelColors and @p labelNames
     /// so the surface and the label picker still say which mask each id is.
-    void setMaskData(const std::vector<int> &mask,
+    /// The surface is built on a worker thread: this returns at once, the previous
+    /// surface stays on screen until the new one replaces it, and a volume passed
+    /// while one is being built replaces any volume still waiting. The camera is
+    /// framed for the first surface only.
+    void setMaskData(std::vector<int> mask,
                      unsigned int sizeX,
                      unsigned int sizeY,
                      unsigned int sizeZ,
@@ -130,8 +152,14 @@ public:
     void setMaskOpacity(float opacity);
     float maskOpacity() const { return m_opacity; }
     void clearMask();
-    /// True while a mask surface is built, whether or not "Show 3D" is drawing it.
+    /// True while a mask surface is shown, whether or not "Show 3D" is drawing it.
     bool hasMaskSurface() const { return !m_activeLabels.empty(); }
+    /// True while a surface is being built or waits to be.
+    bool surfaceBuildPending() const { return m_surfaceJob != nullptr; }
+    /// Blocks until no surface is being built or waiting, and shows the last one.
+    void waitForSurface();
+    /// Surfaces built and shown since construction.
+    int surfaceBuildCount() const { return m_surfaceBuildCount; }
     /// Seeds placed by the last setSeedData(), whether or not "Show Seeds" is drawing them.
     size_t seedCount() const { return m_seedRenderData.size(); }
     void setSeedRectangleEraseEnabled(bool enabled);
@@ -142,6 +170,8 @@ signals:
     void eraseSeedsInRectangle(const QVector<int> &seedIndices);
     // Shift+click hit the mask surface at this voxel.
     void surfacePointPicked(int x, int y, int z);
+    // Shift+drag (or Ctrl+Shift+drag, scope ShownLabels) drew this rectangle.
+    void labelRectangleSelected(const ScreenRectangle &rectangle, RectangleErase scope);
     // The pointer rests over the surface at this voxel; emitted when the voxel
     // changes, at most every hover interval, never while a button is down.
     void surfacePointHovered(int x, int y, int z);
@@ -183,8 +213,6 @@ private:
     vtkSmartPointer<vtkPointGaussianMapper> m_seedMapper;
     vtkSmartPointer<vtkPolyData> m_seedPolyData;
     vtkSmartPointer<vtkPolyDataMapper> m_mapper;
-    vtkSmartPointer<vtkDiscreteFlyingEdges3D> m_flyingEdges;
-    vtkSmartPointer<vtkWindowedSincPolyDataFilter> m_smoother;
     vtkSmartPointer<vtkLookupTable> m_lookupTable;
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
     vtkSmartPointer<vtkCellPicker> m_surfacePicker;
@@ -215,11 +243,6 @@ private:
     NetworkGraph3D::Point m_selectedNode{};
     NetworkGraph3D::Point m_hoveredNode{};
     void rebuildNetworkActors();
-    // Above this many labels the surface is the union contoured once and coloured per
-    // vertex; below it, one contour per label (touching labels keep their shared wall).
-    static constexpr size_t kSurfacePerLabelLimit = 32;
-    void paintSurfaceLabels(vtkPolyData *poly, const std::vector<int> &mask, unsigned int sizeX,
-                            unsigned int sizeY, unsigned int sizeZ);
     void rebuildHighlightActors();
     NetworkGraph3D::Point toWorld(const NetworkGraph3D::Point &voxel) const;
 
@@ -237,6 +260,19 @@ private:
     // would mean nothing. Empty while a single mask is rendered.
     std::map<int, QString> m_labelNames;
     bool m_seedCameraFramed = false;
+    // Set by the first surface shown: later surfaces keep the camera the user left.
+    bool m_surfaceCameraFramed = false;
+
+    // One surface is built at a time, on m_surfaceWorker; the newest volume passed meanwhile
+    // waits in m_queuedSurfaceJob and the ones it replaced are never built.
+    struct SurfaceJob;
+    std::shared_ptr<SurfaceJob> m_surfaceJob;
+    std::shared_ptr<SurfaceJob> m_queuedSurfaceJob;
+    std::thread m_surfaceWorker;
+    int m_surfaceBuildCount = 0;
+    void startSurfaceBuild(std::shared_ptr<SurfaceJob> job);
+    void finishSurfaceBuild(const std::shared_ptr<SurfaceJob> &job);
+    void showSurface(SurfaceJob &job);
     bool m_seedRectEraseEnabled = false;
     bool m_maskVisible = true;
     bool m_seedsVisible = true;
@@ -247,7 +283,13 @@ private:
     unsigned int m_dimX = 0;
     unsigned int m_dimY = 0;
     unsigned int m_dimZ = 0;
+    // Shift+left: a click locates the surface point, a drag past the start distance draws a
+    // rectangle instead; which one is known only on release.
     bool m_shiftPickActive = false;
+    bool m_shiftDragging = false;
+    QPoint m_shiftStart;
+    RectangleErase m_shiftEraseScope = RectangleErase::SelectedLabel; // chosen at the press
+    ScreenRectangle screenRectangle(const QRect &widgetRect) const;
     bool m_selectingRect = false;
     QPoint m_rectStart;
     QRubberBand *m_selectionBand = nullptr;

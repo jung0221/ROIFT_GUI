@@ -174,6 +174,7 @@ ManualSeedSelector::ManualSeedSelector(const std::string &niftiPath, QWidget *pa
 
 ManualSeedSelector::~ManualSeedSelector()
 {
+    qApp->removeEventFilter(this);
     waitForAutosave();
     stopSegmentationWorker(true);
     // A read cannot be interrupted; its result is dropped with the window's
@@ -821,7 +822,10 @@ void ManualSeedSelector::setupUi()
 
     // ---- Section: Mask ----
     SectionGroup *maskModeGroup = new SectionGroup("Drawing Mode");
-    QHBoxLayout *maskModeLayout = new QHBoxLayout(maskModeGroup);
+    QVBoxLayout *maskModeColumn = new QVBoxLayout(maskModeGroup);
+    QHBoxLayout *maskModeLayout = new QHBoxLayout();
+    maskModeLayout->setContentsMargins(0, 0, 0, 0);
+    maskModeColumn->addLayout(maskModeLayout);
 
     m_btnMaskDraw = new QPushButton("Draw");
     m_btnMaskDraw->setObjectName("maskDrawButton");
@@ -847,6 +851,13 @@ void ManualSeedSelector::setupUi()
     m_btnMaskOff->setChecked(true);
     m_btnMaskOff->setToolTip("Disable mask editing");
     maskModeLayout->addWidget(m_btnMaskOff);
+
+    // Which mask a stroke goes into. A mask without a file has no row in the list, so
+    // without this nothing on screen says the strokes are not going into the mask shown.
+    m_editedMaskLabel = new QLabel();
+    m_editedMaskLabel->setObjectName("editedMaskLabel");
+    m_editedMaskLabel->setWordWrap(true);
+    maskModeColumn->addWidget(m_editedMaskLabel);
 
     QButtonGroup *maskModeButtons = new QButtonGroup(this);
     maskModeButtons->addButton(m_btnMaskOff, 0);   // mode 0 = off
@@ -1622,6 +1633,9 @@ void ManualSeedSelector::setupUi()
         view->setFocusPolicy(Qt::StrongFocus);
         view->installEventFilter(this);
     }
+    // The slice keys reach routeSliceKey() before the focused widget: a spin box, list or combo
+    // box would otherwise take the letter, and the 3D view would read W, S, A as VTK's own keys.
+    qApp->installEventFilter(this);
 
     // Keep minimums modest so OS tiling/snap (Win+arrow) can fit on half-screen
     // without spilling into adjacent monitors.
@@ -2911,6 +2925,14 @@ void ManualSeedSelector::setupUi()
             selectSolverNode(node, false);
         else if (const int segment = solverSegmentAtVoxel(x, y, z, 2))
             selectSolverSegment(segment - 1, false); });
+    connect(m_mask3DView, &Mask3DView::labelRectangleSelected, this,
+            [this](const ScreenRectangle &rectangle, RectangleErase scope)
+            {
+                if (scope == RectangleErase::ShownLabels)
+                    eraseShownLabelsIn(rectangle);
+                else
+                    eraseActiveLabelIn(rectangle);
+            });
     connect(m_mask3DView, &Mask3DView::surfacePointHovered, this, [this](int x, int y, int z)
             {
         if (!solverNetworkPlaced())
@@ -5234,6 +5256,8 @@ void ManualSeedSelector::drawLocatedPointOverlay(QPainter &p, float scaleX, floa
 void ManualSeedSelector::updateViews(unsigned planes)
 {
     updateMaskUndoControls(); // the buffer may have been replaced, and its history with it
+    updateEditedMaskLabel();
+    syncMaskListSelection();
     m_pendingPlanes &= ~planes;
     unsigned int sizeX = m_image.getSizeX();
     unsigned int sizeY = m_image.getSizeY();
@@ -5248,8 +5272,9 @@ void ManualSeedSelector::updateViews(unsigned planes)
         m_mask3DView->setSeedsVisible(m_enable3DSeeds);
     }
 
-    // 3D mask rendering is controlled by "Show 3D", seeds are controlled separately.
-    if (render3D && m_enable3DView && m_mask3DDirty)
+    // 3D mask rendering is controlled by "Show 3D", seeds are controlled separately. A stroke
+    // rebuilds the surface once, when it ends: each rebuild contours the whole volume.
+    if (render3D && m_enable3DView && m_mask3DDirty && !m_lastBrushStamp)
     {
         update3DMaskView();
         m_mask3DDirty = false;
@@ -6827,7 +6852,7 @@ void ManualSeedSelector::update3DMaskView()
             }
             else
             {
-                m_mask3DView->setMaskData(merged, targetX, targetY, targetZ,
+                m_mask3DView->setMaskData(std::move(merged), targetX, targetY, targetZ,
                                           targetSpacingX, targetSpacingY, targetSpacingZ,
                                           mergeLabels ? &mergedColors : nullptr,
                                           mergeLabels ? &mergedNames : nullptr);
@@ -7486,15 +7511,15 @@ void ManualSeedSelector::setFillTolerance(double tolerance)
     }
 }
 
-long long ManualSeedSelector::floodFillAt(int x, int y, int z, int planeAxis)
+bool ManualSeedSelector::fillRegionAt(int x, int y, int z, int planeAxis, std::vector<std::size_t> &region)
 {
+    region.clear();
     const unsigned sx = m_image.getSizeX();
     const unsigned sy = m_image.getSizeY();
     const unsigned sz = m_image.getSizeZ();
     if (sx == 0 || !m_image.buffer() || x < 0 || y < 0 || z < 0 || unsigned(x) >= sx || unsigned(y) >= sy ||
         unsigned(z) >= sz)
-        return 0;
-    commitMaskEdit();
+        return false;
     if (activeMaskPending())
         ensureActiveMaskLoaded();
     if (m_maskData.empty())
@@ -7508,17 +7533,16 @@ long long ManualSeedSelector::floodFillAt(int x, int y, int z, int planeAxis)
     {
         if (m_statusLabel)
             m_statusLabel->setText("Fill needs a mask on the image's grid.");
-        return 0;
+        return false;
     }
     const int label = activeLabel();
     if (labelLocked(label))
     {
         reportLockedLabel(label);
-        return 0;
+        return false;
     }
     const size_t seed = size_t(x) + size_t(y) * sx + size_t(z) * sx * sy;
     const double value = m_image.buffer()[seed];
-    std::vector<size_t> region;
     const flood_fill::Outcome outcome =
         flood_fill::region(m_maskData, m_image.buffer(), {sx, sy, sz}, seed, value - m_fillTolerance,
                            value + m_fillTolerance, planeAxis, kFloodFillMaxVoxels, region);
@@ -7527,9 +7551,154 @@ long long ManualSeedSelector::floodFillAt(int x, int y, int z, int planeAxis)
         if (m_statusLabel)
             m_statusLabel->setText(QString("Fill stopped: the region passed %1 voxels. Lower the tolerance, or fill on one slice.")
                                        .arg(QLocale().toString(qulonglong(kFloodFillMaxVoxels))));
+        return false;
+    }
+    return outcome == flood_fill::Outcome::Filled;
+}
+
+long long ManualSeedSelector::floodFillAt(int x, int y, int z, int planeAxis)
+{
+    commitMaskEdit();
+    std::vector<size_t> region;
+    if (!fillRegionAt(x, y, z, planeAxis, region))
+        return 0;
+    return writeLabelOperation("Fill", region, activeLabel(), true);
+}
+
+void ManualSeedSelector::fillStrokeAt(const std::array<int, 3> &voxel, int planeAxis)
+{
+    if (m_fillStrokeStopped || voxel[0] < 0 || voxel[1] < 0 || voxel[2] < 0 ||
+        unsigned(voxel[0]) >= m_image.getSizeX() || unsigned(voxel[1]) >= m_image.getSizeY() ||
+        unsigned(voxel[2]) >= m_image.getSizeZ())
+        return;
+    const int label = activeLabel();
+    const size_t sx = m_maskDimX;
+    const size_t sy = m_maskDimY;
+    const size_t index = size_t(voxel[0]) + size_t(voxel[1]) * sx + size_t(voxel[2]) * sx * sy;
+    // Dragging over what the stroke has filled already costs no flood.
+    if (m_maskDimX == m_image.getSizeX() && m_maskDimY == m_image.getSizeY() && m_maskDimZ == m_image.getSizeZ() &&
+        index < m_maskData.size() && m_maskData[index] == label)
+        return;
+    std::vector<size_t> region;
+    if (!fillRegionAt(voxel[0], voxel[1], voxel[2], planeAxis, region))
+    {
+        // A lock or the size limit holds for the whole stroke; past the limit every voxel the
+        // drag crosses in that region would flood it again.
+        m_fillStrokeStopped = true;
+        return;
+    }
+    if (region.empty())
+        return;
+    m_maskHistory.begin("Fill");
+    for (const size_t i : region)
+    {
+        if (m_maskData[i] == label)
+            continue;
+        if (maskWriteAllowed(m_maskData[i], label, true))
+        {
+            m_maskHistory.write(m_maskData, i, label);
+            ++m_fillStrokeChanged;
+        }
+        else
+            ++m_fillStrokeRefused;
+    }
+    m_mask3DDirty = true;
+    noteActiveMaskLabel(label);
+    if (m_statusLabel)
+    {
+        QString text = QString("Fill: %1 voxel(s) changed").arg(QLocale().toString(m_fillStrokeChanged));
+        if (m_fillStrokeRefused > 0)
+            text += QString(", %1 kept by locks").arg(QLocale().toString(m_fillStrokeRefused));
+        m_statusLabel->setText(text + ".");
+    }
+}
+
+QString ManualSeedSelector::rectangleEraseRefusal()
+{
+    if (!m_enable3DView)
+        return "turn on Show 3D; nothing is erased that the 3D view does not draw.";
+    if (!editedMaskReady())
+        return "no mask is being edited.";
+    if (hasImage() && (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() ||
+                       m_maskDimZ != m_image.getSizeZ()))
+        return "the edited mask is not on the image's grid.";
+    const MaskLayer *style = activeMaskStyle();
+    if (style && !style->visible)
+        return "the edited mask is hidden; open its eye in Masks first.";
+    return {};
+}
+
+std::vector<std::size_t> ManualSeedSelector::maskVoxelsInRectangle(const ScreenRectangle &rectangle,
+                                                                   const std::function<bool(int)> &erasable) const
+{
+    std::vector<std::size_t> inside;
+    int runLabel = 0; // labels come in runs: one erasable() call per run, not per voxel
+    bool runErasable = false;
+    std::size_t i = 0;
+    for (unsigned z = 0; z < m_maskDimZ; ++z)
+        for (unsigned y = 0; y < m_maskDimY; ++y)
+            for (unsigned x = 0; x < m_maskDimX; ++x, ++i)
+            {
+                const int value = m_maskData[i];
+                if (value == 0)
+                    continue;
+                if (value != runLabel)
+                {
+                    runLabel = value;
+                    runErasable = erasable(value);
+                }
+                if (runErasable && rectangle.containsVoxel(int(x), int(y), int(z)))
+                    inside.push_back(i);
+            }
+    return inside;
+}
+
+long long ManualSeedSelector::eraseActiveLabelIn(const ScreenRectangle &rectangle)
+{
+    const auto refuse = [this](const QString &why)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText("3D erase: " + why);
+        return 0LL;
+    };
+    const int label = activeLabel();
+    if (label <= 0)
+        return refuse("choose the label to erase first.");
+    const QString why = rectangleEraseRefusal();
+    if (!why.isEmpty())
+        return refuse(why);
+    if (!maskLabelVisible(label))
+        return refuse(QString("%1 is hidden; tick its Show box first.").arg(labelDisplayName(label)));
+    if (labelLocked(label))
+    {
+        reportLockedLabel(label);
         return 0;
     }
-    return writeLabelOperation("Fill", region, label, true);
+    const std::vector<std::size_t> inside =
+        maskVoxelsInRectangle(rectangle, [label](int value) { return value == label; });
+    if (inside.empty())
+        return refuse(QString("no voxel of %1 inside the rectangle.").arg(labelDisplayName(label)));
+    return writeLabelOperation("3D erase", inside, 0);
+}
+
+long long ManualSeedSelector::eraseShownLabelsIn(const ScreenRectangle &rectangle)
+{
+    const auto refuse = [this](const QString &why)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText("3D erase: " + why);
+        return 0LL;
+    };
+    const QString why = rectangleEraseRefusal();
+    if (!why.isEmpty())
+        return refuse(why);
+    // Negative values are background to the surface, so not drawn. Locked labels are collected
+    // too, so the status line counts them as kept by locks.
+    const std::vector<std::size_t> inside =
+        maskVoxelsInRectangle(rectangle, [this](int value) { return value > 0 && maskLabelVisible(value); });
+    if (inside.empty())
+        return refuse("no voxel of a shown label inside the rectangle.");
+    return writeLabelOperation("3D erase", inside, 0);
 }
 
 long long ManualSeedSelector::fillBetweenSlices(int label, int normalAxis)
@@ -7912,8 +8081,11 @@ bool ManualSeedSelector::saveMaskToFile()
     const QString niftiFilter = "NIfTI files (*.nii *.nii.gz)";
     const QString pngFilter = "PNG label image (*.png)";
     const QString filters = isPlanarImage() ? niftiFilter + ";;" + pngFilter : niftiFilter;
-    QString selected = niftiFilter;
-    QString f = QFileDialog::getSaveFileName(this, "Save Mask", "", filters, &selected);
+    // Opens on the mask being edited, so saving it back is one confirmation away.
+    const QString open = activeMaskPending() ? QString::fromStdString(m_pendingActiveMaskPath) : activeMaskPath();
+    const QString start = UiUtils::maskSaveStartPath(open, isPlanarImage());
+    QString selected = (isPlanarImage() && start.endsWith(".png", Qt::CaseInsensitive)) ? pngFilter : niftiFilter;
+    QString f = QFileDialog::getSaveFileName(this, "Save Mask", start, filters, &selected);
     if (f.isEmpty())
         return false;
     if (selected == pngFilter && QFileInfo(f).suffix().isEmpty())
@@ -8081,14 +8253,31 @@ void ManualSeedSelector::paintMaskAt(SlicePlane plane, int u, int v)
     };
     if (m_maskMode == 3)
     {
-        // A fill happens once, on the press; the moves of the same press do nothing.
-        if (!m_lastBrushStamp)
+        // Every voxel the pointer crosses fills its region, so a drag fills as it goes. The
+        // press and its moves are one undo step, committed on release like a brush stroke.
+        const int normal = 3 - axes.first - axes.second;
+        const int planeAxis = m_brushSphere ? -1 : normal;
+        if (!m_lastBrushStamp || m_lastBrushStamp->plane != plane)
         {
-            const std::array<int, 3> voxel = centerAt(u, v);
-            const int normal = 3 - axes.first - axes.second;
-            floodFillAt(voxel[0], voxel[1], voxel[2], m_brushSphere ? -1 : normal);
+            m_fillStrokeChanged = 0;
+            m_fillStrokeRefused = 0;
+            m_fillStrokeStopped = false;
+            m_lastBrushStamp = BrushStamp{plane, u, v};
+            fillStrokeAt(centerAt(u, v), planeAxis);
         }
-        m_lastBrushStamp = BrushStamp{plane, u, v};
+        else
+        {
+            const BrushStamp from = *m_lastBrushStamp;
+            m_lastBrushStamp = BrushStamp{plane, u, v};
+            const int du = u - from.u;
+            const int dv = v - from.v;
+            const int steps = std::max(std::abs(du), std::abs(dv));
+            for (int i = 1; i <= steps; ++i)
+                fillStrokeAt(centerAt(from.u + static_cast<int>(std::lround(double(i) * du / steps)),
+                                      from.v + static_cast<int>(std::lround(double(i) * dv / steps))),
+                             planeAxis);
+        }
+        requestViewUpdate(false);
         return;
     }
     const bool erase = (m_maskMode == 2);
@@ -8265,94 +8454,36 @@ void ManualSeedSelector::keyPressEvent(QKeyEvent *event)
             showFullScreen();
         return;
     }
+    // The slice keys never get here: routeSliceKey() takes them first.
+    QMainWindow::keyPressEvent(event);
+}
 
-    // Check if focus is on an image view
-    QWidget *fw = QApplication::focusWidget();
-    auto isDescendant = [](QWidget *child, QWidget *ancestor)
-    {
-        while (child)
-        {
-            if (child == ancestor)
-                return true;
-            child = child->parentWidget();
-        }
+bool ManualSeedSelector::pointerOverView() const
+{
+    const QPoint global = QCursor::pos();
+    for (QWidget *view : {static_cast<QWidget *>(m_axialView), static_cast<QWidget *>(m_sagittalView),
+                          static_cast<QWidget *>(m_coronalView), static_cast<QWidget *>(m_mask3DView)})
+        if (view && view->isVisible() && (view->underMouse() || view->rect().contains(view->mapFromGlobal(global))))
+            return true;
+    return false;
+}
+
+bool ManualSeedSelector::routeSliceKey(QWidget *receiver, QKeyEvent *event)
+{
+    // Once per key press: at its first receiver, the focus widget or else the window.
+    QWidget *focus = QApplication::focusWidget();
+    if (receiver != (focus ? focus : this) || receiver->window() != this)
         return false;
-    };
-    if (fw && fw != this && !isDescendant(fw, m_axialView) && !isDescendant(fw, m_sagittalView) && !isDescendant(fw, m_coronalView))
-    {
-        QPoint gpos = QCursor::pos();
-        bool overView = false;
-        for (QWidget *v : {m_axialView, m_sagittalView, m_coronalView})
-        {
-            if (!v)
-                continue;
-            QPoint local = v->mapFromGlobal(gpos);
-            if (v->rect().contains(local))
-            {
-                overView = true;
-                break;
-            }
-        }
-        if (!overView)
-        {
-            QMainWindow::keyPressEvent(event);
-            return;
-        }
-    }
-
-    if (event->key() == Qt::Key_Escape && m_rulerEnabled)
-    {
-        clearRulerMeasurements();
-        requestViewUpdate(true);
-        if (m_statusLabel)
-            m_statusLabel->setText("Ruler measurements cleared.");
-        return;
-    }
-
-    // Escape also dismisses the 3D locate marker.
-    if (event->key() == Qt::Key_Escape && m_locatedPoint.valid)
-    {
-        m_locatedPoint = LocatedPoint{};
-        requestViewUpdate(true);
-        return;
-    }
-
-    int axial = m_axialSlider->value();
-    int sag = m_sagittalSlider->value();
-    int cor = m_coronalSlider->value();
-    bool handled = true;
-
-    switch (event->key())
-    {
-    case Qt::Key_W:
-        axial = std::min<int>(axial + 1, int(m_image.getSizeZ()) - 1);
-        m_axialSlider->setValue(axial);
-        break;
-    case Qt::Key_S:
-        axial = std::max<int>(axial - 1, 0);
-        m_axialSlider->setValue(axial);
-        break;
-    case Qt::Key_D:
-        sag = std::min<int>(sag + 1, int(m_image.getSizeX()) - 1);
-        m_sagittalSlider->setValue(sag);
-        break;
-    case Qt::Key_A:
-        sag = std::max<int>(sag - 1, 0);
-        m_sagittalSlider->setValue(sag);
-        break;
-    case Qt::Key_E:
-        cor = std::min<int>(cor + 1, int(m_image.getSizeY()) - 1);
-        m_coronalSlider->setValue(cor);
-        break;
-    case Qt::Key_Q:
-        cor = std::max<int>(cor - 1, 0);
-        m_coronalSlider->setValue(cor);
-        break;
-    default:
-        handled = false;
-    }
-    if (!handled)
-        QMainWindow::keyPressEvent(event);
+    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return false;
+    bool viewFocused = (!focus || focus == this);
+    for (QWidget *view : {static_cast<QWidget *>(m_axialView), static_cast<QWidget *>(m_sagittalView),
+                          static_cast<QWidget *>(m_coronalView), static_cast<QWidget *>(m_mask3DView)})
+        viewFocused = viewFocused || (view && focus && (focus == view || view->isAncestorOf(focus)));
+    // Elsewhere the keys act while the pointer is over a view, unless the focus is a text field.
+    if (!viewFocused && (focusTakesText(focus) || !pointerOverView()))
+        return false;
+    return handleSliceKey(event);
 }
 
 bool ManualSeedSelector::handleSliceKey(QKeyEvent *event)
@@ -8424,6 +8555,9 @@ bool ManualSeedSelector::handleSliceKey(QKeyEvent *event)
 
 bool ManualSeedSelector::eventFilter(QObject *obj, QEvent *event)
 {
+    if (event->type() == QEvent::KeyPress && obj->isWidgetType() &&
+        routeSliceKey(static_cast<QWidget *>(obj), static_cast<QKeyEvent *>(event)))
+        return true;
     if (m_maskList && obj == m_maskList->viewport() && event->type() == QEvent::MouseButtonPress)
     {
         QMouseEvent *me = static_cast<QMouseEvent *>(event);
@@ -8498,15 +8632,6 @@ bool ManualSeedSelector::eventFilter(QObject *obj, QEvent *event)
         }
     }
 
-    if (event->type() == QEvent::KeyPress)
-    {
-        if (obj == m_axialView || obj == m_sagittalView || obj == m_coronalView)
-        {
-            QKeyEvent *ke = static_cast<QKeyEvent *>(event);
-            if (handleSliceKey(ke))
-                return true;
-        }
-    }
     return QMainWindow::eventFilter(obj, event);
 }
 QColor ManualSeedSelector::getColorForImageIndex(int index)
@@ -8648,6 +8773,64 @@ void ManualSeedSelector::updateMaskUndoControls()
     apply(m_btnMaskUndo, m_maskHistory.canUndo(), describe("Undo", m_maskHistory.undoName(), "Ctrl+Z"));
     apply(m_btnMaskRedo, m_maskHistory.canRedo(),
           describe("Redo", m_maskHistory.redoName(), "Ctrl+Shift+Z or Ctrl+Y"));
+}
+
+void ManualSeedSelector::syncMaskListSelection()
+{
+    if (!m_maskList)
+        return;
+    const std::string &path = m_pendingActiveMaskPath.empty() ? m_loadedMaskPath : m_pendingActiveMaskPath;
+    const QString key = path.empty() ? QString() : QDir::cleanPath(QString::fromStdString(path));
+    int row = -1;
+    for (int i = 0; !key.isEmpty() && row < 0 && i < m_maskList->count(); ++i)
+        if (QDir::cleanPath(m_maskList->item(i)->data(kPathRole).toString()) == key)
+            row = i;
+    const bool selectedOnly = m_maskList->selectedItems().size() == (row >= 0 ? 1 : 0);
+    if (m_maskList->currentRow() == row && selectedOnly)
+        return;
+    QSignalBlocker blocker(m_maskList);
+    if (row >= 0)
+        m_maskList->setCurrentRow(row);
+    else
+    {
+        m_maskList->clearSelection();
+        m_maskList->setCurrentRow(-1);
+    }
+}
+
+void ManualSeedSelector::updateEditedMaskLabel()
+{
+    if (!m_editedMaskLabel)
+        return;
+    const std::string &path = m_pendingActiveMaskPath.empty() ? m_loadedMaskPath : m_pendingActiveMaskPath;
+    const bool listedMasks = m_maskList && m_maskList->count() > 0;
+    QString text;
+    bool warn = false;
+    if (!path.empty())
+    {
+        const QString file = QString::fromStdString(path);
+        text = QString("Editing: %1").arg(displayNameForPath(file, QFileInfo(file).fileName()));
+    }
+    else if (!hasImage())
+        text = QString();
+    else if (listedMasks)
+    {
+        // The trap: a mask is on screen, but the strokes go to another one nobody sees listed.
+        warn = true;
+        text = m_maskData.empty()
+                   ? QString("No listed mask is edited: drawing starts a new mask with no file. Click a mask's "
+                             "name in Masks to edit it.")
+                   : QString("Editing a mask with no file, not one of the listed masks. Click a mask's name in "
+                             "Masks to edit it; Save Mask keeps this one.");
+    }
+    else
+        text = m_maskData.empty() ? QString("Drawing starts a new mask with no file.")
+                                  : QString("Editing a new mask with no file; Save Mask keeps it.");
+    if (m_editedMaskLabel->text() == text)
+        return;
+    m_editedMaskLabel->setText(text);
+    m_editedMaskLabel->setToolTip(path.empty() ? text : QString::fromStdString(path));
+    m_editedMaskLabel->setStyleSheet(QString("color: %1;").arg(warn ? Theme::kFlag : Theme::kInk3));
 }
 
 bool ManualSeedSelector::hasUnsavedMaskEdits() const
@@ -8893,8 +9076,13 @@ bool ManualSeedSelector::offerMaskAutosaves()
     {
         const QString name = entry.maskPath.isEmpty() ? QString("the mask painted without a file")
                                                       : QFileInfo(entry.maskPath).fileName();
+        // A copy without a file is restored in place of the mask being edited, not on top of it.
+        const std::string &edited = m_pendingActiveMaskPath.empty() ? m_loadedMaskPath : m_pendingActiveMaskPath;
+        const QString replaces = (entry.maskPath.isEmpty() && !edited.empty())
+                                     ? QFileInfo(QString::fromStdString(edited)).fileName()
+                                     : QString();
         const AutosaveChoice choice = m_autosavePrompt ? m_autosavePrompt(name, entry.savedAt)
-                                                       : askRestoreAutosave(name, entry.savedAt);
+                                                       : askRestoreAutosave(name, entry.savedAt, replaces);
         if (choice == AutosaveChoice::Later)
             continue;
         if (choice == AutosaveChoice::Discard)
@@ -8974,18 +9162,25 @@ bool ManualSeedSelector::restoreMaskAutosave(const mask_autosave::Entry &entry)
     return true;
 }
 
-ManualSeedSelector::AutosaveChoice ManualSeedSelector::askRestoreAutosave(const QString &mask, const QDateTime &savedAt)
+ManualSeedSelector::AutosaveChoice ManualSeedSelector::askRestoreAutosave(const QString &mask, const QDateTime &savedAt,
+                                                                          const QString &replaces)
 {
     QMessageBox box(this);
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle("Restore autosave");
     box.setText(QString("Unsaved edits of %1 were autosaved on %2 and never saved.")
                     .arg(mask, savedAt.toString("yyyy-MM-dd HH:mm")));
-    box.setInformativeText("Restore them as unsaved edits, discard them, or decide when this image is next opened?");
+    if (replaces.isEmpty())
+        box.setInformativeText("Restore them as unsaved edits, discard them, or decide when this image is next opened?");
+    else
+        box.setInformativeText(QString("Restoring makes that mask the one you edit, in place of %1, which then stays on "
+                                       "screen only. Restore, discard them, or decide when this image is next opened?")
+                                   .arg(replaces));
     QPushButton *restore = box.addButton("Restore", QMessageBox::AcceptRole);
     QPushButton *discard = box.addButton("Discard", QMessageBox::DestructiveRole);
     QPushButton *later = box.addButton("Later", QMessageBox::RejectRole);
-    box.setDefaultButton(restore);
+    // Enter must not swap out a mask that was opened on purpose.
+    box.setDefaultButton(replaces.isEmpty() ? restore : later);
     box.setEscapeButton(later);
     box.exec();
     if (box.clickedButton() == restore)
@@ -9061,6 +9256,7 @@ void ManualSeedSelector::updateMaskSeedLists()
 
     if (activeMaskRow >= 0)
         m_maskList->setCurrentRow(activeMaskRow);
+    updateEditedMaskLabel();
 
     // An empty buffer with a mask still pending is not an empty mask, so the
     // anatomy auto-merge must not treat it as a free slot.
