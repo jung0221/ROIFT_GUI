@@ -197,8 +197,12 @@ int main(int argc, char **argv)
     mouse(vtk, QEvent::MouseButtonPress, centre, Qt::LeftButton, Qt::LeftButton);
     mouse(vtk, QEvent::MouseButtonRelease, centre, Qt::LeftButton, Qt::NoButton);
     check(census(window.activeMaskLabels()).label1 == before.label1, "Shift+click erases nothing");
-    // The ray meets the slab's top face, z = 11.5 before smoothing: slice 11 or 12.
-    check(axial->value() >= 10 && axial->value() <= 12, "and moves the slices to the surface point");
+    // The ray meets the slab's top face, z = 11.5 before smoothing: slice 11 or 12. VTK's picker
+    // needs the render window, which a platform without OpenGL (the CI runners) never creates.
+    if (vtk->isValid())
+        check(axial->value() >= 10 && axial->value() <= 12, "and moves the slices to the surface point");
+    else
+        std::printf("%-72s %s\n", "and moves the slices to the surface point", "skipped: no OpenGL context");
 
     std::printf("%d failure(s)\n", failures);
     return failures == 0 ? 0 : 1;

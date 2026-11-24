@@ -105,7 +105,7 @@ int main()
     disc(growing, 0, 20, 20, 4, 4);
     disc(growing, 20, 20, 20, 12, 4);
     result = slice_fill::fillBetweenSlices(growing, dims, spacing, 4, 2);
-    const double meanArea = M_PI * 8 * 8;
+    const double meanArea = std::acos(-1.0) * 8 * 8; // M_PI is not standard; MSVC lacks it
     check(std::abs(area(filledOn(result, 10)) - meanArea) / meanArea < 0.08, "a 4-to-12 voxel disc is 8 voxels halfway");
 
     // Overlapping outlines: a disc moving from x 15 to x 25 is at x 20 halfway.
