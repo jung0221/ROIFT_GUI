@@ -121,6 +121,15 @@ QString maskOpenFileFilter();
 /// .bmp, .tif, .tiff) from a filename.
 QString stripImageSuffix(const QString &fileName);
 
+/// Where Save Mask opens: the open mask's own file when it can be written back as it is (NIfTI,
+/// or PNG while @p planar), otherwise the same folder and name ending in .nii.gz. Empty when no
+/// mask file is open.
+QString maskSaveStartPath(const QString &openMaskPath, bool planar);
+
+/// True when the focused widget takes typed letters as text: an editable line edit that is not
+/// a spin box's, an editable combo box, or an editable text box. Slice keys leave those alone.
+bool focusTakesText(const QWidget *focus);
+
 /// Escape a value for CSV output (handles commas, quotes, newlines).
 QString csvEscapeCell(const QString &value);
 

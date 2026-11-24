@@ -63,6 +63,7 @@ class QGridLayout;
 class CollapsibleSection;
 
 class Mask3DView;
+struct ScreenRectangle;
 namespace planar
 {
 struct RunResult;
@@ -216,9 +217,14 @@ public:
     // Fill (the fourth drawing mode): the face-connected region under (x, y, z) that holds the
     // clicked voxel's label and lies within the fill tolerance of its intensity takes the
     // active label. planeAxis 0, 1 or 2 keeps it on that slice; -1 spreads it in 3D. Writes
-    // like a brush stroke. Stops, changing nothing, past kFloodFillMaxVoxels.
+    // like a brush stroke, as one undo step. Stops, changing nothing, past kFloodFillMaxVoxels.
+    // In the views a drag fills the region of every voxel it crosses (fillStrokeAt()).
     static constexpr std::size_t kFloodFillMaxVoxels = 20'000'000;
     long long floodFillAt(int x, int y, int z, int planeAxis);
+    // Shift+drag on the 3D view: every voxel of the active label in the edited mask whose centre
+    // projects inside the rectangle is erased, through the whole depth, as one undo step.
+    // Refused while the label is locked or hidden, or the edited mask is not drawn in 3D.
+    long long eraseActiveLabelIn(const ScreenRectangle &rectangle);
     void setFillTolerance(double tolerance);
     double fillTolerance() const { return m_fillTolerance; }
     // Carries label through every run of empty slices between two slices holding it, along
@@ -410,6 +416,10 @@ private:
     bool appendNiftiImagePath(const QString &path, bool *isDuplicate = nullptr);
     bool autoLoadAnatomyMasksForCurrentImage(QString *summary = nullptr);
     bool handleSliceKey(QKeyEvent *event);
+    // Sends a key press to handleSliceKey() when a view (2D or 3D) has the focus, or when the
+    // pointer is over one and the focused widget does not take text. True when it was handled.
+    bool routeSliceKey(QWidget *receiver, QKeyEvent *event);
+    bool pointerOverView() const;
     // Which tool consumes left-clicks in the slice views (sidebar replaces the
     // old "active tab" gating). isSeedsTabActive/isMaskTabActive map onto this.
     enum class InteractionTool { Navigate, Seeds, Mask };
@@ -546,7 +556,8 @@ private:
 
     void autosaveTick();
     bool restoreMaskAutosave(const mask_autosave::Entry &entry);
-    AutosaveChoice askRestoreAutosave(const QString &mask, const QDateTime &savedAt);
+    // replaces names the mask being edited when restoring would put the copy in its place.
+    AutosaveChoice askRestoreAutosave(const QString &mask, const QDateTime &savedAt, const QString &replaces);
     // After the edited mask was written to its file: the copy is superseded.
     void noteMaskSaved();
     // Removes the copy of (current image, mask) if this window wrote it.
@@ -750,6 +761,10 @@ private:
     QSpinBox *m_labelSelector = nullptr;
     QLabel *m_labelColorIndicator = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_editedMaskLabel = nullptr; // under Drawing Mode: the mask a stroke goes into
+    void updateEditedMaskLabel();
+    // The Masks list highlights the edited mask's row, and none while it has no file.
+    void syncMaskListSelection();
     bool m_seedNoteTipShown = false;
     QPlainTextEdit *m_logConsole = nullptr;
     // backup copy used to undo destructive edits like threshold
@@ -845,6 +860,14 @@ private:
                                   bool brushRule = false);
     long long remapLabelOperation(const char *name, const std::map<int, int> &remap);
     long long finishLabelOperation(const char *name, long long changed, long long refused);
+    // The region a fill at (x, y, z) gives the active label; false, with the reason on the
+    // status line, when the fill is refused or the region passes kFloodFillMaxVoxels.
+    bool fillRegionAt(int x, int y, int z, int planeAxis, std::vector<std::size_t> &region);
+    // Fills at voxel inside the stroke in progress, which the mouse release commits.
+    void fillStrokeAt(const std::array<int, 3> &voxel, int planeAxis);
+    long long m_fillStrokeChanged = 0;
+    long long m_fillStrokeRefused = 0;
+    bool m_fillStrokeStopped = false; // a fill of this stroke passed the size limit
     double voxelVolumeMm3() const;
     void showLabelPieces(int label);
     // Rebuilds the rows when the set of labels changed, else only refreshes their counts.

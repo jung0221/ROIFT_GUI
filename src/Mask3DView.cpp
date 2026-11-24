@@ -1,7 +1,9 @@
 #include "Mask3DView.h"
 #include "ColorUtils.h"
+#include "MaskSurface.h"
 #include "Theme.h"
 
+#include <QApplication>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QCheckBox>
@@ -24,11 +26,10 @@
 #include <vtkTextProperty.h>
 #include <vtkCamera.h>
 #include <vtkCellPicker.h>
-#include <vtkDiscreteFlyingEdges3D.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkImageData.h>
 #include <vtkLight.h>
 #include <vtkLookupTable.h>
+#include <vtkMatrix4x4.h>
 #include <vtkGlyph3DMapper.h>
 #include <vtkPointGaussianMapper.h>
 #include <vtkPointData.h>
@@ -41,17 +42,15 @@
 #include <vtkRenderer.h>
 #include <vtkSphereSource.h>
 #include <vtkCellArray.h>
-#include <vtkIntArray.h>
 #include <vtkStaticCellLocator.h>
 #include <vtkUnsignedCharArray.h>
-#include <vtkWindowedSincPolyDataFilter.h>
 #include <vtkSmartPointer.h>
 
 #include <iostream>
-#include <set>
 #include <algorithm>
+#include <atomic>
+#include <utility>
 #include <cmath>
-#include <limits>
 
 Mask3DView::Mask3DView(QWidget *parent)
     : QWidget(parent)
@@ -69,7 +68,8 @@ Mask3DView::Mask3DView(QWidget *parent)
 
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setMinimumHeight(280);
-    m_vtkWidget->setToolTip("Shift+click the surface to move all three 2D views to that point");
+    m_vtkWidget->setToolTip("Shift+click the surface to move all three 2D views to that point.\n"
+                            "Shift+drag a rectangle to erase the selected label inside it, through the whole depth.");
     layout->addWidget(m_vtkWidget, 1);
     m_vtkWidget->installEventFilter(this);
     m_selectionBand = new QRubberBand(QRubberBand::Rectangle, m_vtkWidget);
@@ -182,27 +182,6 @@ void Mask3DView::buildPipeline()
     m_mapper->InterpolateScalarsBeforeMappingOff();
     m_actor->SetMapper(m_mapper);
 
-    // Use the discrete variant so integer labels produce independent
-    // categorical surfaces instead of cumulative isovalues.
-    m_flyingEdges = vtkSmartPointer<vtkDiscreteFlyingEdges3D>::New();
-    m_flyingEdges->SetComputeNormals(true);
-    m_flyingEdges->SetComputeScalars(true);
-    m_flyingEdges->SetComputeGradients(false);
-    m_flyingEdges->InterpolateAttributesOff();
-
-    // WindowedSinc smoother - GPU-friendly, better than Laplacian
-    m_smoother = vtkSmartPointer<vtkWindowedSincPolyDataFilter>::New();
-    m_smoother->SetNumberOfIterations(15);
-    m_smoother->BoundarySmoothingOn();
-    m_smoother->FeatureEdgeSmoothingOff();
-    m_smoother->SetFeatureAngle(120.0);
-    m_smoother->SetPassBand(0.1);
-    m_smoother->NonManifoldSmoothingOn();
-    m_smoother->NormalizeCoordinatesOn();
-
-    m_smoother->SetInputConnection(m_flyingEdges->GetOutputPort());
-    m_mapper->SetInputConnection(m_smoother->GetOutputPort());
-
     // Ray-cast picker for shift+click locate; mask actor only, ignores opacity.
     m_surfacePicker = vtkSmartPointer<vtkCellPicker>::New();
     m_surfacePicker->SetTolerance(0.0005);
@@ -239,7 +218,25 @@ void Mask3DView::buildPipeline()
     m_vtkWidget->setMouseTracking(true);
 }
 
-void Mask3DView::setMaskData(const std::vector<int> &mask,
+struct Mask3DView::SurfaceJob
+{
+    mask_surface::Input input;
+    bool suppliedColors = false;
+    std::map<int, QColor> colors;
+    std::map<int, QString> names;
+    std::atomic<bool> cancel{false};
+    mask_surface::Surface surface; // written by the worker before it posts the job back
+};
+
+Mask3DView::~Mask3DView()
+{
+    if (m_surfaceJob)
+        m_surfaceJob->cancel = true;
+    if (m_surfaceWorker.joinable())
+        m_surfaceWorker.join();
+}
+
+void Mask3DView::setMaskData(std::vector<int> mask,
                              unsigned int sizeX,
                              unsigned int sizeY,
                              unsigned int sizeZ,
@@ -266,51 +263,67 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
     }
 
     setVoxelSpacing(spacingX, spacingY, spacingZ);
-    m_dimX = sizeX;
-    m_dimY = sizeY;
-    m_dimZ = sizeZ;
+    auto job = std::make_shared<SurfaceJob>();
+    job->input.labels = std::move(mask);
+    job->input.dims = {sizeX, sizeY, sizeZ};
+    job->input.spacing = {m_spacingX, m_spacingY, m_spacingZ};
+    job->suppliedColors = (labelColors != nullptr);
+    if (labelColors)
+        job->colors = *labelColors;
+    if (labelNames)
+        job->names = *labelNames;
+    if (m_surfaceJob)
+        m_queuedSurfaceJob = std::move(job);
+    else
+        startSurfaceBuild(std::move(job));
+}
 
-    // Pad the volume with a one-voxel background (label 0) collar on every
-    // face before contouring. Flying-edges only emits a face where a voxel
-    // transitions label->background *inside* the array, so a label that runs
-    // off the array edge (body truncated by the scan FOV at the top/bottom
-    // slice, or a lateral face on a wide patient) is left open -> the hollow
-    // "bucket" surface. The collar gives every boundary voxel a background
-    // neighbour so the truncated cross-sections get capped watertight.
-    const int padX = int(sizeX) + 2;
-    const int padY = int(sizeY) + 2;
-    const int padZ = int(sizeZ) + 2;
+void Mask3DView::startSurfaceBuild(std::shared_ptr<SurfaceJob> job)
+{
+    // The previous worker posted its job before exiting, so this returns at once.
+    if (m_surfaceWorker.joinable())
+        m_surfaceWorker.join();
+    m_surfaceJob = job;
+    setStatusText("Atualizando a superfície 3D…");
+    m_surfaceWorker = std::thread([this, job]()
+                                  {
+        job->surface = mask_surface::build(job->input, &job->cancel);
+        // Qt drops the call if the view is gone by then.
+        QMetaObject::invokeMethod(this, [this, job]() { finishSurfaceBuild(job); }, Qt::QueuedConnection); });
+}
 
-    vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
-    image->SetDimensions(padX, padY, padZ);
-    image->SetSpacing(m_spacingX, m_spacingY, m_spacingZ);
-    // Shift the origin back one voxel so the original voxels keep their world
-    // coordinates and the surface stays registered with the CT and the seeds
-    // (both placed at index * spacing with origin 0).
-    image->SetOrigin(-m_spacingX, -m_spacingY, -m_spacingZ);
-    image->AllocateScalars(VTK_INT, 1);
+void Mask3DView::finishSurfaceBuild(const std::shared_ptr<SurfaceJob> &job)
+{
+    if (job != m_surfaceJob)
+        return; // waitForSurface() got to it first
+    if (m_surfaceWorker.joinable())
+        m_surfaceWorker.join();
+    m_surfaceJob.reset();
+    if (!job->cancel && !job->surface.cancelled)
+        showSurface(*job);
+    if (m_queuedSurfaceJob)
+        startSurfaceBuild(std::exchange(m_queuedSurfaceJob, nullptr));
+}
 
-    int *dst = static_cast<int *>(image->GetScalarPointer());
-    std::fill(dst, dst + size_t(padX) * size_t(padY) * size_t(padZ), 0);
-    for (unsigned int z = 0; z < sizeZ; ++z)
-        for (unsigned int y = 0; y < sizeY; ++y)
-        {
-            const size_t srcRow = (size_t(z) * sizeY + y) * sizeX;
-            const size_t dstRow =
-                size_t(padX) * (size_t(padY) * size_t(z + 1) + size_t(y + 1)) + 1;
-            for (unsigned int x = 0; x < sizeX; ++x)
-                dst[dstRow + x] = mask[srcRow + x];
-        }
-
-    std::set<int> labels;
-    for (int value : mask)
+void Mask3DView::waitForSurface()
+{
+    while (m_surfaceJob)
     {
-        if (value > 0)
-            labels.insert(value);
+        const std::shared_ptr<SurfaceJob> job = m_surfaceJob;
+        if (m_surfaceWorker.joinable())
+            m_surfaceWorker.join();
+        finishSurfaceBuild(job);
     }
-    m_activeLabels.assign(labels.begin(), labels.end());
+}
 
-    if (m_activeLabels.empty())
+void Mask3DView::showSurface(SurfaceJob &job)
+{
+    m_dimX = job.input.dims[0];
+    m_dimY = job.input.dims[1];
+    m_dimZ = job.input.dims[2];
+    m_activeLabels = job.surface.labels;
+    vtkPolyData *poly = job.surface.poly;
+    if (m_activeLabels.empty() || !poly)
     {
         setStatusText("Máscara 3D vazia");
         m_actor->VisibilityOff();
@@ -320,15 +333,15 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
         return;
     }
 
-    m_labelNames = labelNames ? *labelNames : std::map<int, QString>();
+    m_labelNames = job.names;
     for (int lbl : m_activeLabels)
     {
         // A supplied palette owns its ids: they are handed out per rebuild, so
         // a colour remembered from a previous merge would land on another mask.
-        if (labelColors)
+        if (job.suppliedColors)
         {
-            auto supplied = labelColors->find(lbl);
-            m_labelColors[lbl] = (supplied != labelColors->end()) ? supplied->second : colorForLabel(lbl);
+            auto supplied = job.colors.find(lbl);
+            m_labelColors[lbl] = (supplied != job.colors.end()) ? supplied->second : colorForLabel(lbl);
         }
         // Keep anatomy colors stable and high-contrast across updates.
         else if (lbl == 1 || lbl == 2 || lbl == 3)
@@ -337,146 +350,73 @@ void Mask3DView::setMaskData(const std::vector<int> &mask,
             m_labelColors[lbl] = colorForLabel(lbl);
     }
 
-    // Discrete flying edges passes over the whole volume once per label: 1153 labels
-    // took 25 s. Past a few dozen, contour the union once and colour it per point.
-    const bool manyLabels = m_activeLabels.size() > kSurfacePerLabelLimit;
-    if (manyLabels)
+    m_mapper->SetInputData(poly);
+    // Depending on VTK build/filter behavior, scalars may come as point or cell data.
+    vtkDataArray *pointScalars = poly->GetPointData() ? poly->GetPointData()->GetScalars() : nullptr;
+    if (!pointScalars && poly->GetPointData())
     {
-        const size_t count = size_t(padX) * size_t(padY) * size_t(padZ);
-        for (size_t i = 0; i < count; ++i)
-            dst[i] = dst[i] > 0 ? 1 : 0;
-        image->Modified();
+        vtkDataArray *namedPointScalars = poly->GetPointData()->GetArray("Scalars");
+        if (namedPointScalars)
+        {
+            poly->GetPointData()->SetScalars(namedPointScalars);
+            pointScalars = namedPointScalars;
+        }
     }
-    m_flyingEdges->SetInputData(image);
-    if (manyLabels)
+    if (pointScalars)
     {
-        m_flyingEdges->SetNumberOfContours(1);
-        m_flyingEdges->SetValue(0, 1);
+        m_mapper->SetScalarModeToUsePointData();
+        m_mapper->ScalarVisibilityOn();
     }
     else
     {
-        m_flyingEdges->SetNumberOfContours(static_cast<int>(m_activeLabels.size()));
-        for (int i = 0; i < static_cast<int>(m_activeLabels.size()); ++i)
-            m_flyingEdges->SetValue(i, m_activeLabels[static_cast<size_t>(i)]);
-    }
+        vtkDataArray *cellScalars = poly->GetCellData() ? poly->GetCellData()->GetScalars() : nullptr;
+        if (cellScalars && poly->GetCellData()->GetArray("Scalars"))
+            cellScalars = poly->GetCellData()->GetArray("Scalars");
 
-    m_flyingEdges->Modified();
-    m_actor->SetVisibility(m_maskVisible && !m_activeLabels.empty());
-
-    // Ensure mapper sees the scalar array emitted by the contour pipeline.
-    // Depending on VTK build/filter behavior, scalars may come as point or cell data.
-    m_smoother->Update();
-    vtkPolyData *poly = m_smoother->GetOutput();
-    if (manyLabels && poly)
-        paintSurfaceLabels(poly, mask, sizeX, sizeY, sizeZ);
-    if (poly && poly->GetNumberOfCells() > 0)
-    {
-        m_surfaceLocator->SetDataSet(poly);
-        m_surfaceLocator->BuildLocator();
-    }
-    if (poly && m_mapper)
-    {
-        vtkDataArray *pointScalars = poly->GetPointData() ? poly->GetPointData()->GetScalars() : nullptr;
-        if (!pointScalars && poly->GetPointData())
+        if (cellScalars)
         {
-            vtkDataArray *namedPointScalars = poly->GetPointData()->GetArray("Scalars");
-            if (namedPointScalars)
-            {
-                poly->GetPointData()->SetScalars(namedPointScalars);
-                pointScalars = namedPointScalars;
-            }
-        }
-
-        if (pointScalars)
-        {
-            m_mapper->SetScalarModeToUsePointData();
+            m_mapper->SetScalarModeToUseCellData();
             m_mapper->ScalarVisibilityOn();
         }
         else
         {
-            vtkDataArray *cellScalars = poly->GetCellData() ? poly->GetCellData()->GetScalars() : nullptr;
-            if (cellScalars && poly->GetCellData()->GetArray("Scalars"))
-                cellScalars = poly->GetCellData()->GetArray("Scalars");
-
-            if (cellScalars)
-            {
-                m_mapper->SetScalarModeToUseCellData();
-                m_mapper->ScalarVisibilityOn();
-            }
-            else
-            {
-                // Last-resort fallback: at least keep geometry visible.
-                m_mapper->ScalarVisibilityOff();
-                m_actor->GetProperty()->SetColor(0.85, 0.85, 0.85);
-            }
+            // Last-resort fallback: at least keep geometry visible.
+            m_mapper->ScalarVisibilityOff();
+            m_actor->GetProperty()->SetColor(0.85, 0.85, 0.85);
         }
     }
 
+    m_surfacePicker->RemoveAllLocators();
+    m_surfaceLocator = job.surface.locator;
+    if (m_surfaceLocator)
+        m_surfacePicker->AddLocator(m_surfaceLocator);
+    m_actor->SetVisibility(m_maskVisible);
+
     rebuildLookupTable();
     updateLabelControls();
-    const double physX = static_cast<double>(sizeX) * m_spacingX;
-    const double physY = static_cast<double>(sizeY) * m_spacingY;
-    const double physZ = static_cast<double>(sizeZ) * m_spacingZ;
+    const double physX = static_cast<double>(m_dimX) * job.input.spacing[0];
+    const double physY = static_cast<double>(m_dimY) * job.input.spacing[1];
+    const double physZ = static_cast<double>(m_dimZ) * job.input.spacing[2];
     setStatusText(QString("Labels visíveis: %1 | Voxel(mm): %2 x %3 x %4 | Dim(mm): %5 x %6 x %7")
                       .arg(m_activeLabels.size())
-                      .arg(m_spacingX, 0, 'f', 3)
-                      .arg(m_spacingY, 0, 'f', 3)
-                      .arg(m_spacingZ, 0, 'f', 3)
+                      .arg(job.input.spacing[0], 0, 'f', 3)
+                      .arg(job.input.spacing[1], 0, 'f', 3)
+                      .arg(job.input.spacing[2], 0, 'f', 3)
                       .arg(physX, 0, 'f', 1)
                       .arg(physY, 0, 'f', 1)
                       .arg(physZ, 0, 'f', 1));
-    m_renderer->ResetCamera();
+    // An edit, a Show 3D toggle or another mask on the same image keeps the user's view.
+    if (!m_surfaceCameraFramed)
+    {
+        m_renderer->ResetCamera();
+        m_surfaceCameraFramed = true;
+    }
+    else
+        m_renderer->ResetCameraClippingRange();
     m_seedCameraFramed = true;
+    ++m_surfaceBuildCount;
     if (m_renderWindow)
         m_renderWindow->Render();
-}
-
-void Mask3DView::paintSurfaceLabels(vtkPolyData *poly, const std::vector<int> &mask, unsigned int sizeX,
-                                    unsigned int sizeY, unsigned int sizeZ)
-{
-    // A vertex of the union's surface lies between a labelled voxel and background:
-    // take the voxel it rounds to, else the nearest labelled one around it.
-    vtkPoints *points = poly->GetPoints();
-    const vtkIdType n = points ? points->GetNumberOfPoints() : 0;
-    auto labels = vtkSmartPointer<vtkIntArray>::New();
-    labels->SetName("Scalars");
-    labels->SetNumberOfTuples(n);
-    auto at = [&](int x, int y, int z) -> int
-    {
-        if (x < 0 || y < 0 || z < 0 || x >= int(sizeX) || y >= int(sizeY) || z >= int(sizeZ))
-            return 0;
-        return mask[(size_t(z) * sizeY + size_t(y)) * sizeX + size_t(x)];
-    };
-    for (vtkIdType i = 0; i < n; ++i)
-    {
-        double p[3];
-        points->GetPoint(i, p);
-        const double v[3] = {p[0] / m_spacingX, p[1] / m_spacingY, p[2] / m_spacingZ};
-        const int cx = int(std::lround(v[0])), cy = int(std::lround(v[1])), cz = int(std::lround(v[2]));
-        int label = at(cx, cy, cz);
-        double best = std::numeric_limits<double>::max();
-        for (int dz = -1; dz <= 1 && label <= 0; ++dz)
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
-                {
-                    const int value = at(cx + dx, cy + dy, cz + dz);
-                    if (value <= 0)
-                        continue;
-                    const double d = std::pow(cx + dx - v[0], 2) + std::pow(cy + dy - v[1], 2) + std::pow(cz + dz - v[2], 2);
-                    if (d < best)
-                    {
-                        best = d;
-                        labels->SetValue(i, value);
-                    }
-                }
-        if (label > 0)
-            labels->SetValue(i, label);
-        else if (best == std::numeric_limits<double>::max())
-            labels->SetValue(i, 0);
-    }
-    poly->GetPointData()->SetScalars(labels);
-    if (poly->GetCellData())
-        poly->GetCellData()->SetScalars(nullptr);
 }
 
 void Mask3DView::setAnnotations(const std::vector<Annotation3D> &annotations)
@@ -764,6 +704,10 @@ void Mask3DView::setVoxelSpacing(double spacingX, double spacingY, double spacin
 
 void Mask3DView::clearMask()
 {
+    // A surface still being built would bring the cleared mask back.
+    if (m_surfaceJob)
+        m_surfaceJob->cancel = true;
+    m_queuedSurfaceJob.reset();
     m_activeLabels.clear();
     m_labelNames.clear();
     m_dimX = m_dimY = m_dimZ = 0;
@@ -955,18 +899,21 @@ bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    // Shift+left-click locates the surface point; the whole press/move/release
-    // triple is swallowed so VTK does not read it as a camera pan.
+    // Shift+left: a click locates the surface point, a drag draws a rectangle the window erases
+    // the selected label in. The whole press/move/release is swallowed so VTK does not pan.
     if (event->type() == QEvent::MouseButtonPress)
     {
         QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
         m_shiftPickActive = false; // any new press starts a fresh gesture
+        if (m_shiftDragging)
+        {
+            m_shiftDragging = false;
+            m_selectionBand->hide();
+        }
         if (mouseEvent->button() == Qt::LeftButton && (mouseEvent->modifiers() & Qt::ShiftModifier))
         {
             m_shiftPickActive = true;
-            int vx = 0, vy = 0, vz = 0;
-            if (pickSurfaceVoxel(mouseEvent->pos(), vx, vy, vz))
-                emit surfacePointPicked(vx, vy, vz);
+            m_shiftStart = mouseEvent->pos();
             return true;
         }
     }
@@ -975,12 +922,36 @@ bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
     {
         QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
         // End on release, or on a move with the button already up (lost release).
-        if (event->type() == QEvent::MouseButtonRelease || !(mouseEvent->buttons() & Qt::LeftButton))
+        const bool ended = event->type() == QEvent::MouseButtonRelease || !(mouseEvent->buttons() & Qt::LeftButton);
+        if (!ended)
         {
-            m_shiftPickActive = false;
-            if (event->type() == QEvent::MouseMove)
-                return QWidget::eventFilter(watched, event);
+            if (!m_shiftDragging &&
+                (mouseEvent->pos() - m_shiftStart).manhattanLength() >= QApplication::startDragDistance())
+            {
+                m_shiftDragging = true;
+                m_selectionBand->show();
+            }
+            if (m_shiftDragging)
+                m_selectionBand->setGeometry(QRect(m_shiftStart, mouseEvent->pos()).normalized());
+            return true;
         }
+        m_shiftPickActive = false;
+        if (m_shiftDragging)
+        {
+            m_shiftDragging = false;
+            m_selectionBand->hide();
+            const QRect rect = QRect(m_shiftStart, mouseEvent->pos()).normalized();
+            if (rect.width() > 2 && rect.height() > 2)
+                emit labelRectangleSelected(screenRectangle(rect));
+        }
+        else
+        {
+            int vx = 0, vy = 0, vz = 0;
+            if (pickSurfaceVoxel(m_shiftStart, vx, vy, vz))
+                emit surfacePointPicked(vx, vy, vz);
+        }
+        if (event->type() == QEvent::MouseMove)
+            return QWidget::eventFilter(watched, event);
         return true;
     }
 
@@ -1031,6 +1002,37 @@ bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
     }
 
     return QWidget::eventFilter(watched, event);
+}
+
+bool ScreenRectangle::containsVoxel(int x, int y, int z) const
+{
+    const double p[3] = {x * spacing[0], y * spacing[1], z * spacing[2]};
+    const auto &m = worldToView;
+    const double w = m[12] * p[0] + m[13] * p[1] + m[14] * p[2] + m[15];
+    if (w <= 0.0)
+        return false; // behind the camera
+    const double vx = (m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3]) / w;
+    const double vy = (m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7]) / w;
+    return vx >= left && vx <= right && vy >= bottom && vy <= top;
+}
+
+ScreenRectangle Mask3DView::screenRectangle(const QRect &widgetRect) const
+{
+    ScreenRectangle r;
+    r.spacing = {m_spacingX, m_spacingY, m_spacingZ};
+    const double w = std::max(1, m_vtkWidget->width());
+    const double h = std::max(1, m_vtkWidget->height());
+    // The renderer fills the widget, so its aspect is the widget's whatever the pixel ratio.
+    vtkMatrix4x4 *m = m_renderer->GetActiveCamera()->GetCompositeProjectionTransformMatrix(w / h, -1.0, 1.0);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            r.worldToView[size_t(i * 4 + j)] = m->GetElement(i, j);
+    // Qt is top-down in logical pixels; view coordinates are -1..1, y up.
+    r.left = 2.0 * widgetRect.left() / w - 1.0;
+    r.right = 2.0 * (widgetRect.right() + 1) / w - 1.0;
+    r.top = 1.0 - 2.0 * widgetRect.top() / h;
+    r.bottom = 1.0 - 2.0 * (widgetRect.bottom() + 1) / h;
+    return r;
 }
 
 QVector<int> Mask3DView::collectSeedIndicesInRect(const QRect &rect) const

@@ -4,10 +4,12 @@
 // coming back in the next session.
 #include "ManualSeedSelector.h"
 #include "OrthogonalView.h"
+#include "Theme.h"
 
 #include <QApplication>
 #include <QDir>
 #include <QFile>
+#include <QHeaderView>
 #include <QImage>
 #include <QLabel>
 #include <QLineEdit>
@@ -178,6 +180,53 @@ int main(int argc, char **argv)
 
         emit tree->itemClicked(rowFor(tree, 2), 3);
         check(window.activeLabel() == 2, "clicking a row paints with its label");
+
+        // The selected row's Show box: checked must read differently from unchecked on the accent.
+        {
+            tree->setStyleSheet(Theme::styleSheet()); // main() installs it on the application
+            window.resize(1400, 900);
+            window.show();
+            QCoreApplication::processEvents();
+            QTreeWidgetItem *row = rowFor(tree, 2);
+            tree->setCurrentItem(row);
+            const auto brightPixels = [&]()
+            {
+                QCoreApplication::processEvents();
+                const QRect line = tree->visualItemRect(row);
+                const QRect cell(tree->header()->sectionViewportPosition(0), line.top(), tree->header()->sectionSize(0),
+                                 line.height());
+                const QImage image = tree->viewport()->grab(cell).toImage();
+                int bright = 0;
+                for (int y = 0; y < image.height(); ++y)
+                    for (int x = 0; x < image.width(); ++x)
+                        bright += qGray(image.pixel(x, y)) > 200;
+                return bright;
+            };
+            row->setCheckState(0, Qt::Checked);
+            const int checkedBright = brightPixels();
+            row->setCheckState(0, Qt::Unchecked);
+            const int uncheckedBright = brightPixels();
+            row->setCheckState(0, Qt::Checked);
+            check(checkedBright > 20 && uncheckedBright == 0,
+                  "on the selected row a checked Show box is light, an unchecked one dark");
+            // Off the selection a checked box is the accent fill.
+            tree->setCurrentItem(rowFor(tree, 1));
+            QCoreApplication::processEvents();
+            const QRect line = tree->visualItemRect(row);
+            const QImage cell = tree->viewport()
+                                    ->grab(QRect(tree->header()->sectionViewportPosition(0), line.top(),
+                                                 tree->header()->sectionSize(0), line.height()))
+                                    .toImage();
+            int accent = 0;
+            for (int y = 0; y < cell.height(); ++y)
+                for (int x = 0; x < cell.width(); ++x)
+                {
+                    const QColor c = cell.pixelColor(x, y);
+                    accent += c.blue() > 200 && c.red() < 120;
+                }
+            check(accent > 20, "off the selection a checked Show box is filled with the accent");
+            window.hide();
+        }
 
         // Paint with Pulp: the count follows the stroke, and the undo, without a rescan.
         window.setActiveLabel(37);

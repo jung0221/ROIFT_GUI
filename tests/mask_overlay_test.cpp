@@ -395,10 +395,12 @@ int main(int argc, char **argv)
         check(list && view3D && removeMask, "mask-only window built");
         if (list && view3D && removeMask)
         {
-            check(maskOnly.applyMaskFromPath(leftPath.toStdString()) && view3D->hasMaskSurface(),
-                  "a mask opened with no image is drawn in 3D");
+            const bool applied = maskOnly.applyMaskFromPath(leftPath.toStdString());
+            view3D->waitForSurface(); // the surface is built on a worker thread
+            check(applied && view3D->hasMaskSurface(), "a mask opened with no image is drawn in 3D");
             list->setCurrentRow(rowForFile(list, leftName));
             removeMask->click();
+            view3D->waitForSurface();
             check(list->count() == 0 && !view3D->hasMaskSurface(), "removing its row clears the 3D view");
         }
     }
@@ -416,9 +418,11 @@ int main(int argc, char **argv)
         if (list && view3D && removeImage && show3D)
         {
             show3D->setChecked(true);
-            check(withImage.applyMaskFromPath(leftPath.toStdString()) && view3D->hasMaskSurface(),
-                  "a mask on the image is drawn in 3D");
+            const bool applied = withImage.applyMaskFromPath(leftPath.toStdString());
+            view3D->waitForSurface();
+            check(applied && view3D->hasMaskSurface(), "a mask on the image is drawn in 3D");
             removeImage->click(); // the image row is the current one
+            view3D->waitForSurface();
             check(!withImage.hasImage() && list->count() == 0, "removing the image empties the mask list");
             check(!view3D->hasMaskSurface(), "and takes its mask out of the 3D view");
             check(withImage.activeMaskPath().isEmpty(), "and leaves no mask being edited");

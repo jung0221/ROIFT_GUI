@@ -97,6 +97,17 @@ int main(int argc, char **argv)
               qPrintable(jpeg ? "mask filter omits *" + ext : "mask filter offers *" + ext));
     }
 
+    // Save Mask opens on the mask being edited, so saving it back is one confirmation away.
+    check(maskSaveStartPath("", false).isEmpty(), "save start: no open mask, no start path");
+    check(maskSaveStartPath("/data/pmc043/pmc043_prelabel.nii.gz", false) == "/data/pmc043/pmc043_prelabel.nii.gz",
+          "save start: a .nii.gz mask is its own start");
+    check(maskSaveStartPath("/data/m.nii", false) == "/data/m.nii", "save start: a .nii mask is its own start");
+    check(maskSaveStartPath("/data/seg.npz", false) == "/data/seg.nii.gz",
+          "save start: an .npz mask starts at a .nii.gz beside it");
+    check(maskSaveStartPath("/data/slice.png", true) == "/data/slice.png", "save start: a PNG on a 2D image");
+    check(maskSaveStartPath("/data/slice.png", false) == "/data/slice.nii.gz",
+          "save start: a PNG on a volume becomes .nii.gz");
+
     std::printf("\n%s\n", failures ? "FAILURES" : "all path-helper checks passed");
     return failures ? 1 : 0;
 }

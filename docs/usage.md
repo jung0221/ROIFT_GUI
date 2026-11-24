@@ -6,6 +6,14 @@
 - E: coronal +
 - Q: coronal -
 - [ and ]: decrement/increment all three slices together
+- The keys act when a view (any of the three slices, or the 3D panel) has the keyboard focus,
+  and otherwise while the pointer is over a view, whatever control has the focus: the label
+  number, the brush radius, the mask list, a menu box. A field that takes typed text (a name
+  being edited, an editable box) keeps its letters, and Ctrl, Alt or Meta with a letter is
+  never a slice key. Before this, a focused number field, list or combo box took the letter
+  and the slice did not move; with the 3D panel focused VTK read W, S and A as its own keys
+  (wireframe, surface, actor mode). VTK's other keys, such as R to reset the 3D camera, still
+  work there.
 
 ## Mouse
 - Left-click in a view to add seeds (when seed mode is draw)
@@ -23,7 +31,40 @@
   since the point is only meaningful while every slice still cuts through it.
   `Esc` also dismisses it.
 - Needs `Show 3D` enabled — the pick ray only tests the mask surface, not the seed glyphs.
-- Shift is reserved for this gesture, so it never pans the 3D camera.
+- Shift is reserved for this gesture and the 3D erase below, so it never pans the 3D camera. The
+  point is located when the button is released without a drag.
+
+## Erase a label in 3D
+- Shift+drag a rectangle on the 3D view: on release, every voxel of the active label (the label
+  number, or the row selected in `Labels`) whose centre falls inside the rectangle is erased from
+  the edited mask, through the whole depth, including voxels hidden behind the surface. Other
+  labels inside the rectangle stay, and so do the other masks drawn in 3D.
+- It is one undo step, and the surface is rebuilt once afterwards.
+- A drag shorter than the system's drag distance (10 pixels by default) is a Shift+click, which
+  locates the point instead and erases nothing.
+- It is refused, with a message in the status bar, while `Show 3D` is off, while the edited mask
+  is hidden (its eye closed) or the label's `Show` box is unticked, while the label is locked, and
+  when the edited mask is not on the image's grid. Nothing is erased that the 3D view does not
+  draw.
+- It scans the whole edited mask on the GUI thread. On a 466 x 389 x 558 CBCT (Debug build),
+  erasing all 4.8 M voxels of its largest label took 1.6 s, mostly recording them for undo.
+
+## 3D view
+- The mask surface is built on a worker thread. The previous surface stays on screen, and the
+  window stays usable, until the new one replaces it; the panel's status line reads
+  `Atualizando a superfície 3D…` meanwhile. A mask edited while a surface is being built waits,
+  and only the newest waiting mask is built after it.
+- A brush, erase or fill stroke rebuilds the surface once, when the mouse is released, not
+  while it moves. With `Show 3D` off nothing is rebuilt; turning it on builds the edited mask.
+- The camera is framed for the first surface only. An edit, `Show 3D` off and on, or another
+  mask of the same image keeps the zoom and rotation the user left.
+- On a 466 x 389 x 558 CBCT label map with 74 labels (Debug build, offscreen), each pointer
+  event of a stroke had rebuilt the whole surface on the GUI thread: 4.1 s per event. A stroke
+  now costs what it costs with `Show 3D` off (five pointer events, each followed by 20 ms of
+  event processing, in 123 ms against 132 ms); the release takes about 85 ms on the GUI thread
+  (a copy of the mask for the worker) and the surface follows 0.55 s later.
+  Turning `Show 3D` on fell from 4.1 s on the GUI thread to 0.6 s off it. The upload of the
+  new surface to the GPU, once per stroke, is not included.
 
 ## Showing several masks at once
 - **The eye decides what is drawn, and nothing else does.** Every row in `Masks` has one
@@ -38,6 +79,18 @@
   Selecting a mask that is already on screen costs nothing at all: it takes the voxels
   from the layer instead of re-reading the file.
 - Click an open eye to hide that mask again and free the memory it held.
+- **The line under `Drawing Mode` names the mask a stroke goes into**: `Editing: <file>`. A mask
+  painted without a file has no row in `Masks`, so while one is edited and other masks are
+  listed the line turns red and says that the strokes do not go into a listed mask; click a
+  mask's name to edit that mask instead. This is the state a `Restore` of an autosave of a mask
+  painted without a file leaves (see [Autosave](#autosave)): the restored mask replaces the one
+  opened with `--mask` as the edited mask, and the opened one stays on screen only through its
+  eye, so strokes and erasing there do not touch it. A one-label mask without a file is drawn in
+  the mask's own colour, not the label's.
+- The highlighted row in `Masks` is always the edited mask, and no row is highlighted while the
+  edited mask has no file. `Labels` (counts, `Show`, `Lock`), the brush, `Fill`, the 3D erase and
+  `Save Mask` all act on that mask. Before this, restoring an autosave left the previously edited
+  row highlighted, so `Labels` described a mask other than the one that looked selected.
 - Some actions open an eye for you, because no eye was clicked and an empty viewer would
   misrepresent their result: a mask loaded by `Open Mask` or by the `--mask` argument; the
   result of a slice segmentation, of `Postprocess Mask` and of the vessel graph; the map a
@@ -83,13 +136,18 @@
 - `Fill` (in `Drawing Mode`, beside `Draw` and `Erase`): a click gives the active label to the
   region under the pointer: the voxels reachable through their faces that hold the clicked
   voxel's label (background included) and whose intensity is within `Fill ±` of the clicked
-  voxel's (image units, HU on CT; default 100). The moves of the same press do nothing.
+  voxel's (image units, HU on CT; default 100).
+- Dragging fills as it goes: every voxel the pointer crosses fills its own region the same
+  way, so a drag from a tooth into the pulp fills both. Voxels already holding the active
+  label are passed over without a new fill. The press and its moves are one undo step.
 - Without `Ball` the region stays on the slice clicked; with `Ball` it spreads through the
   volume.
 - It writes like a brush stroke: locked labels stay as they are and `Over` decides what it may
-  paint over. It is one undo step.
+  paint over.
 - It stops, changing nothing, once the region passes 20,000,000 voxels, with a message: lower
-  the tolerance or fill on one slice. A 3D click in air on a CBCT otherwise floods the room.
+  the tolerance or fill on one slice. A 3D click in air on a CBCT otherwise floods the room. A
+  drag stops filling for the rest of the press at that point (and when the label is locked),
+  since every voxel it crossed in that region would flood it again.
 
 ## Label table
 - The `Labels` section lists one row per label of the edited mask, and one per label of the
@@ -110,6 +168,9 @@
   drawn in the slice views as diagonal stripes, two voxels on and two off, and its name is in
   italics, so it does not read as a structure. The 3D view draws it like any other label; its
   `Show` box hides it there too.
+- A ticked `Show` or `Lock` box is a filled square, accent blue, and white on the selected row.
+  Before this the selected row drew the tick in the row's dark text colour, so a ticked box there
+  looked empty.
 - **Lock.** A locked label keeps every voxel as it is: a brush stroke of another label passes
   around it, `Clear` and `Threshold` leave it, a slice run neither clears nor grows it, and
   painting or erasing with it is refused with a message in the status bar. Undo and redo still
@@ -207,7 +268,10 @@
 - A copy outlives the window only when the window ends without its edits being saved or
   discarded, which is what a crash does. Opening that image again offers it: `Restore` puts the
   edits back as unsaved (on top of the mask's file, as one undo step, so `Undo` shows what the
-  file holds; a mask painted without a file comes back without one), `Discard` deletes the copy,
+  file holds; a mask painted without a file comes back without one, and becomes the edited mask
+  in place of any mask already opened, for instance with `--mask`; the question then says so and
+  its default button is `Later`, so Enter does not swap the opened mask out), `Discard` deletes
+  the copy,
   `Later` keeps it for the next time. One copy is restored per opening, since a second would
   replace the first in the edited mask.
 - A copy is deleted when its mask is saved, when its edits are discarded in the unsaved-edits
@@ -227,6 +291,10 @@
   their voxels are right, their header is not. A name that does not
   end in `.nii` or `.nii.gz` gets `.nii.gz` appended. The test is case-sensitive, so
   `mask.NII.GZ` is saved as `mask.NII.GZ.nii.gz`.
+- `Save Mask` opens on the file of the mask being edited, so saving it back is `Save` and one
+  overwrite confirmation. A mask read from `.npz`, `.npy` or a raster file starts at the same
+  folder and name ending in `.nii.gz` (a PNG stays a PNG while the image has one slice). A mask
+  drawn without a file opens in the dialog's default folder, as before.
 - **PNG label images.** While the image has one slice, `Save Mask` also offers
   `PNG label image (*.png)`. The file is 8-bit when every label is at most 255 and 16-bit
   when the largest label is at most 65535. A label above 65535, a negative label, or a mask

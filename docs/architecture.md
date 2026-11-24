@@ -8,7 +8,7 @@
      - applyMaskFromPath(path) — load a mask and refresh views
    - Notes: this class orchestrates the UI, keeps an undo/backup of the image (calls `NiftiImage::deepCopy()`), and connects dialogs to actions.
    - Image loading: every entry point (a list row, `addImagesFromPaths()`, the constructor's path) goes through `selectImageRow()`, which reads the file with the static `readImageData()` and hands the result to `applyLoadedImage()`, the one place that swaps `m_image`, clears the masks and seeds of the previous image (`clearImageOverlays()`), ranges the sliders with their signals held, sets the window controls and composes the views once. With `setBackgroundImageLoading(true)`, which `main()` sets after the command-line images are in, `readImageData()` runs on a worker thread (`beginBackgroundImageLoad()`); the result is posted back to the GUI thread (`finishBackgroundImageLoad()`), which drops it when the entry was removed meanwhile and otherwise applies it, then loads whatever row the list points at if the user moved on. The previous image stays on screen, and usable, until then; a read cannot be interrupted, so the destructor joins the worker. Off, the default, a selection is read inline and has loaded on return, which the tests and the `--mask`/`--seeds` arguments rely on; `waitForImageLoad()` spins the event loop until a background read is done. Removing the current image from the list, or every image, goes through `showNoImage()`, which calls the same `clearImageOverlays()`: the image's mask rows leave the list with it, so a mask it drew must not stay in the 2D or 3D views.
-   - Mask layers: which mask is *edited* (`m_maskData`, chosen by a row click) and which masks are *drawn* (`MaskLayer::visible`, set only by the eye) are independent. Selection is lazy — `selectActiveMask()` takes the voxels from a layer that already has them and otherwise records the path in `m_pendingActiveMaskPath`, and `ensureActiveMaskLoaded()` does the read at the first operation that needs voxels (show, paint, save, threshold, vessel graph). Anything new that touches `m_maskData` has to call it first, or it will act on a blank buffer. `m_maskLayers` holds one entry per drawn mask plus one for the edited mask whether or not it is drawn, since that entry carries its colour rule; the edited mask's entry holds no voxels of its own, so nothing is stored twice. `visibleMaskRenderItems()` resolves the layers into what the 2D blend and the 3D merge walk, with the edited mask last so it is on top.
+   - Mask layers: which mask is *edited* (`m_maskData`, chosen by a row click) and which masks are *drawn* (`MaskLayer::visible`, set only by the eye) are independent. Selection is lazy — `selectActiveMask()` takes the voxels from a layer that already has them and otherwise records the path in `m_pendingActiveMaskPath`, and `ensureActiveMaskLoaded()` does the read at the first operation that needs voxels (show, paint, save, threshold, vessel graph). Anything new that touches `m_maskData` has to call it first, or it will act on a blank buffer. `m_maskLayers` holds one entry per drawn mask plus one for the edited mask whether or not it is drawn, since that entry carries its colour rule; the edited mask's entry holds no voxels of its own, so nothing is stored twice. `visibleMaskRenderItems()` resolves the layers into what the 2D blend and the 3D merge walk, with the edited mask last so it is on top. A mask painted without a file (`m_loadedMaskPath` and `m_pendingActiveMaskPath` empty, `m_maskData` not) has no row in `Masks`; `updateEditedMaskLabel()`, run by every `updateViews()` and `updateMaskSeedLists()`, writes under `Drawing Mode` which mask a stroke goes into, in the flag colour while that mask is fileless and other masks are listed; `syncMaskListSelection()`, run by every `updateViews()`, moves the list's highlight to the edited mask's row, or clears it, since an edit target can change without the list being rebuilt (`restoreMaskAutosave()` does not rebuild it). `askRestoreAutosave()` names the mask a fileless copy would replace and then defaults to `Later`. `restoreMaskAutosave()` of a fileless copy releases whatever mask was edited, including one opened with `--mask`, which is how strokes end up in a mask nobody sees listed. Pinned by `mask_autosave`.
    - Exported images: the native binaries and the Python tools read files and none of them reads NumPy or raster images, so `nativeImagePath()` exports such an image to a NIfTI in a `QTemporaryDir` owned by the window, in a fresh numbered subdirectory per export (a queued run may still be reading an earlier one), and reuses it until the next load. The tools place their outputs, or open their save dialogs, beside `getImagePath()` rather than the export; LUNAS, however, names its case after the exported file, and the rib runner still names its outputs after the export and looks for the lung labelmap beside it (see `docs/usage.md`).
    - One-slice images and slice runs: `isPlanarImage()` (Z = 1) drives `applySliceLayout()`, which shows the axial panel alone, and `updateSegmentationScopeControls()`, which fixes the scope to the current axial slice. `segmentCurrentSlice()` builds a `planar::RunRequest` on the GUI thread (seeds on the slice, pixels with the window applied, the CPU `oiftrelax`) and queues it on the segmentation worker; `applyPlaneSegmentationResult()` and `pastePlaneResult()` paste the labels into `m_maskData` only when the image and the path of the edited mask are still those the run started on (`PlaneRunPins`), so painting the same mask during a run does not discard the result. See `docs/usage.md`.
 
@@ -32,7 +32,7 @@
    - Morphology of one label, inside its bounding box plus one voxel: `holes()` (flooding from the box's border through voxels outside the label; only background is listed), `dilation()` and `erosion()` (face neighbours; outside the volume is not the label), and `majority()` (three separable 3-tap sums give each voxel's 3 x 3 x 3 count). Pinned by `label_ops` and `label_morphology_gui`.
 
  - `FloodFill` (src/FloodFill.*)
-   - The fill region, free of the window: face-connected voxels holding the seed's label within an intensity window, on one slice or in 3D, abandoned past a size limit (`kFloodFillMaxVoxels`). The window's `floodFillAt()` writes it through `writeLabelOperation()` with the brush rule; `paintMaskAt()` calls it once per press in mode 3. Pinned by `flood_fill` and `flood_fill_gui`.
+   - The fill region, free of the window: face-connected voxels holding the seed's label within an intensity window, on one slice or in 3D, abandoned past a size limit (`kFloodFillMaxVoxels`). The window's `floodFillAt()` writes it through `writeLabelOperation()` with the brush rule, as one undo step. In mode 3 `paintMaskAt()` instead calls `fillStrokeAt()` for the press and for every voxel on the segment to each move, inside the stroke's open operation, which the release commits; a voxel already holding the active label costs no flood, and a refused or oversized fill ends the filling for the rest of the press. Pinned by `flood_fill` and `flood_fill_gui`.
 
  - `SliceFill` (src/SliceFill.*)
    - Fill between slices, free of the window: `signedDistance2D()` (exact Euclidean distances in mm from Felzenszwalb and Huttenlocher's separable transform, negative inside) and `fillBetweenSlices()`, which finds the slices holding a label along one axis and, for each run of empty slices between two of them, thresholds the weighted mean of their signed distance maps at 0 inside the union of their boxes. In the window, `fillBetweenSlices()` writes the result through `writeLabelOperation()` with the brush rule. Pinned by `slice_fill` (against brute-force distances, discs carried, grown, moved, and the non-overlap limit) and `slice_fill_gui`.
@@ -87,11 +87,37 @@
     of these live in `Mask3DView`'s overlay renderer (layer 1, same camera), which draws after
     the translucent surface. 3D hover is a ray cast against a `vtkStaticCellLocator` built once
     per surface, throttled to one every 40 ms and skipped while a button is down.
-  - `Mask3DView::setMaskData()` contours one surface per label while a mask has up to 32
-    labels, so touching labels keep their shared wall. Past that it contours the union once
-    and colours each vertex by the label of the voxel under it (`paintSurfaceLabels()`):
-    discrete flying edges passes over the whole volume once per label, and a 1153-segment map
-    took 25 s against 0.35 s now. `colorForLabel()` cycles its 252 distinct colours past label
+  - `mask_surface::build()` (src/MaskSurface.*), free of the window and the renderer, contours
+    one surface per label while a mask has up to 32 labels, so touching labels keep their
+    shared wall. Past that it contours the union once and colours each vertex by the label of
+    the voxel under it (`paintLabels()`): discrete flying edges passes over the whole volume
+    once per label, and a 1153-segment map took 25 s against 0.35 s now. The label scan, the
+    padded copy (one background voxel on every face, so a label cut by the field of view is
+    closed) and the vertex colouring run through `vtkSMPTools`; the padded image is the
+    smallest type that holds the labels. Pinned by `mask_surface`.
+  - `Mask3DView::setMaskData()` takes the volume by value and builds it on `m_surfaceWorker`,
+    one `SurfaceJob` at a time; a volume passed meanwhile waits in `m_queuedSurfaceJob`,
+    replacing any already waiting. The worker posts the job back to the GUI thread
+    (`finishSurfaceBuild()`), which swaps the polydata into the mapper and the locator into
+    the picker (`showSurface()`); the previous surface stays on screen until then.
+    `clearMask()` cancels the running job (`mask_surface::build()` checks between stages) and
+    drops the waiting one; the destructor cancels and joins. `waitForSurface()` finishes
+    both synchronously, for the tests. The camera is reset for the first surface only
+    (`m_surfaceCameraFramed`); later ones reset the clipping range alone.
+  - Shift on the 3D view (`Mask3DView::eventFilter()`): the press is held until the button is
+    released, a release without a drag past `QApplication::startDragDistance()` ray-casts the
+    surface (`surfacePointPicked`), and a drag draws a rubber band whose release emits
+    `labelRectangleSelected` with a `ScreenRectangle`: the camera's composite projection, the
+    surface's spacing and the rectangle in normalised view coordinates, so `containsVoxel()`
+    projects a voxel centre at any depth without a render. The window's
+    `eraseActiveLabelIn()` writes 0 over the active label's voxels inside it through
+    `writeLabelOperation()`, one undo step. Pinned by `erase_3d_gui`.
+  - `ManualSeedSelector::updateViews()` leaves the surface dirty while a stroke is in progress
+    (`m_lastBrushStamp`), so a brush, erase or fill stroke is one build, started by the
+    release. On a 466 x 389 x 558 CBCT label map with 74 labels (Debug, offscreen) every
+    pointer event of a stroke with `Show 3D` on had cost 4.1 s on the GUI thread; it now costs
+    what it costs with `Show 3D` off, and the surface follows the release by 0.55 s off the
+    GUI thread. Pinned by `draw_3d_gui`. `colorForLabel()` cycles its 252 distinct colours past label
     255 instead of clamping, which had painted every higher label one colour.
   - Seeds are drawn by a `vtkPointGaussianMapper` as flat discs 1.6 mm in radius facing the
     camera, one triangle each, with `EmissiveOff()` so the surface hides the seeds behind it.
@@ -103,7 +129,7 @@
     when that backend is compiled in and `VTK_SMP_BACKEND_IN_USE` is unset, so flying edges,
     the windowed-sinc smoother and the cell locator run on every core. On a 704 x 704 x 640
     label map with five labels (7.6 M triangles) the surface takes 1.13 s instead of 3.78 s on
-    32 threads, with the same points and cells. The build still runs on the GUI thread.
+    32 threads, with the same points and cells. The backend is global, so the worker thread's builds use it too.
   - After its first frame the 3D view logs the OpenGL renderer (`Mask3DView: OpenGL
     renderer: ...`). A software rasteriser (`llvmpipe`, `softpipe`, `swrast`, GDI Generic) is
     also named at the head of the panel's status line, because nothing else on screen shows
@@ -118,6 +144,7 @@
    - Custom Qt widget that renders a `QImage` slice, supports panning/zoom, mouse events, and accepts an overlay callback for drawing seeds, crosshairs, or mask previews.
    - `paintEvent()` scales the slice while drawing it, so a paint costs the widget's pixels whatever the zoom; building the zoomed slice first (`QImage::scaled()`) cost 150 MB and several milliseconds per view per frame at 10x on a 704 x 704 slice.
    - Slice updates: `ManualSeedSelector::updateViews(planes)` recomposes only the views named in its `PlaneMask`, and a slice slider asks for its own plane alone (the other two only when a 3D locate marker has to be dropped). The sliders and the brush go through `requestViewUpdate()`, which draws at once when the views have been still for one 16 ms interval and otherwise coalesces into one draw when the interval ends; so a single step is never delayed, and a pointer moving at 1 kHz cannot queue more recompositions than frames. Direct `updateViews()` calls bypass the hold. Before this a drag on a 704 x 704 x 640 volume recomposed all three views (3 ms) per pointer event and reached 20 repaints per second.
+   - Slice keys: the window installs itself as an application event filter, and `routeSliceKey()` sends a key press to `handleSliceKey()` at its first receiver when no Ctrl, Alt or Meta is held and either a view (2D or 3D) has the focus or the pointer is over one and the focused widget does not take text (`UiUtils::focusTakesText()`). As an object filter on the three views alone it lost every letter typed while a spin box, list or combo box had the focus, since those accept it, and with the 3D panel focused VTK took W, S and A first. Every other branch of `eventFilter()` compares `obj` before acting, which it must, since the filter now sees every event of the application; the destructor removes it first. Pinned by `slice_keys_gui`.
 
 - Dialogs
   - `SeedOptionsDialog` and `MaskOptionsDialog` are small UI dialogs that control seed drawing mode, brush radius, mask save/load, and other options.

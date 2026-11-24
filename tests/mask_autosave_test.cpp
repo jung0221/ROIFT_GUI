@@ -10,6 +10,8 @@
 #include <QCloseEvent>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QLabel>
+#include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
 #include <QSlider>
@@ -139,9 +141,11 @@ int main(int argc, char **argv)
     const QString ctA = dir.filePath("case_0000.nii.gz");
     const QString ctB = dir.filePath("other_0000.nii.gz");
     const QString maskX = dir.filePath("case_x.nii.gz");
+    const QString maskB = dir.filePath("other_mask.nii.gz");
     const bool wrote = writeVolume(ctA, [](unsigned x, unsigned y, unsigned) { return int(x * 10 + y); }) &&
                        writeVolume(ctB, [](unsigned x, unsigned, unsigned) { return int(x * 5); }) &&
-                       writeVolume(maskX, [](unsigned x, unsigned y, unsigned) { return (x < 12 && y < 12) ? 1 : 0; });
+                       writeVolume(maskX, [](unsigned x, unsigned y, unsigned) { return (x < 12 && y < 12) ? 1 : 0; }) &&
+                       writeVolume(maskB, [](unsigned x, unsigned, unsigned) { return x < 4 ? 7 : 0; });
     check(wrote, "test data written");
     if (!wrote)
         return 1;
@@ -189,6 +193,38 @@ int main(int argc, char **argv)
         check(restored.asked == 1 && restored.voxel(8, 6) == 2 && restored.window.activeMaskPath().isEmpty(),
               "Restore: the scratch mask is back, still without a file");
         check(restored.window.maskEditHistory().isDirty(), "and unsaved");
+    }
+    // As in the field: a mask opened the way --mask does, before the queued offer runs, then
+    // Restore of the scratch copy. The strokes now go to the scratch mask, which has no row in
+    // the list, so the line under Drawing Mode is what says so.
+    {
+        ManualSeedSelector window("");
+        window.setAutosavePrompt([](const QString &, const QDateTime &)
+                                 { return ManualSeedSelector::AutosaveChoice::Restore; });
+        window.addImagesFromPaths({ctB});
+        check(window.applyMaskFromPath(maskB.toStdString()), "other_mask opened, as --mask does");
+        auto *edited = window.findChild<QLabel *>("editedMaskLabel");
+        check(edited && edited->text() == "Editing: other_mask.nii.gz", "the line under Drawing Mode names it");
+        QCoreApplication::processEvents(); // the offer
+        check(window.activeMaskPath().isEmpty(), "Restore puts the scratch mask in its place");
+        check(edited && edited->text().startsWith("Editing a mask with no file, not one of the listed masks"),
+              "and the line says the strokes no longer go to a listed mask");
+        auto *list = window.findChild<QListWidget *>("maskList");
+        check(list && list->count() == 1 && list->currentRow() == -1 && list->selectedItems().isEmpty(),
+              "and other_mask's row is no longer highlighted as the edited one");
+        if (list && list->count() == 1)
+        {
+            window.setUnsavedEditsPrompt([](const QString &, const QStringList &)
+                                         { return ManualSeedSelector::UnsavedEditsChoice::Discard; });
+            emit list->itemClicked(list->item(0));
+            int sevens = 0;
+            for (const int v : window.activeMaskLabels())
+                sevens += v == 7;
+            check(QFileInfo(window.activeMaskPath()).fileName() == "other_mask.nii.gz" && list->currentRow() == 0 &&
+                      edited->text() == "Editing: other_mask.nii.gz",
+                  "clicking its name, scratch edits discarded, edits other_mask again");
+            check(sevens == int(4 * kDim * kDimZ), "and its own labels are the ones edited");
+        }
     }
     {
         Session discarded(ctB, ManualSeedSelector::AutosaveChoice::Discard);

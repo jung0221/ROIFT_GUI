@@ -1,6 +1,6 @@
 // Fill in the window: a click in Fill mode gives the active label to the region of similar
-// intensity under it, on the slice or in 3D with Ball, in one undo step; a locked label is
-// refused.
+// intensity under it, on the slice or in 3D with Ball, in one undo step; a drag fills the region
+// of every voxel it crosses, also in one step; a locked label is refused.
 #include "ManualSeedSelector.h"
 #include "OrthogonalView.h"
 
@@ -112,10 +112,18 @@ int main(int argc, char **argv)
     fill->click();
 
     emit axial->mousePressed(9, 9, Qt::LeftButton);
-    emit axial->mouseMoved(2, 2, Qt::LeftButton); // moves of the same press do not fill again
-    emit axial->mouseReleased(2, 2, Qt::LeftButton);
+    emit axial->mouseReleased(9, 9, Qt::LeftButton);
     check(count(window.activeMaskLabels(), 3) == 8 * 8, "a click fills the cube's 8 x 8 section on this slice");
     check(window.maskEditHistory().undoCount() == 1, "in one undo step");
+    window.undoMaskEdit();
+
+    // A drag fills the region of every voxel it crosses, here out of the cube into the air.
+    emit axial->mousePressed(9, 9, Qt::LeftButton);
+    emit axial->mouseMoved(2, 2, Qt::LeftButton);
+    emit axial->mouseMoved(9, 9, Qt::LeftButton); // back over filled voxels: nothing more
+    emit axial->mouseReleased(9, 9, Qt::LeftButton);
+    check(count(window.activeMaskLabels(), 3) == int(kDim * kDim), "a drag from the cube into the air fills both");
+    check(window.maskEditHistory().undoCount() == 1, "and is one undo step");
     window.undoMaskEdit();
 
     window.setBrushSphere(true);
