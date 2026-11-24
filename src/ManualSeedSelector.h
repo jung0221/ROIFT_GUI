@@ -225,6 +225,8 @@ public:
     // projects inside the rectangle is erased, through the whole depth, as one undo step.
     // Refused while the label is locked or hidden, or the edited mask is not drawn in 3D.
     long long eraseActiveLabelIn(const ScreenRectangle &rectangle);
+    // Ctrl+Shift+drag: the same for every label whose Show box is ticked; locked labels stay.
+    long long eraseShownLabelsIn(const ScreenRectangle &rectangle);
     void setFillTolerance(double tolerance);
     double fillTolerance() const { return m_fillTolerance; }
     // Carries label through every run of empty slices between two slices holding it, along
@@ -854,6 +856,11 @@ private:
     void reportLockedLabel(int label);
     // The edited mask's voxels (read first if pending), or false when there are none.
     bool editedMaskReady();
+    // Why a 3D rectangle erase cannot run, or empty when it can; reads the edited mask in.
+    QString rectangleEraseRefusal();
+    // Edited-mask voxels whose label passes erasable and whose centre projects into rectangle.
+    std::vector<std::size_t> maskVoxelsInRectangle(const ScreenRectangle &rectangle,
+                                                   const std::function<bool(int)> &erasable) const;
     // One undo step setting each voxel of indices to newValue, or each voxel to remap(value);
     // locked labels are left as they are. Returns the voxels changed.
     long long writeLabelOperation(const char *name, const std::vector<std::size_t> &indices, int newValue,

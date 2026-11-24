@@ -1,6 +1,7 @@
 // Shift+drag on the 3D view erases the selected label inside the rectangle, through the whole
-// depth, in the edited mask only, as one undo step; other labels and a locked label stay; a
-// Shift+click without a drag still locates the surface point and erases nothing.
+// depth, in the edited mask only, as one undo step; other labels and a locked label stay.
+// Ctrl+Shift+drag erases every shown label inside it, keeping hidden and locked ones. A click
+// without a drag still locates the surface point and erases nothing.
 #include "ManualSeedSelector.h"
 #include "Mask3DView.h"
 
@@ -9,8 +10,10 @@
 #include <QDir>
 #include <QMouseEvent>
 #include <QSettings>
+#include <QLabel>
 #include <QSlider>
 #include <QTemporaryDir>
+#include <QTreeWidget>
 
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -82,18 +85,21 @@ int maskAt(unsigned x, unsigned y, unsigned z)
     return 0;
 }
 
-void mouse(QWidget *w, QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons)
+const Qt::KeyboardModifiers kCtrlShift = Qt::ControlModifier | Qt::ShiftModifier;
+
+void mouse(QWidget *w, QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons buttons,
+           Qt::KeyboardModifiers modifiers = Qt::ShiftModifier)
 {
-    QMouseEvent event(type, QPointF(at), QPointF(w->mapToGlobal(at)), button, buttons, Qt::ShiftModifier);
+    QMouseEvent event(type, QPointF(at), QPointF(w->mapToGlobal(at)), button, buttons, modifiers);
     QApplication::sendEvent(w, &event);
 }
 
-void shiftDrag(QWidget *w, QPoint from, QPoint to)
+void shiftDrag(QWidget *w, QPoint from, QPoint to, Qt::KeyboardModifiers modifiers = Qt::ShiftModifier)
 {
-    mouse(w, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    mouse(w, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton, modifiers);
     for (int i = 1; i <= 4; ++i)
-        mouse(w, QEvent::MouseMove, from + (to - from) * i / 4, Qt::NoButton, Qt::LeftButton);
-    mouse(w, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+        mouse(w, QEvent::MouseMove, from + (to - from) * i / 4, Qt::NoButton, Qt::LeftButton, modifiers);
+    mouse(w, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton, modifiers);
 }
 
 struct Census
@@ -149,11 +155,13 @@ int main(int argc, char **argv)
     auto *view3D = window.findChild<Mask3DView *>();
     auto *vtk = view3D ? view3D->findChild<QVTKOpenGLNativeWidget *>() : nullptr;
     auto *axial = window.findChild<QSlider *>("axialSlider");
+    auto *table = window.findChild<QTreeWidget *>("labelTable");
+    auto *status = window.findChild<QLabel *>("statusLabel");
     QCheckBox *show3D = nullptr;
     for (QCheckBox *box : window.findChildren<QCheckBox *>())
         if (box->text() == "Show 3D")
             show3D = box;
-    const bool found = view3D && vtk && axial && show3D;
+    const bool found = view3D && vtk && axial && table && status && show3D;
     check(found, "controls found");
     if (!found)
         return 1;
@@ -191,9 +199,47 @@ int main(int argc, char **argv)
     show3D->setChecked(true);
     view3D->waitForSurface();
 
-    // A click without a drag is still the locate gesture.
+    // Ctrl+Shift+drag: every shown label, whichever is selected. Label 2 lies wholly inside.
+    shiftDrag(vtk, from, to, kCtrlShift);
+    const Census all = census(window.activeMaskLabels());
+    check(all.erasedTotal == after.erasedTotal && all.erasedRight == 0,
+          "Ctrl+Shift+drag erases label 1 inside the rectangle, as Shift+drag does");
+    check(all.label2 == 0, "and label 2 too");
+    check(window.maskEditHistory().undoCount() == 1, "both in one undo step");
+    window.undoMaskEdit();
+    const Census restored = census(window.activeMaskLabels());
+    check(restored.label1 == before.label1 && restored.label2 == before.label2, "undo brings both back");
+
+    QTreeWidgetItem *row2 = table->findItems("2", Qt::MatchExactly, 2).value(0);
+    check(row2 != nullptr, "label 2 has a row in Labels");
+    if (row2)
+    {
+        row2->setCheckState(0, Qt::Unchecked); // Show
+        shiftDrag(vtk, from, to, kCtrlShift);
+        const Census hidden = census(window.activeMaskLabels());
+        check(hidden.erasedTotal == after.erasedTotal && hidden.label2 == before.label2,
+              "a hidden label is not erased; the shown one is");
+        window.undoMaskEdit();
+        row2->setCheckState(0, Qt::Checked);
+    }
+
+    window.setLabelLocked(1, true);
+    shiftDrag(vtk, from, to, kCtrlShift);
+    const Census locked = census(window.activeMaskLabels());
+    check(locked.label1 == before.label1 && locked.label2 == 0, "a locked label is kept; the other is erased");
+    check(status->text().contains("kept by locks"), "and the status line counts the kept voxels");
+    window.undoMaskEdit();
+    window.setLabelLocked(1, false);
+    view3D->waitForSurface();
+
+    // A click without a drag is still the locate gesture, with Ctrl or without.
     axial->setValue(0);
     const QPoint centre(vtk->width() / 2, vtk->height() / 2);
+    mouse(vtk, QEvent::MouseButtonPress, centre, Qt::LeftButton, Qt::LeftButton, kCtrlShift);
+    mouse(vtk, QEvent::MouseButtonRelease, centre, Qt::LeftButton, Qt::NoButton, kCtrlShift);
+    const Census clicked = census(window.activeMaskLabels());
+    check(clicked.label1 == before.label1 && clicked.label2 == before.label2, "Ctrl+Shift+click erases nothing");
+    axial->setValue(0);
     mouse(vtk, QEvent::MouseButtonPress, centre, Qt::LeftButton, Qt::LeftButton);
     mouse(vtk, QEvent::MouseButtonRelease, centre, Qt::LeftButton, Qt::NoButton);
     check(census(window.activeMaskLabels()).label1 == before.label1, "Shift+click erases nothing");

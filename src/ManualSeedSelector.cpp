@@ -2926,7 +2926,13 @@ void ManualSeedSelector::setupUi()
         else if (const int segment = solverSegmentAtVoxel(x, y, z, 2))
             selectSolverSegment(segment - 1, false); });
     connect(m_mask3DView, &Mask3DView::labelRectangleSelected, this,
-            [this](const ScreenRectangle &rectangle) { eraseActiveLabelIn(rectangle); });
+            [this](const ScreenRectangle &rectangle, RectangleErase scope)
+            {
+                if (scope == RectangleErase::ShownLabels)
+                    eraseShownLabelsIn(rectangle);
+                else
+                    eraseActiveLabelIn(rectangle);
+            });
     connect(m_mask3DView, &Mask3DView::surfacePointHovered, this, [this](int x, int y, int z)
             {
         if (!solverNetworkPlaced())
@@ -7607,6 +7613,46 @@ void ManualSeedSelector::fillStrokeAt(const std::array<int, 3> &voxel, int plane
     }
 }
 
+QString ManualSeedSelector::rectangleEraseRefusal()
+{
+    if (!m_enable3DView)
+        return "turn on Show 3D; nothing is erased that the 3D view does not draw.";
+    if (!editedMaskReady())
+        return "no mask is being edited.";
+    if (hasImage() && (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() ||
+                       m_maskDimZ != m_image.getSizeZ()))
+        return "the edited mask is not on the image's grid.";
+    const MaskLayer *style = activeMaskStyle();
+    if (style && !style->visible)
+        return "the edited mask is hidden; open its eye in Masks first.";
+    return {};
+}
+
+std::vector<std::size_t> ManualSeedSelector::maskVoxelsInRectangle(const ScreenRectangle &rectangle,
+                                                                   const std::function<bool(int)> &erasable) const
+{
+    std::vector<std::size_t> inside;
+    int runLabel = 0; // labels come in runs: one erasable() call per run, not per voxel
+    bool runErasable = false;
+    std::size_t i = 0;
+    for (unsigned z = 0; z < m_maskDimZ; ++z)
+        for (unsigned y = 0; y < m_maskDimY; ++y)
+            for (unsigned x = 0; x < m_maskDimX; ++x, ++i)
+            {
+                const int value = m_maskData[i];
+                if (value == 0)
+                    continue;
+                if (value != runLabel)
+                {
+                    runLabel = value;
+                    runErasable = erasable(value);
+                }
+                if (runErasable && rectangle.containsVoxel(int(x), int(y), int(z)))
+                    inside.push_back(i);
+            }
+    return inside;
+}
+
 long long ManualSeedSelector::eraseActiveLabelIn(const ScreenRectangle &rectangle)
 {
     const auto refuse = [this](const QString &why)
@@ -7618,16 +7664,9 @@ long long ManualSeedSelector::eraseActiveLabelIn(const ScreenRectangle &rectangl
     const int label = activeLabel();
     if (label <= 0)
         return refuse("choose the label to erase first.");
-    if (!m_enable3DView)
-        return refuse("turn on Show 3D; nothing is erased that the 3D view does not draw.");
-    if (!editedMaskReady())
-        return refuse("no mask is being edited.");
-    if (hasImage() && (m_maskDimX != m_image.getSizeX() || m_maskDimY != m_image.getSizeY() ||
-                       m_maskDimZ != m_image.getSizeZ()))
-        return refuse("the edited mask is not on the image's grid.");
-    const MaskLayer *style = activeMaskStyle();
-    if (style && !style->visible)
-        return refuse("the edited mask is hidden; open its eye in Masks first.");
+    const QString why = rectangleEraseRefusal();
+    if (!why.isEmpty())
+        return refuse(why);
     if (!maskLabelVisible(label))
         return refuse(QString("%1 is hidden; tick its Show box first.").arg(labelDisplayName(label)));
     if (labelLocked(label))
@@ -7635,18 +7674,30 @@ long long ManualSeedSelector::eraseActiveLabelIn(const ScreenRectangle &rectangl
         reportLockedLabel(label);
         return 0;
     }
-    std::vector<std::size_t> inside;
-    const std::size_t sx = m_maskDimX;
-    const std::size_t plane = sx * m_maskDimY;
-    for (std::size_t i = 0; i < m_maskData.size(); ++i)
-    {
-        if (m_maskData[i] != label)
-            continue;
-        if (rectangle.containsVoxel(int(i % sx), int((i % plane) / sx), int(i / plane)))
-            inside.push_back(i);
-    }
+    const std::vector<std::size_t> inside =
+        maskVoxelsInRectangle(rectangle, [label](int value) { return value == label; });
     if (inside.empty())
         return refuse(QString("no voxel of %1 inside the rectangle.").arg(labelDisplayName(label)));
+    return writeLabelOperation("3D erase", inside, 0);
+}
+
+long long ManualSeedSelector::eraseShownLabelsIn(const ScreenRectangle &rectangle)
+{
+    const auto refuse = [this](const QString &why)
+    {
+        if (m_statusLabel)
+            m_statusLabel->setText("3D erase: " + why);
+        return 0LL;
+    };
+    const QString why = rectangleEraseRefusal();
+    if (!why.isEmpty())
+        return refuse(why);
+    // Negative values are background to the surface, so not drawn. Locked labels are collected
+    // too, so the status line counts them as kept by locks.
+    const std::vector<std::size_t> inside =
+        maskVoxelsInRectangle(rectangle, [this](int value) { return value > 0 && maskLabelVisible(value); });
+    if (inside.empty())
+        return refuse("no voxel of a shown label inside the rectangle.");
     return writeLabelOperation("3D erase", inside, 0);
 }
 

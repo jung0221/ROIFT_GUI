@@ -31,23 +31,30 @@
   since the point is only meaningful while every slice still cuts through it.
   `Esc` also dismisses it.
 - Needs `Show 3D` enabled — the pick ray only tests the mask surface, not the seed glyphs.
-- Shift is reserved for this gesture and the 3D erase below, so it never pans the 3D camera. The
-  point is located when the button is released without a drag.
+- Shift is reserved for this gesture and the 3D erase below, so it never pans the 3D camera, and
+  Ctrl+Shift never dollies it. The point is located when the button is released without a drag,
+  with Ctrl held or not.
 
-## Erase a label in 3D
+## Erase labels in 3D
 - Shift+drag a rectangle on the 3D view: on release, every voxel of the active label (the label
   number, or the row selected in `Labels`) whose centre falls inside the rectangle is erased from
   the edited mask, through the whole depth, including voxels hidden behind the surface. Other
   labels inside the rectangle stay, and so do the other masks drawn in 3D.
-- It is one undo step, and the surface is rebuilt once afterwards.
+- Ctrl+Shift+drag erases every label of the edited mask whose `Show` box is ticked, instead of
+  the active label alone; no label needs to be selected. Labels whose `Show` box is unticked stay,
+  since the 3D view does not draw them. Locked labels stay as well, and the status bar counts
+  their voxels as kept by locks. Whether Ctrl is held is read when the button is pressed.
+- Either erase is one undo step, and the surface is rebuilt once afterwards.
 - A drag shorter than the system's drag distance (10 pixels by default) is a Shift+click, which
   locates the point instead and erases nothing.
-- It is refused, with a message in the status bar, while `Show 3D` is off, while the edited mask
-  is hidden (its eye closed) or the label's `Show` box is unticked, while the label is locked, and
-  when the edited mask is not on the image's grid. Nothing is erased that the 3D view does not
-  draw.
-- It scans the whole edited mask on the GUI thread. On a 466 x 389 x 558 CBCT (Debug build),
-  erasing all 4.8 M voxels of its largest label took 1.6 s, mostly recording them for undo.
+- Both are refused, with a message in the status bar, while `Show 3D` is off, while the edited
+  mask is hidden (its eye closed), and when the edited mask is not on the image's grid. Shift+drag
+  is also refused while the active label's `Show` box is unticked or the label is locked. Nothing
+  is erased that the 3D view does not draw.
+- Both scan the whole edited mask on the GUI thread, and the time follows the number of voxels
+  erased, which are recorded for undo. On a 466 x 389 x 558 CBCT label map with 74 labels (Debug
+  build), erasing the 4.8 M voxels of its largest label took 1.5 s, and erasing all 8.5 M voxels
+  of every label took 2.6 s.
 
 ## 3D view
 - The mask surface is built on a worker thread. The previous surface stays on screen, and the

@@ -69,7 +69,8 @@ Mask3DView::Mask3DView(QWidget *parent)
     m_vtkWidget = new QVTKOpenGLNativeWidget(this);
     m_vtkWidget->setMinimumHeight(280);
     m_vtkWidget->setToolTip("Shift+click the surface to move all three 2D views to that point.\n"
-                            "Shift+drag a rectangle to erase the selected label inside it, through the whole depth.");
+                            "Shift+drag a rectangle to erase the selected label inside it, through the whole depth;\n"
+                            "Ctrl+Shift+drag erases every label shown.");
     layout->addWidget(m_vtkWidget, 1);
     m_vtkWidget->installEventFilter(this);
     m_selectionBand = new QRubberBand(QRubberBand::Rectangle, m_vtkWidget);
@@ -900,7 +901,8 @@ bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
     }
 
     // Shift+left: a click locates the surface point, a drag draws a rectangle the window erases
-    // the selected label in. The whole press/move/release is swallowed so VTK does not pan.
+    // the selected label in (every shown label with Ctrl). The whole press/move/release is
+    // swallowed so VTK does not pan, or dolly with Ctrl.
     if (event->type() == QEvent::MouseButtonPress)
     {
         QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
@@ -914,6 +916,8 @@ bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
         {
             m_shiftPickActive = true;
             m_shiftStart = mouseEvent->pos();
+            m_shiftEraseScope = (mouseEvent->modifiers() & Qt::ControlModifier) ? RectangleErase::ShownLabels
+                                                                                 : RectangleErase::SelectedLabel;
             return true;
         }
     }
@@ -942,7 +946,7 @@ bool Mask3DView::eventFilter(QObject *watched, QEvent *event)
             m_selectionBand->hide();
             const QRect rect = QRect(m_shiftStart, mouseEvent->pos()).normalized();
             if (rect.width() > 2 && rect.height() > 2)
-                emit labelRectangleSelected(screenRectangle(rect));
+                emit labelRectangleSelected(screenRectangle(rect), m_shiftEraseScope);
         }
         else
         {

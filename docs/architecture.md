@@ -109,9 +109,14 @@
     surface (`surfacePointPicked`), and a drag draws a rubber band whose release emits
     `labelRectangleSelected` with a `ScreenRectangle`: the camera's composite projection, the
     surface's spacing and the rectangle in normalised view coordinates, so `containsVoxel()`
-    projects a voxel centre at any depth without a render. The window's
-    `eraseActiveLabelIn()` writes 0 over the active label's voxels inside it through
-    `writeLabelOperation()`, one undo step. Pinned by `erase_3d_gui`.
+    projects a voxel centre at any depth without a render. The signal also carries a
+    `RectangleErase` scope, `ShownLabels` when Ctrl was held at the press. The window's
+    `eraseActiveLabelIn()` (selected label) or `eraseShownLabelsIn()` (every positive label
+    whose `Show` box is ticked) collects the voxels with `maskVoxelsInRectangle()` and writes 0
+    over them through `writeLabelOperation()`, one undo step, whose lock rule keeps locked
+    labels and counts them. `rectangleEraseRefusal()` holds the guards both share. Pinned by
+    `erase_3d_gui`; its Shift+click check needs an OpenGL context, which the CI runners lack, and
+    is skipped there.
   - `ManualSeedSelector::updateViews()` leaves the surface dirty while a stroke is in progress
     (`m_lastBrushStamp`), so a brush, erase or fill stroke is one build, started by the
     release. On a 466 x 389 x 558 CBCT label map with 74 labels (Debug, offscreen) every

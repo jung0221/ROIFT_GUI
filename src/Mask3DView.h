@@ -70,6 +70,13 @@ struct ScreenRectangle
     bool containsVoxel(int x, int y, int z) const;
 };
 
+/// Which labels a rectangle drawn on the 3D view erases.
+enum class RectangleErase
+{
+    SelectedLabel, // Shift+drag
+    ShownLabels,   // Ctrl+Shift+drag: every label whose Show box is ticked
+};
+
 /// A node-and-line graph drawn inside the surface, e.g. a 1D solver network.
 /// Positions are voxel indices, possibly fractional.
 struct NetworkGraph3D
@@ -163,8 +170,8 @@ signals:
     void eraseSeedsInRectangle(const QVector<int> &seedIndices);
     // Shift+click hit the mask surface at this voxel.
     void surfacePointPicked(int x, int y, int z);
-    // Shift+drag drew this rectangle.
-    void labelRectangleSelected(const ScreenRectangle &rectangle);
+    // Shift+drag (or Ctrl+Shift+drag, scope ShownLabels) drew this rectangle.
+    void labelRectangleSelected(const ScreenRectangle &rectangle, RectangleErase scope);
     // The pointer rests over the surface at this voxel; emitted when the voxel
     // changes, at most every hover interval, never while a button is down.
     void surfacePointHovered(int x, int y, int z);
@@ -281,6 +288,7 @@ private:
     bool m_shiftPickActive = false;
     bool m_shiftDragging = false;
     QPoint m_shiftStart;
+    RectangleErase m_shiftEraseScope = RectangleErase::SelectedLabel; // chosen at the press
     ScreenRectangle screenRectangle(const QRect &widgetRect) const;
     bool m_selectingRect = false;
     QPoint m_rectStart;
