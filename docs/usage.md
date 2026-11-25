@@ -23,6 +23,16 @@
   [Label table](#label-table)
 - Right-click to erase (or use mask dialog's erase mode)
 
+## Window/Level
+- Drag a handle of the `Window/Level` slider, or set `WL` and `WW`, to change the grey range of
+  the three slices; the 3D view does not depend on it.
+- A single change is drawn at once. While a handle is dragged, the values that arrive within one
+  16 ms interval of a redraw are drawn together when the interval ends, so the slices follow the
+  pointer instead of drawing every intermediate value in turn.
+- On a 466 x 389 x 558 CBCT label map (Debug build, offscreen), one redraw of the three slices
+  costs 9 ms. 200 slider moves queued at once took 707 ms to draw one by one; they are now taken
+  in 11 ms and drawn once.
+
 ## Locate a 3D surface point on the slices
 - Shift+click the mask surface in the 3D panel: the axial, sagittal and coronal views
   all jump to the voxel under the cursor, and the status bar reports its `x/y/z`.

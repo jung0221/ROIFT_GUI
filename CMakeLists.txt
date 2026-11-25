@@ -420,6 +420,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME slice_keys_gui COMMAND slice_keys_gui_test)
   set_tests_properties(slice_keys_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
+  # A window/level drag draws once per hold interval, not once per queued move.
+  add_executable(window_level_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/window_level_gui_test.cpp)
+  target_link_libraries(window_level_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME window_level_gui COMMAND window_level_gui_test)
+  set_tests_properties(window_level_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
   # Reads NIfTI volumes through NiftiImage: in-place .nii.gz, slices, failures; no display.
   add_executable(nifti_volume_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/nifti_volume_test.cpp
