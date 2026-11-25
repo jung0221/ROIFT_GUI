@@ -28,7 +28,6 @@
 #include <vtkCellPicker.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkLight.h>
-#include <vtkLookupTable.h>
 #include <vtkMatrix4x4.h>
 #include <vtkGlyph3DMapper.h>
 #include <vtkPointGaussianMapper.h>
@@ -42,7 +41,6 @@
 #include <vtkRenderer.h>
 #include <vtkSphereSource.h>
 #include <vtkCellArray.h>
-#include <vtkStaticCellLocator.h>
 #include <vtkUnsignedCharArray.h>
 #include <vtkSmartPointer.h>
 
@@ -133,15 +131,6 @@ void Mask3DView::buildPipeline()
     m_overlayRenderer->InteractiveOff();
     m_renderWindow->AddRenderer(m_overlayRenderer);
 
-    m_actor = vtkSmartPointer<vtkActor>::New();
-    m_actor->GetProperty()->SetInterpolationToPhong();
-    m_actor->GetProperty()->SetAmbient(0.35);
-    m_actor->GetProperty()->SetDiffuse(0.65);
-    m_actor->GetProperty()->SetSpecular(0.5);
-    m_actor->GetProperty()->SetSpecularPower(25.0);
-    m_actor->GetProperty()->SetOpacity(m_opacity);
-    m_renderer->AddActor(m_actor);
-
     m_seedPolyData = vtkSmartPointer<vtkPolyData>::New();
 
     // A flat disc of radius 1.6 mm per seed, one triangle each. The seeds are unlit, so a sphere
@@ -167,29 +156,11 @@ void Mask3DView::buildPipeline()
     m_seedActor->VisibilityOff();
     m_renderer->AddActor(m_seedActor);
 
-    m_lookupTable = vtkSmartPointer<vtkLookupTable>::New();
-    m_lookupTable->SetNumberOfTableValues(256);
-    m_lookupTable->SetRange(0, 255);
-    m_lookupTable->Build();
-
-    m_mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-    // Prefer active point scalars for color mapping. We fallback to cell scalars
-    // at runtime if point scalars are not present.
-    m_mapper->SetScalarModeToUsePointData();
-    m_mapper->ScalarVisibilityOn();
-    m_mapper->SetLookupTable(m_lookupTable);
-    m_mapper->SetColorModeToMapScalars();
-    m_mapper->UseLookupTableScalarRangeOn();
-    m_mapper->InterpolateScalarsBeforeMappingOff();
-    m_actor->SetMapper(m_mapper);
-
-    // Ray-cast picker for shift+click locate; mask actor only, ignores opacity.
+    // Ray-cast picker for shift+click locate: the label shells only, each through its own locator.
+    // A hidden shell is skipped, since the picker tests visible actors alone.
     m_surfacePicker = vtkSmartPointer<vtkCellPicker>::New();
     m_surfacePicker->SetTolerance(0.0005);
     m_surfacePicker->PickFromListOn();
-    m_surfacePicker->AddPickList(m_actor);
-    m_surfaceLocator = vtkSmartPointer<vtkStaticCellLocator>::New();
-    m_surfacePicker->AddLocator(m_surfaceLocator);
 
     auto lineActor = [this](double width, double opacity)
     {
@@ -257,7 +228,7 @@ void Mask3DView::setMaskData(std::vector<int> mask,
     if (mask.size() != expected)
     {
         setStatusText("Máscara 3D inconsistente com as dimensões.");
-        m_actor->VisibilityOff();
+        removeLabelActors();
         if (m_renderWindow)
             m_renderWindow->Render();
         return;
@@ -322,12 +293,13 @@ void Mask3DView::showSurface(SurfaceJob &job)
     m_dimX = job.input.dims[0];
     m_dimY = job.input.dims[1];
     m_dimZ = job.input.dims[2];
+    m_surfaceSpacing = job.input.spacing;
     m_activeLabels = job.surface.labels;
-    vtkPolyData *poly = job.surface.poly;
-    if (m_activeLabels.empty() || !poly)
+    removeLabelActors();
+    if (m_activeLabels.empty() || job.surface.shells.size() != m_activeLabels.size())
     {
+        m_activeLabels.clear();
         setStatusText("Máscara 3D vazia");
-        m_actor->VisibilityOff();
         updateLabelControls();
         if (m_renderWindow)
             m_renderWindow->Render();
@@ -351,61 +323,33 @@ void Mask3DView::showSurface(SurfaceJob &job)
             m_labelColors[lbl] = colorForLabel(lbl);
     }
 
-    m_mapper->SetInputData(poly);
-    // Depending on VTK build/filter behavior, scalars may come as point or cell data.
-    vtkDataArray *pointScalars = poly->GetPointData() ? poly->GetPointData()->GetScalars() : nullptr;
-    if (!pointScalars && poly->GetPointData())
+    // A solid colour per actor, not a lookup table: a table with transparent entries made VTK draw
+    // the whole surface as translucent, so 100 % opacity still let the inside show through.
+    m_labelActors.reserve(job.surface.shells.size());
+    for (const mask_surface::Shell &shell : job.surface.shells)
     {
-        vtkDataArray *namedPointScalars = poly->GetPointData()->GetArray("Scalars");
-        if (namedPointScalars)
-        {
-            poly->GetPointData()->SetScalars(namedPointScalars);
-            pointScalars = namedPointScalars;
-        }
+        auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+        mapper->SetInputData(shell.poly);
+        mapper->ScalarVisibilityOff();
+        auto actor = vtkSmartPointer<vtkActor>::New();
+        actor->SetMapper(mapper);
+        vtkProperty *property = actor->GetProperty();
+        property->SetInterpolationToPhong();
+        property->SetAmbient(0.35);
+        property->SetDiffuse(0.65);
+        property->SetSpecular(0.5);
+        property->SetSpecularPower(25.0);
+        property->SetOpacity(m_opacity);
+        m_renderer->AddActor(actor);
+        m_surfacePicker->AddPickList(actor);
+        if (shell.locator)
+            m_surfacePicker->AddLocator(shell.locator);
+        m_labelActors.push_back({shell.label, actor});
     }
-    if (pointScalars)
-    {
-        m_mapper->SetScalarModeToUsePointData();
-        m_mapper->ScalarVisibilityOn();
-    }
-    else
-    {
-        vtkDataArray *cellScalars = poly->GetCellData() ? poly->GetCellData()->GetScalars() : nullptr;
-        if (cellScalars && poly->GetCellData()->GetArray("Scalars"))
-            cellScalars = poly->GetCellData()->GetArray("Scalars");
-
-        if (cellScalars)
-        {
-            m_mapper->SetScalarModeToUseCellData();
-            m_mapper->ScalarVisibilityOn();
-        }
-        else
-        {
-            // Last-resort fallback: at least keep geometry visible.
-            m_mapper->ScalarVisibilityOff();
-            m_actor->GetProperty()->SetColor(0.85, 0.85, 0.85);
-        }
-    }
-
-    m_surfacePicker->RemoveAllLocators();
-    m_surfaceLocator = job.surface.locator;
-    if (m_surfaceLocator)
-        m_surfacePicker->AddLocator(m_surfaceLocator);
-    m_actor->SetVisibility(m_maskVisible);
-
-    rebuildLookupTable();
+    applyLabelColors();
+    applyLabelVisibility();
     updateLabelControls();
-    const double physX = static_cast<double>(m_dimX) * job.input.spacing[0];
-    const double physY = static_cast<double>(m_dimY) * job.input.spacing[1];
-    const double physZ = static_cast<double>(m_dimZ) * job.input.spacing[2];
-    setStatusText(QString("Labels visíveis: %1 | Voxel(mm): %2 x %3 x %4 | Dim(mm): %5 x %6 x %7")
-                      .arg(m_activeLabels.size())
-                      .arg(job.input.spacing[0], 0, 'f', 3)
-                      .arg(job.input.spacing[1], 0, 'f', 3)
-                      .arg(job.input.spacing[2], 0, 'f', 3)
-                      .arg(physX, 0, 'f', 1)
-                      .arg(physY, 0, 'f', 1)
-                      .arg(physZ, 0, 'f', 1));
+    showSurfaceStatus();
     // An edit, a Show 3D toggle or another mask on the same image keeps the user's view.
     if (!m_surfaceCameraFramed)
     {
@@ -712,7 +656,7 @@ void Mask3DView::clearMask()
     m_activeLabels.clear();
     m_labelNames.clear();
     m_dimX = m_dimY = m_dimZ = 0;
-    m_actor->VisibilityOff();
+    removeLabelActors();
     updateLabelControls();
     setStatusText("Nenhuma máscara 3D disponível");
     if (m_renderWindow)
@@ -822,7 +766,7 @@ void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
     m_seedPolyData->Modified();
     m_seedActor->SetVisibility(m_seedsVisible ? 1 : 0);
     // Auto-frame seeds only once when they become visible without a mask.
-    if (!hadVisibleSeeds && !m_seedCameraFramed && m_actor && !m_actor->GetVisibility())
+    if (!hadVisibleSeeds && !m_seedCameraFramed && !anyLabelShown())
     {
         m_renderer->ResetCamera();
         m_seedCameraFramed = true;
@@ -836,14 +780,76 @@ void Mask3DView::setSeedData(const std::vector<SeedRenderData> &seeds)
 // the 3D panel once per slice for nothing.
 void Mask3DView::setMaskVisible(bool visible)
 {
-    const int shown = (visible && !m_activeLabels.empty()) ? 1 : 0;
-    if (visible == m_maskVisible && (!m_actor || m_actor->GetVisibility() == shown))
+    if (visible == m_maskVisible)
         return;
     m_maskVisible = visible;
-    if (m_actor)
-        m_actor->SetVisibility(shown);
+    applyLabelVisibility();
+    if (m_renderWindow && !m_labelActors.empty())
+        m_renderWindow->Render();
+}
+
+void Mask3DView::setHiddenLabels(const std::set<int> &labels)
+{
+    if (labels == m_hiddenLabels)
+        return;
+    m_hiddenLabels = labels;
+    if (m_labelActors.empty())
+        return;
+    applyLabelVisibility();
+    showSurfaceStatus();
+    // A shell shown again may lie outside the depth range fitted to the others.
+    m_renderer->ResetCameraClippingRange();
     if (m_renderWindow)
         m_renderWindow->Render();
+}
+
+bool Mask3DView::labelShown(int label) const
+{
+    for (const LabelActor &entry : m_labelActors)
+        if (entry.label == label)
+            return entry.actor->GetVisibility() != 0;
+    return false;
+}
+
+bool Mask3DView::anyLabelShown() const
+{
+    for (const LabelActor &entry : m_labelActors)
+        if (entry.actor->GetVisibility())
+            return true;
+    return false;
+}
+
+void Mask3DView::applyLabelVisibility()
+{
+    for (const LabelActor &entry : m_labelActors)
+        entry.actor->SetVisibility(m_maskVisible && m_hiddenLabels.count(entry.label) == 0);
+}
+
+void Mask3DView::removeLabelActors()
+{
+    for (const LabelActor &entry : m_labelActors)
+        m_renderer->RemoveActor(entry.actor);
+    m_labelActors.clear();
+    m_surfacePicker->InitializePickList();
+    m_surfacePicker->RemoveAllLocators();
+}
+
+void Mask3DView::showSurfaceStatus()
+{
+    std::size_t shown = 0;
+    for (const LabelActor &entry : m_labelActors)
+        shown += m_hiddenLabels.count(entry.label) == 0 ? 1 : 0;
+    const double physX = static_cast<double>(m_dimX) * m_surfaceSpacing[0];
+    const double physY = static_cast<double>(m_dimY) * m_surfaceSpacing[1];
+    const double physZ = static_cast<double>(m_dimZ) * m_surfaceSpacing[2];
+    setStatusText(QString("Labels visíveis: %1 | Voxel(mm): %2 x %3 x %4 | Dim(mm): %5 x %6 x %7")
+                      .arg(shown)
+                      .arg(m_surfaceSpacing[0], 0, 'f', 3)
+                      .arg(m_surfaceSpacing[1], 0, 'f', 3)
+                      .arg(m_surfaceSpacing[2], 0, 'f', 3)
+                      .arg(physX, 0, 'f', 1)
+                      .arg(physY, 0, 'f', 1)
+                      .arg(physZ, 0, 'f', 1));
 }
 
 void Mask3DView::setSeedsVisible(bool visible)
@@ -1089,7 +1095,7 @@ bool Mask3DView::pickSurfaceVoxel(const QPoint &widgetPos, int &vx, int &vy, int
 {
     if (!m_renderer || !m_renderWindow || !m_vtkWidget || !m_surfacePicker)
         return false;
-    if (!m_actor || !m_actor->GetVisibility() || m_dimX == 0 || m_dimY == 0 || m_dimZ == 0)
+    if (!anyLabelShown() || m_dimX == 0 || m_dimY == 0 || m_dimZ == 0)
         return false;
 
     const int widgetWidth = m_vtkWidget->width();
@@ -1123,29 +1129,14 @@ bool Mask3DView::pickSurfaceVoxel(const QPoint &widgetPos, int &vx, int &vy, int
     return true;
 }
 
-void Mask3DView::rebuildLookupTable()
+void Mask3DView::applyLabelColors()
 {
-    if (!m_lookupTable)
-        return;
-    int maxLabel = 0;
-    for (int lbl : m_activeLabels)
-        maxLabel = std::max(maxLabel, lbl);
-    int tableSize = std::max(256, maxLabel + 2);
-    m_lookupTable->SetNumberOfTableValues(tableSize);
-    m_lookupTable->SetRange(0, tableSize - 1);
-    for (int i = 0; i < tableSize; ++i)
-        m_lookupTable->SetTableValue(i, 0.0, 0.0, 0.0, 0.0);
-    for (const auto &entry : m_labelColors)
+    for (const LabelActor &entry : m_labelActors)
     {
-        int lbl = entry.first;
-        if (lbl < 0 || lbl >= tableSize)
-            continue;
-        QColor col = entry.second;
-        m_lookupTable->SetTableValue(lbl, col.redF(), col.greenF(), col.blueF(), 1.0);
+        auto it = m_labelColors.find(entry.label);
+        const QColor color = (it != m_labelColors.end()) ? it->second : colorForLabel(entry.label);
+        entry.actor->GetProperty()->SetColor(color.redF(), color.greenF(), color.blueF());
     }
-    m_lookupTable->Build();
-    if (m_mapper)
-        m_mapper->SetScalarRange(0.0, static_cast<double>(tableSize - 1));
 }
 
 void Mask3DView::updateLabelControls()
@@ -1244,8 +1235,8 @@ void Mask3DView::onOpacityChanged(int value)
 void Mask3DView::setMaskOpacity(float opacity)
 {
     m_opacity = std::min(1.0f, std::max(0.0f, opacity));
-    if (m_actor)
-        m_actor->GetProperty()->SetOpacity(m_opacity);
+    for (const LabelActor &entry : m_labelActors)
+        entry.actor->GetProperty()->SetOpacity(m_opacity);
     if (m_renderWindow)
         m_renderWindow->Render();
 }
@@ -1270,7 +1261,7 @@ void Mask3DView::onColorButtonClicked()
     if (!picked.isValid())
         return;
     m_labelColors[label] = picked;
-    rebuildLookupTable();
+    applyLabelColors();
     updateColorButtonStyle();
     if (m_renderWindow)
         m_renderWindow->Render();

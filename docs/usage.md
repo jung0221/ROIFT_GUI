@@ -75,6 +75,16 @@
   while it moves. With `Show 3D` off nothing is rebuilt; turning it on builds the edited mask.
 - The camera is framed for the first surface only. An edit, `Show 3D` off and on, or another
   mask of the same image keeps the zoom and rotation the user left.
+- Every label has a closed surface of its own, so a label enclosed by another (a pulp inside its
+  tooth) shows through the translucent one around it. A wall two labels share belongs to both.
+- A `Show` box in `Labels` hides or shows that label's surface without rebuilding anything: on a
+  467 x 494 x 559 CBCT label map with 77 labels (Debug build, offscreen) a tick costs 10 ms on
+  the GUI thread, the redraw of the three slices, where it had rebuilt the whole surface (0.5 s
+  off the GUI thread on that map). A surface built while a box is unticked keeps that label hidden.
+- At 100 % opacity the surface is opaque. It had been drawn as translucent at every opacity, so
+  100 % still showed what lay behind it.
+- The surface is smoothed, so a structure a few voxels across reads up to half a voxel thinner
+  at its extremes than its voxels are.
 - On a 466 x 389 x 558 CBCT label map with 74 labels (Debug build, offscreen), each pointer
   event of a stroke had rebuilt the whole surface on the GUI thread: 4.1 s per event. A stroke
   now costs what it costs with `Show 3D` off (five pointer events, each followed by 20 ms of

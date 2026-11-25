@@ -85,21 +85,44 @@
     (`Mask3DView::setNetworkGraph()`), the selection and hover swap small highlight actors
     (`setNetworkHighlight()`), and names are at most two text actors (`setAnnotations()`). All
     of these live in `Mask3DView`'s overlay renderer (layer 1, same camera), which draws after
-    the translucent surface. 3D hover is a ray cast against a `vtkStaticCellLocator` built once
-    per surface, throttled to one every 40 ms and skipped while a button is down.
-  - `mask_surface::build()` (src/MaskSurface.*), free of the window and the renderer, contours
-    one surface per label while a mask has up to 32 labels, so touching labels keep their
-    shared wall. Past that it contours the union once and colours each vertex by the label of
-    the voxel under it (`paintLabels()`): discrete flying edges passes over the whole volume
-    once per label, and a 1153-segment map took 25 s against 0.35 s now. The label scan, the
-    padded copy (one background voxel on every face, so a label cut by the field of view is
-    closed) and the vertex colouring run through `vtkSMPTools`; the padded image is the
-    smallest type that holds the labels. Pinned by `mask_surface`.
+    the translucent surface. 3D hover is a ray cast against the `vtkStaticCellLocator` of each
+    shown shell, built once per surface, throttled to one every 40 ms and skipped while a button is
+    down.
+  - `mask_surface::build()` (src/MaskSurface.*), free of the window and the renderer, returns
+    one closed shell per label (`mask_surface::Shell`: triangles with point normals and a
+    `vtkStaticCellLocator`). One `vtkSurfaceNets3D` pass contours and smooths every label at once;
+    discrete flying edges, used before, passed over the whole volume once per label (a 1153-segment
+    map took 25 s), which is why past 32 labels it had contoured only the union, so a label
+    enclosed by another had no surface. Each face of the net lies between two labels and goes into
+    the shell of each one that is not background, wound so that its normal leaves that label; a
+    shell has its own copies of the points, so each side of a shared wall gets its own normals.
+    The side a face's label lies on is read from the unsmoothed net the filter caches
+    (`OrientedSurfaceNets::unsmoothed()`), where every face is axis-aligned half a voxel from the
+    two voxels it separates: `vtkSurfaceNets3D` winds faces by their labels only from VTK 9.6 on,
+    and the Windows build has 9.3. The smoothed faces are the unsmoothed ones in the same order
+    because the output is quads, split into triangles afterwards along the shorter diagonal. The
+    shells holding at least an eighth of the triangles get their locators built one at a time,
+    each threaded inside; the rest are finished side by side. The label scan, the padded copy
+    (one background voxel on every face, so a label cut by the field of view is closed) and the
+    face classification run through `vtkSMPTools`; the padded image is the smallest type that
+    holds the labels. On a 467 x 494 x 559 map with 77 labels (Debug build) a build takes 0.5 s,
+    against 0.39 s for the union it replaced; most of the difference is the locators. Smoothing
+    keeps the filter's defaults (16 iterations, constraint scale 2): a 4-voxel box ends up to half
+    a voxel short at its extremes, and a scale of 1 or 0.5, which keeps it, brings back visible
+    voxel steps. Pinned by `mask_surface`.
   - `Mask3DView::setMaskData()` takes the volume by value and builds it on `m_surfaceWorker`,
     one `SurfaceJob` at a time; a volume passed meanwhile waits in `m_queuedSurfaceJob`,
     replacing any already waiting. The worker posts the job back to the GUI thread
-    (`finishSurfaceBuild()`), which swaps the polydata into the mapper and the locator into
-    the picker (`showSurface()`); the previous surface stays on screen until then.
+    (`finishSurfaceBuild()`), which makes one actor per shell, each with its label's colour as a
+    solid property colour, and hands each shell's locator to the picker (`showSurface()`); the
+    previous surface stays on screen until then. A lookup table with transparent entries for the
+    unused values had made VTK treat the surface as translucent, so 100 % opacity was not opaque.
+    `setHiddenLabels()` hides the shells of the given values by actor visibility, which the picker
+    honours; the window calls it from `apply3DLabelVisibility()` when a `Show` box changes and
+    after every volume it sends, through the ids it gave the edited mask's labels in that volume
+    (`m_mask3DActiveIds`). The volume always holds every label, so a `Show` box never rebuilds the
+    surface. Pinned by `erase_3d_gui`. Not measured: frame time with the thousand or so actors of
+    a segment map.
     `clearMask()` cancels the running job (`mask_surface::build()` checks between stages) and
     drops the waiting one; the destructor cancels and joins. `waitForSurface()` finishes
     both synchronously, for the tests. The camera is reset for the first surface only

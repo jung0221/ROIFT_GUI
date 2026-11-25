@@ -632,7 +632,8 @@ private:
     void rebuildMaskLabelFilter();                 // resync checkboxes with present labels
     void setAllMaskLabelsVisible(bool visible);    // "All"/"None" buttons
     bool maskLabelVisible(int label) const;        // background (0) is always hidden
-    bool maskHasHiddenLabels() const;
+    // Hides the 3D shells of the edited mask's unticked labels; never rebuilds the surface.
+    void apply3DLabelVisibility();
     QString formatRulerDistance(double millimeters) const;
     const Seed *findSeedNearCursor(int x, int y, int z, SlicePlane plane, int maxDistance) const;
     // Indices into m_seeds of the seeds on one slice of a plane, in list order.
@@ -901,6 +902,16 @@ private:
 
     Mask3DView *m_mask3DView = nullptr;
     bool m_mask3DDirty = false;
+    // How the edited mask's labels are numbered in the volume last sent to the 3D view: absent,
+    // as themselves, or through the ids a merge of several masks gave them.
+    enum class Mask3DIds
+    {
+        Absent,
+        Same,
+        Merged,
+    };
+    Mask3DIds m_mask3DActiveIds = Mask3DIds::Absent;
+    std::map<int, int> m_mask3DActiveIdMap; // label -> id, when Merged
     bool m_enable3DView = false;
     double m_maskSpacingX = 1.0;
     double m_maskSpacingY = 1.0;

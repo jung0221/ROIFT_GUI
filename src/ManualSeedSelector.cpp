@@ -1200,7 +1200,7 @@ void ManualSeedSelector::setupUi()
             if (column != kLabelShowColumn)
                 return;
             m_maskLabelVisibility[label] = (item->checkState(kLabelShowColumn) == Qt::Checked);
-            m_mask3DDirty = true;
+            apply3DLabelVisibility();
             updateViews(); });
         connect(m_labelTree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int column)
                 {
@@ -6757,6 +6757,10 @@ void ManualSeedSelector::update3DMaskView()
     const unsigned int sz = m_image.getSizeZ();
     const bool hasImageVolume = (sx > 0 && sy > 0 && sz > 0);
 
+    // Every label goes into the volume, the unticked ones too: the view hides their shells, so
+    // ticking Show again needs no rebuild.
+    m_mask3DActiveIds = Mask3DIds::Absent;
+    m_mask3DActiveIdMap.clear();
     const std::vector<MaskRenderItem> items = visibleMaskRenderItems();
     if (items.empty())
     {
@@ -6779,11 +6783,12 @@ void ManualSeedSelector::update3DMaskView()
         const bool mergeLabels = (items.size() > 1);
         const MaskRenderItem &first = items.front();
         const bool passThrough = (!mergeLabels &&
-                                  first.dimX == targetX && first.dimY == targetY && first.dimZ == targetZ &&
-                                  !(first.active && maskHasHiddenLabels()));
+                                  first.dimX == targetX && first.dimY == targetY && first.dimZ == targetZ);
 
         if (passThrough)
         {
+            if (first.active)
+                m_mask3DActiveIds = Mask3DIds::Same;
             // The segment map's label values are segment indices: name them.
             std::map<int, QString> segmentNames;
             if (first.style)
@@ -6811,6 +6816,13 @@ void ManualSeedSelector::update3DMaskView()
                     continue;
 
                 LabelIdMap ids(item.style->labels, nextId);
+                if (item.active)
+                {
+                    m_mask3DActiveIds = mergeLabels ? Mask3DIds::Merged : Mask3DIds::Same;
+                    if (mergeLabels)
+                        for (int label : item.style->labels)
+                            m_mask3DActiveIdMap[label] = ids.idFor(label);
+                }
                 if (mergeLabels)
                 {
                     const QString name = displayNameForPath(item.style->path, QFileInfo(item.style->path).fileName());
@@ -6838,8 +6850,6 @@ void ManualSeedSelector::update3DMaskView()
                         const int label = data[srcOffset + i];
                         if (label == 0)
                             continue;
-                        if (item.active && !maskLabelVisible(label))
-                            continue;
                         const int id = mergeLabels ? ids.idFor(label) : label;
                         if (id == 0)
                             continue;
@@ -6863,7 +6873,30 @@ void ManualSeedSelector::update3DMaskView()
         }
     }
 
+    apply3DLabelVisibility();
     update3DSeedData();
+}
+
+void ManualSeedSelector::apply3DLabelVisibility()
+{
+    if (!m_mask3DView)
+        return;
+    std::set<int> hidden;
+    if (m_mask3DActiveIds != Mask3DIds::Absent)
+        for (const auto &entry : m_maskLabelVisibility)
+        {
+            if (entry.second || entry.first <= 0)
+                continue;
+            if (m_mask3DActiveIds == Mask3DIds::Same)
+            {
+                hidden.insert(entry.first);
+                continue;
+            }
+            const auto id = m_mask3DActiveIdMap.find(entry.first);
+            if (id != m_mask3DActiveIdMap.end() && id->second > 0)
+                hidden.insert(id->second);
+        }
+    m_mask3DView->setHiddenLabels(hidden);
 }
 
 // Runs on every slice step; rebuilding and comparing a million-seed list there cost the step
@@ -6987,22 +7020,12 @@ bool ManualSeedSelector::maskLabelVisible(int label) const
     return (it == m_maskLabelVisibility.end()) ? true : it->second;
 }
 
-bool ManualSeedSelector::maskHasHiddenLabels() const
-{
-    for (const auto &entry : m_maskLabelVisibility)
-    {
-        if (!entry.second)
-            return true;
-    }
-    return false;
-}
-
 void ManualSeedSelector::setAllMaskLabelsVisible(bool visible)
 {
     for (auto &entry : m_maskLabelVisibility)
         entry.second = visible;
     refreshLabelPanel(); // refresh checkbox states to match
-    m_mask3DDirty = true;
+    apply3DLabelVisibility();
     updateViews();
 }
 
