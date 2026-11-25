@@ -227,6 +227,8 @@ public:
     long long eraseActiveLabelIn(const ScreenRectangle &rectangle);
     // Ctrl+Shift+drag: the same for every label whose Show box is ticked; locked labels stay.
     long long eraseShownLabelsIn(const ScreenRectangle &rectangle);
+    // How many times updateViews() composed a slice; for the tests.
+    int sliceRedrawCount() const { return m_sliceRedrawCount; }
     void setFillTolerance(double tolerance);
     double fillTolerance() const { return m_fillTolerance; }
     // Carries label through every run of empty slices between two slices holding it, along
@@ -919,6 +921,7 @@ private:
     float m_windowGlobalMin = 0.0f;
     float m_windowGlobalMax = 1.0f;
     bool m_blockWindowSignals = false;
+    int m_sliceRedrawCount = 0;
 
     // Segmentation UI elements
     QSlider *m_polSlider = nullptr;

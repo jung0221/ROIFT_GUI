@@ -5043,7 +5043,8 @@ void ManualSeedSelector::applyWindowFromValues(float low, float high, bool fromS
         m_windowWidthSpin->setValue(width);
     m_blockWindowSignals = false;
 
-    updateViews();
+    // A drag sends a value per input event, up to 1000 a second, faster than a redraw.
+    requestViewUpdate(false, kAllPlanes);
 }
 
 // =============================================================================
@@ -5345,6 +5346,8 @@ void ManualSeedSelector::updateViews(unsigned planes)
     const bool composeAxial = (planes & kAxialPlane) != 0;
     const bool composeSagittal = (planes & kSagittalPlane) != 0;
     const bool composeCoronal = (planes & kCoronalPlane) != 0;
+    if (composeAxial || composeSagittal || composeCoronal)
+        ++m_sliceRedrawCount;
 
     if (composeAxial)
     {
