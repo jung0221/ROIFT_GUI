@@ -363,12 +363,28 @@
   bar. Closing the window during a read lets the read finish first, since it cannot be
   interrupted. The images named on the command line are read before the window appears, so
   `--mask` and `--seeds` have an image to apply to.
-- **Masks and seeds from the command line.** `--mask`/`-m` opens a mask on the first image and
-  may be repeated, one layer per file. `--seeds`/`-s` loads a seed file onto it and lists the
-  file under `Seed Groups`, as `Load Seeds` does. Each flag reads only its own kind of file: a
-  seed `.txt` given to `--mask` is not retried as seeds. A file that cannot be read prints
-  `Warning: failed to load mask from <path>` (or `seeds`) on stderr and the window opens
-  without it; with no image loaded, both flags are ignored with a warning.
+- **Masks and seeds from the command line.** Each `--mask`/`-m` and `--seeds`/`-s` belongs to
+  the image named last before it, so images and their masks are given in pairs:
+
+  ```bash
+  roift_gui -i case1.nii.gz -m case1_lungs.nii.gz -m case1_heart.nii.gz \
+            -i case2.nii.gz -m case2_lungs.nii.gz -s case2_seeds.txt
+  ```
+
+  `--mask` may be repeated, one layer per file; `--seeds` is given once per image, and a second
+  one for the same image is refused with an error before the window opens. After a list such
+  as `-i a b c -m m`, the mask belongs to `c`. Masks and seeds named before any image belong to
+  the first one, so `-m lungs.nii.gz -i ct.nii.gz` still opens the mask on `ct`.
+- The first image opens with its masks drawn, the last of them edited, and its seed file loaded
+  and listed under `Seed Groups`, as `Load Seeds` does. The files of every other image wait in
+  that image's entry and open in the same way the first time the image is shown; a later visit
+  lists them under `Masks` without opening them again. A pending mask is not listed before its
+  image is shown, and a mask that fails then is not retried.
+- Each flag reads only its own kind of file: a seed `.txt` given to `--mask` is not retried as
+  seeds. A file that cannot be read raises the same dialog as `Open Mask` or `Load Seeds`,
+  prints `Warning: failed to load mask from <path>` (or `seeds`) on stderr, and the image opens
+  without it. The files of an image that could not be added to the list (a missing path) are
+  ignored with a warning, as are masks and seeds given with no image at all.
 - **Memory.** A volume is held as 32-bit floats whatever the file's sample type, so a
   512 x 512 x 1000 CT costs about 1 GB; each drawn mask costs the same again
   (see [Mask layers](#mask-layers)).

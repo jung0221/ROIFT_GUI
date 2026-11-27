@@ -14,12 +14,11 @@
 #include <vtkSMP.h>
 #include <vtkSMPTools.h>
 #pragma pop_macro("emit")
+#include "CommandLine.h"
 #include "ManualSeedSelector.h"
 #include "Theme.h"
 #include "Version.h"
 #include <iostream>
-#include <string>
-#include <vector>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -42,16 +41,7 @@ static void report_cli_message(const QString &title, const QString &text)
 
 static void print_help()
 {
-    report_cli_message(
-        QStringLiteral("ROIFT GUI"),
-        QStringLiteral(
-            "roift_gui [--version] [--input <image_path> [more_paths...]] [--mask <mask_path>]... [--seeds <seeds.txt>]\n"
-            "You can pass multiple paths after --input/-i or as positional arguments.\n"
-            "--mask/-m (repeatable) opens a mask on the first image; --seeds/-s loads a seed file onto it.\n"
-            "Accepted: .nii, .nii.gz, DICOM (file or directory), .npz, .npy, and the raster\n"
-            "formats .png, .jpg, .jpeg, .bmp, .tif and .tiff (measured in pixels).\n"
-            "A .npz/.npy carries no spacing: it is taken from a matching .nii.gz next to it,\n"
-            "or from a <name>.json sidecar, otherwise 1 mm isotropic is assumed."));
+    report_cli_message(QStringLiteral("ROIFT GUI"), commandLineUsage());
 }
 
 // A conda environment's activation exports __EGL_VENDOR_LIBRARY_DIRS naming its own
@@ -115,138 +105,57 @@ int main(int argc, char **argv)
     QCoreApplication::setOrganizationName("ROIFT");
     QCoreApplication::setApplicationName("roift_gui");
     QCoreApplication::setApplicationVersion(Version::string());
-    std::vector<std::string> inputPaths;
-    std::vector<std::string> maskPaths;
-    std::string seedsPath;
-    bool startFullscreen = false;
-    for (int i = 1; i < argc; ++i)
+    // arguments(), not argv: on Windows it is decoded from the wide command line, so a
+    // non-ASCII path survives; Qt's own options are already removed from both.
+    const CommandLineOptions options = parseCommandLine(QCoreApplication::arguments().mid(1));
+    switch (options.action)
     {
-        std::string a = argv[i];
-        if (a == "--help" || a == "-h")
-        {
-            print_help();
-            return 0;
-        }
-        if (a == "--version")
-        {
-            report_cli_message(QStringLiteral("ROIFT GUI"),
-                               QStringLiteral("roift_gui %1").arg(Version::string()));
-            return 0;
-        }
-        if (a == "--input" || a == "-i")
-        {
-            if (i + 1 < argc && std::string(argv[i + 1]).rfind("-", 0) != 0)
-            {
-                int j = i + 1;
-                while (j < argc)
-                {
-                    std::string candidate = argv[j];
-                    if (candidate.rfind("-", 0) == 0)
-                        break;
-                    inputPaths.push_back(candidate);
-                    ++j;
-                }
-                i = j - 1;
-            }
-            else
-            {
-                std::cerr << "Error: --input requires at least one path\n";
-                print_help();
-                return 1;
-            }
-        }
-        else if (a == "--mask" || a == "-m")
-        {
-            if (i + 1 < argc)
-            {
-                maskPaths.push_back(argv[i + 1]);
-                ++i;
-            }
-            else
-            {
-                std::cerr << "Error: --mask requires a path\n";
-                print_help();
-                return 1;
-            }
-        }
-        else if (a == "--mask-required")
-        {
-            // signal that a mask must be provided when input is given
-            if (maskPaths.empty())
-            {
-                std::cerr << "Error: --mask-required specified but no --mask provided\n";
-                print_help();
-                return 1;
-            }
-        }
-        else if (a == "--seeds" || a == "-s")
-        {
-            if (i + 1 < argc)
-            {
-                seedsPath = argv[i + 1];
-                ++i;
-            }
-            else
-            {
-                std::cerr << "Error: --seeds requires a path\n";
-                print_help();
-                return 1;
-            }
-        }
-        else if (a == "--fullscreen" || a == "-f")
-        {
-            startFullscreen = true;
-        }
-        else if (!a.empty() && a[0] == '-')
-        {
-            std::cerr << "Error: unknown option '" << a << "'\n";
-            print_help();
-            return 1;
-        }
-        else
-        {
-            inputPaths.push_back(a);
-        }
+    case CommandLineOptions::Action::Help:
+        print_help();
+        return 0;
+    case CommandLineOptions::Action::Version:
+        report_cli_message(QStringLiteral("ROIFT GUI"),
+                           QStringLiteral("roift_gui %1").arg(Version::string()));
+        return 0;
+    case CommandLineOptions::Action::Error:
+        std::cerr << "Error: " << options.error.toStdString() << "\n";
+        print_help();
+        return 1;
+    case CommandLineOptions::Action::Open:
+        break;
     }
 
-    if (!inputPaths.empty())
-    {
-        std::cerr << "main: opening " << inputPaths.size() << " path(s) from CLI\n";
-    }
+    if (!options.images.empty())
+        std::cerr << "main: opening " << options.images.size() << " path(s) from CLI\n";
     else
-    {
         std::cerr << "main: no input path provided via CLI\n";
-    }
+
     ManualSeedSelector w("");
-    if (!inputPaths.empty())
+    if (!options.images.empty())
     {
         QStringList initialPaths;
-        for (const std::string &p : inputPaths)
-            initialPaths.push_back(QString::fromStdString(p));
+        for (const CommandLineImage &image : options.images)
+            initialPaths.push_back(image.path);
         w.addImagesFromPaths(initialPaths);
     }
 
-    // Masks and seeds need the image loaded above; each flag opens only its own kind of
-    // file, so a seed .txt never reaches the mask reader and its error dialog.
-    if ((!maskPaths.empty() || !seedsPath.empty()) && !w.hasImage())
-        std::cerr << "Warning: --mask/--seeds ignored, no image was loaded\n";
-    else
+    // Read inline above, so the first image's files open on it now; the others wait
+    // in their image's entry and open the first time it is shown. Each flag opens
+    // only its own kind of file, so a seed .txt never reaches the mask reader.
+    if (options.withoutImage.hasFiles())
+        std::cerr << "Warning: --mask/--seeds ignored, no image was given\n";
+    for (const CommandLineImage &image : options.images)
     {
-        for (const std::string &maskPath : maskPaths)
-        {
-            if (!w.applyMaskFromPath(maskPath))
-                std::cerr << "Warning: failed to load mask from " << maskPath << "\n";
-        }
-        if (!seedsPath.empty() && !w.applySeedsFromPath(seedsPath))
-            std::cerr << "Warning: failed to load seeds from " << seedsPath << "\n";
+        if (image.hasFiles() && !w.attachFilesToImage(image.path, image.maskPaths, image.seedsPath))
+            std::cerr << "Warning: --mask/--seeds for " << image.path.toStdString()
+                      << " ignored, the image is not in the list\n";
     }
     // From here on, images chosen in the window are read on a worker thread so
-    // the window stays responsive; the command-line ones above were read inline
-    // so that --mask/--seeds had an image to apply to.
+    // the window stays responsive.
     w.setBackgroundImageLoading(true);
 
     QScreen *screen = QGuiApplication::primaryScreen();
-    if (startFullscreen)
+    if (options.fullscreen)
     {
         w.showFullScreen();
     }

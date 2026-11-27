@@ -133,6 +133,11 @@ public:
     // Loads a seed file and lists it in the current image's seed groups, as the Load
     // Seeds button does (used by the command line).
     bool applySeedsFromPath(const std::string &path);
+    // Give masks and a seed file to the listed image @p imagePath, as the command line
+    // pairs them: on the image on screen they open now, on any other the first time it
+    // is shown. A file that fails to open warns on stderr and is not retried. False when
+    // @p imagePath is not in the list.
+    bool attachFilesToImage(const QString &imagePath, const QStringList &maskPaths, const QString &seedsPath);
     // Undo and redo of the edited mask. A brush or erase stroke, Clear, Threshold and a
     // slice-run paste are one step each. False when there was nothing to undo or redo.
     bool undoMaskEdit();
@@ -994,6 +999,9 @@ private:
         // when the file is added and reused every time it is selected again.
         bool isNumpy = false;
         NpzImportOptions npzOptions;
+        // Given by attachFilesToImage(); opened, and cleared, when the image is next shown.
+        std::vector<std::string> masksToOpen;
+        std::string seedsToOpen;
     };
 
     // Read a list entry's image into @p image, honouring its numpy import
@@ -1004,6 +1012,8 @@ private:
     // background loading is on. A row selected while a read is in progress is
     // picked up when that read completes.
     void selectImageRow(int row);
+    // Open the files attachFilesToImage() left on the image on screen.
+    void openAttachedFiles();
     // Make @p image the one on screen for list row @p row and set every control
     // up for it. @p numpyReport, when given, pins the axis order an automatic
     // import resolved to, so masks opened afterwards read the same way.
