@@ -214,13 +214,25 @@ int main(int argc, char **argv)
     check(row2 != nullptr, "label 2 has a row in Labels");
     if (row2)
     {
+        view3D->waitForSurface();
+        const int builds = view3D->surfaceBuildCount();
+        check(view3D->labelShown(1) && view3D->labelShown(2), "both labels have a shell in 3D");
         row2->setCheckState(0, Qt::Unchecked); // Show
+        check(!view3D->labelShown(2) && view3D->labelShown(1),
+              "unticking Show hides label 2's shell and keeps label 1's");
+        check(!view3D->surfaceBuildPending() && view3D->surfaceBuildCount() == builds,
+              "without building the surface again");
         shiftDrag(vtk, from, to, kCtrlShift);
         const Census hidden = census(window.activeMaskLabels());
         check(hidden.erasedTotal == after.erasedTotal && hidden.label2 == before.label2,
               "a hidden label is not erased; the shown one is");
         window.undoMaskEdit();
+        view3D->waitForSurface();
+        check(!view3D->labelShown(2), "a surface built while it is unticked keeps it hidden");
+        const int rebuilt = view3D->surfaceBuildCount();
         row2->setCheckState(0, Qt::Checked);
+        check(view3D->labelShown(2) && !view3D->surfaceBuildPending() && view3D->surfaceBuildCount() == rebuilt,
+              "ticking it again shows it, still without a build");
     }
 
     window.setLabelLocked(1, true);

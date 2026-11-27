@@ -8,6 +8,7 @@
 #include <QVector>
 #include <vector>
 #include <map>
+#include <set>
 #include <vtkSmartPointer.h>
 
 #include <array>
@@ -26,11 +27,8 @@ class vtkTextActor;
 class vtkCellPicker;
 class vtkGenericOpenGLRenderWindow;
 class vtkPointGaussianMapper;
-class vtkLookupTable;
 class vtkPolyData;
-class vtkPolyDataMapper;
 class vtkRenderer;
-class vtkStaticCellLocator;
 class QRubberBand;
 class QTimer;
 
@@ -115,7 +113,7 @@ public:
 
     explicit Mask3DView(QWidget *parent = nullptr);
     ~Mask3DView() override;
-    /// Render one label volume. With several masks on screen the caller merges
+    /// Render one label volume, one shell per label. With several masks on screen the caller merges
     /// them into one volume of unique ids, and then the label values no longer
     /// carry their own colours or names — pass @p labelColors and @p labelNames
     /// so the surface and the label picker still say which mask each id is.
@@ -147,6 +145,11 @@ public:
                              const NetworkGraph3D::Point *hoveredNode);
     void setNetworkVisible(bool visible);
     void setMaskVisible(bool visible);
+    /// Hide the shells of these label values and show the others: a visibility flag per shell, no
+    /// rebuild. Applies to the surface on screen and to every later one.
+    void setHiddenLabels(const std::set<int> &labels);
+    /// True while the shell of @p label is drawn.
+    bool labelShown(int label) const;
     void setSeedsVisible(bool visible);
     // Set the 3D mask surface opacity, in [0, 1] (clamped). Renders immediately.
     void setMaskOpacity(float opacity);
@@ -190,7 +193,11 @@ private:
     // Ray-cast the surface under a widget-space cursor; false when nothing hit.
     bool pickSurfaceVoxel(const QPoint &widgetPos, int &vx, int &vy, int &vz);
     void buildPipeline();
-    void rebuildLookupTable();
+    void applyLabelColors();
+    void applyLabelVisibility();
+    void removeLabelActors();
+    bool anyLabelShown() const;
+    void showSurfaceStatus();
     void updateLabelControls();
     void updateColorButtonStyle();
     void setStatusText(const QString &text);
@@ -208,12 +215,17 @@ private:
     QString m_rendererWarning;
 
     vtkSmartPointer<vtkRenderer> m_renderer;
-    vtkSmartPointer<vtkActor> m_actor;
+    // One actor per label shell, in m_activeLabels order, so showing a label never re-contours.
+    struct LabelActor
+    {
+        int label = 0;
+        vtkSmartPointer<vtkActor> actor;
+    };
+    std::vector<LabelActor> m_labelActors;
+    std::set<int> m_hiddenLabels;
     vtkSmartPointer<vtkActor> m_seedActor;
     vtkSmartPointer<vtkPointGaussianMapper> m_seedMapper;
     vtkSmartPointer<vtkPolyData> m_seedPolyData;
-    vtkSmartPointer<vtkPolyDataMapper> m_mapper;
-    vtkSmartPointer<vtkLookupTable> m_lookupTable;
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
     vtkSmartPointer<vtkCellPicker> m_surfacePicker;
 
@@ -246,9 +258,8 @@ private:
     void rebuildHighlightActors();
     NetworkGraph3D::Point toWorld(const NetworkGraph3D::Point &voxel) const;
 
-    // Hover picking: throttled, and against a locator built once per surface,
+    // Hover picking: throttled, and against locators built once per surface,
     // so resting the pointer costs one ray cast, not one per mouse event.
-    vtkSmartPointer<vtkStaticCellLocator> m_surfaceLocator;
     QTimer *m_hoverTimer = nullptr;
     QPoint m_hoverPos;
     bool m_hoverInside = false;
@@ -279,6 +290,8 @@ private:
     double m_spacingX = 1.0;
     double m_spacingY = 1.0;
     double m_spacingZ = 1.0;
+    // Spacing the shown surface was built with, for its status line.
+    std::array<double, 3> m_surfaceSpacing{1.0, 1.0, 1.0};
     // Rendered mask dimensions, used to clamp picked voxels.
     unsigned int m_dimX = 0;
     unsigned int m_dimY = 0;

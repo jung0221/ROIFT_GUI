@@ -2,22 +2,16 @@
 
 #include <array>
 #include <atomic>
-#include <cstddef>
 #include <vector>
 
 #include <vtkPolyData.h>
 #include <vtkSmartPointer.h>
 #include <vtkStaticCellLocator.h>
 
-// The 3D view's mask surface, free of the window and of the renderer so that it can be built on
-// a worker thread: contoured, smoothed, coloured per label, with a locator for picking.
+// The 3D view's mask surfaces, free of the window and of the renderer so that they can be built on
+// a worker thread: one closed, smoothed shell per label, each with a locator for picking.
 namespace mask_surface
 {
-
-// Up to this many labels each one is contoured on its own, so touching labels keep their shared
-// wall; past it the union is contoured once and each vertex takes the label of the voxel under
-// it. Discrete flying edges passes over the volume once per label: 1153 labels took 25 s.
-constexpr std::size_t kPerLabelLimit = 32;
 
 struct Input
 {
@@ -26,11 +20,20 @@ struct Input
     std::array<double, 3> spacing{1.0, 1.0, 1.0};
 };
 
+// Every wall of one label, against background and against other labels, wound so that its normals
+// point out of the label. A wall between two labels is in both their shells, so hiding one label
+// leaves the other closed, and a label enclosed by another has a shell of its own.
+struct Shell
+{
+    int label = 0;
+    vtkSmartPointer<vtkPolyData> poly;             // triangles with point normals
+    vtkSmartPointer<vtkStaticCellLocator> locator; // over poly
+};
+
 struct Surface
 {
-    std::vector<int> labels;                       // the positive labels present, ascending
-    vtkSmartPointer<vtkPolyData> poly;             // null without a label, or when cancelled
-    vtkSmartPointer<vtkStaticCellLocator> locator; // over poly
+    std::vector<int> labels;   // the positive labels present, ascending
+    std::vector<Shell> shells; // one per label, in the same order; empty without a label
     bool cancelled = false;
 };
 
