@@ -218,6 +218,14 @@ if(BUILD_ROIFT_TESTS)
   target_link_libraries(seed_files_test PRIVATE Qt6::Core)
   add_test(NAME seed_files COMMAND seed_files_test)
 
+  add_executable(command_line_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/command_line_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/CommandLine.cpp
+  )
+  target_include_directories(command_line_test PRIVATE src)
+  target_link_libraries(command_line_test PRIVATE Qt6::Core)
+  add_test(NAME command_line COMMAND command_line_test)
+
   add_executable(mask_edit_history_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_edit_history_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/MaskEditHistory.cpp
@@ -442,6 +450,12 @@ if(BUILD_ROIFT_TESTS)
   add_test(NAME image_load_gui COMMAND image_load_gui_test)
   set_tests_properties(image_load_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+  # Masks and seeds the command line pairs with each image open on that image.
+  add_executable(image_mask_pairs_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/image_mask_pairs_gui_test.cpp)
+  target_link_libraries(image_mask_pairs_gui_test PRIVATE roift_gui_test_objects)
+  add_test(NAME image_mask_pairs_gui COMMAND image_mask_pairs_gui_test)
+  set_tests_properties(image_mask_pairs_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
   # Building the window must not show any widget as a window of its own.
   add_executable(startup_window_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_window_test.cpp)
   target_link_libraries(startup_window_test PRIVATE roift_gui_test_objects)
@@ -493,7 +507,8 @@ if(BUILD_ROIFT_TESTS)
   # the aborting process sits on a Windows error dialog until CI's job limit
   # kills the whole run.
   if(WIN32 AND TARGET Qt6::QOffscreenIntegrationPlugin)
-    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test plane_mode_gui_test image_load_gui_test)
+    foreach(_offscreen_consumer wheel_guard_test mask_overlay_test plane_mode_gui_test image_load_gui_test
+                                image_mask_pairs_gui_test)
       add_custom_command(TARGET ${_offscreen_consumer} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
           "$<TARGET_FILE_DIR:${_offscreen_consumer}>/platforms"

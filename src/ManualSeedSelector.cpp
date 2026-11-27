@@ -525,6 +525,40 @@ bool ManualSeedSelector::applySeedsFromPath(const std::string &path)
     return true;
 }
 
+bool ManualSeedSelector::attachFilesToImage(const QString &imagePath, const QStringList &maskPaths, const QString &seedsPath)
+{
+    const int index = findImageIndexByPath(imagePath);
+    if (index < 0)
+        return false;
+
+    ImageData &data = m_images[static_cast<size_t>(index)];
+    for (const QString &maskPath : maskPaths)
+        data.masksToOpen.push_back(maskPath.toStdString());
+    if (!seedsPath.isEmpty())
+        data.seedsToOpen = seedsPath.toStdString();
+    if (index == m_currentImageIndex && hasImage())
+        openAttachedFiles();
+    return true;
+}
+
+void ManualSeedSelector::openAttachedFiles()
+{
+    if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
+        return;
+
+    // Taken out first, so a file that fails is not retried at the next visit.
+    ImageData &data = m_images[static_cast<size_t>(m_currentImageIndex)];
+    const std::vector<std::string> masks = std::exchange(data.masksToOpen, {});
+    const std::string seeds = std::exchange(data.seedsToOpen, {});
+    for (const std::string &mask : masks)
+    {
+        if (!applyMaskFromPath(mask))
+            std::cerr << "Warning: failed to load mask from " << mask << "\n";
+    }
+    if (!seeds.empty() && !applySeedsFromPath(seeds))
+        std::cerr << "Warning: failed to load seeds from " << seeds << "\n";
+}
+
 void ManualSeedSelector::refreshAssociatedFilesForCurrentImage(bool forceDetect)
 {
     if (m_currentImageIndex < 0 || m_currentImageIndex >= static_cast<int>(m_images.size()))
@@ -3234,6 +3268,8 @@ void ManualSeedSelector::applyLoadedImage(int row, NiftiImage &&image, const Npz
         m_mask3DView->restoreCameraState(preservedCamera, true);
     if (m_statusLabel)
         m_statusLabel->setText(QString("Loaded: %1").arg(QString::fromStdString(m_path)));
+
+    openAttachedFiles();
 
     // After the event loop has drawn the image, and only if it is still the open one.
     QTimer::singleShot(0, this, [this, path = m_path]()
