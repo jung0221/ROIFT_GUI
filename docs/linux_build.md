@@ -59,6 +59,9 @@ extra setup. `ROIFT_EXECUTABLE` overrides the search with an explicit path.
 ctest --test-dir build --output-on-failure
 ```
 
+The test executables are built into `build/tests/`, apart from `roift_gui`
+(see [packaging.md](packaging.md#windows-build-time-and-caching) for why).
+
 The fifteen tests are `ui_paths`, `solver_network`, `planar_slice`,
 `plane_segmentation`, `raster_image`, `nifti_volume`, `wheel_guard`,
 `mask_overlay`, `plane_mode_gui`, `image_load_gui`, `startup_window`,

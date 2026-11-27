@@ -5,7 +5,6 @@
 #include <vtkIdList.h>
 #include <vtkIdTypeArray.h>
 #include <vtkImageData.h>
-#include <vtkObjectFactory.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkSMPThreadLocal.h>
@@ -115,22 +114,6 @@ void fillPadded(vtkImageData *image, const Input &input)
                          }
                      });
 }
-
-// Surface nets winds a face by the labels on its two sides only from VTK 9.6 on; before, the
-// winding is fixed per axis. The unsmoothed net it caches shows, on every version, which voxels a
-// face lies between, and smoothing moves its points without touching its faces or their order.
-class OrientedSurfaceNets : public vtkSurfaceNets3D
-{
-public:
-    static OrientedSurfaceNets *New();
-    vtkTypeMacro(OrientedSurfaceNets, vtkSurfaceNets3D);
-    vtkPolyData *unsmoothed() const { return this->GeometryCache; }
-
-protected:
-    OrientedSurfaceNets() = default;
-    ~OrientedSurfaceNets() override = default;
-};
-vtkStandardNewMacro(OrientedSurfaceNets);
 
 // Position of a label value in the ascending label list, -1 for background.
 class ShellIndex
@@ -431,17 +414,31 @@ Surface build(const Input &input, const std::atomic<bool> *cancel)
 
     // One pass for every label, where discrete flying edges passes over the volume once per label.
     // Quads, so that the smoothed faces are those of the unsmoothed net, in the same order.
-    auto nets = vtkSmartPointer<OrientedSurfaceNets>::New();
+    // Surface nets winds a face by the labels on its two sides only from VTK 9.6 on, so the faces
+    // are classified on the unsmoothed net, which shows on every version which voxels a face lies
+    // between. Its protected cache is no such net from VTK 9.7 on, so the net is taken through the
+    // public API: extracted with no smoothing, then smoothed by restoring the iterations, which up
+    // to 9.6 smooths the cached net and from 9.7 extracts the same net again first.
+    auto nets = vtkSmartPointer<vtkSurfaceNets3D>::New();
     nets->SetInputData(image);
     nets->SetNumberOfLabels(int(surface.labels.size()));
     for (std::size_t i = 0; i < surface.labels.size(); ++i)
         nets->SetValue(int(i), surface.labels[i]);
     nets->SetOutputMeshTypeToQuads();
     nets->DataCachingOn();
+    const int iterations = nets->GetNumberOfIterations();
+    nets->SetNumberOfIterations(0);
+    nets->Update();
+    // Smoothing replaces the output's points rather than moving them, so a shallow copy keeps these.
+    auto unsmoothed = vtkSmartPointer<vtkPolyData>::New();
+    unsmoothed->ShallowCopy(nets->GetOutput());
+    if (cancelled(cancel))
+        return stop();
+    nets->SetNumberOfIterations(iterations);
     nets->Update();
     vtkPolyData *smoothed = nets->GetOutput();
-    vtkPolyData *unsmoothed = nets->unsmoothed();
-    if (!unsmoothed || unsmoothed->GetNumberOfCells() != smoothed->GetNumberOfCells())
+    if (unsmoothed->GetNumberOfCells() != smoothed->GetNumberOfCells() ||
+        unsmoothed->GetNumberOfPoints() != smoothed->GetNumberOfPoints())
         unsmoothed = smoothed; // not expected: the faces are then classified where smoothing left them
     image = nullptr;
     if (cancelled(cancel))

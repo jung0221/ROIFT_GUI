@@ -96,10 +96,15 @@
     enclosed by another had no surface. Each face of the net lies between two labels and goes into
     the shell of each one that is not background, wound so that its normal leaves that label; a
     shell has its own copies of the points, so each side of a shared wall gets its own normals.
-    The side a face's label lies on is read from the unsmoothed net the filter caches
-    (`OrientedSurfaceNets::unsmoothed()`), where every face is axis-aligned half a voxel from the
-    two voxels it separates: `vtkSurfaceNets3D` winds faces by their labels only from VTK 9.6 on,
-    and the Windows build has 9.3. The smoothed faces are the unsmoothed ones in the same order
+    The side a face's label lies on is read from the unsmoothed net, where every face is
+    axis-aligned half a voxel from the two voxels it separates: `vtkSurfaceNets3D` winds faces by
+    their labels only from VTK 9.6 on, and the Windows build has 9.3. The filter runs once with no
+    smoothing iterations, which yields that net, and again with them restored. Up to VTK 9.6 the
+    second run only smooths the net it cached; from 9.7 on it extracts the same net again first
+    (about 20 ms more on a 320³ phantom), because the filter's cache is then its own output and is
+    cleared before each run. That protected cache is not read: from VTK 9.7 on it holds the
+    smoothed points, on which the faces of two touching labels are classified wrongly. The smoothed
+    faces are the unsmoothed ones in the same order
     because the output is quads, split into triangles afterwards along the shorter diagonal. The
     shells holding at least an eighth of the triangles get their locators built one at a time,
     each threaded inside; the rest are finished side by side. The label scan, the padded copy
