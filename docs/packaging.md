@@ -112,6 +112,12 @@ with a short `/usr/bin/roift_gui` launcher, so it has no apt dependency on Qt6
 or VTK. The launcher `exec`s the real binary rather than a copy, which keeps
 `oiftrelax` next to `applicationDirPath()`.
 
+`DEB_COMPRESSION` selects the compressor passed to `dpkg-deb -Z` (`xz`, `gzip`
+or `none`; default `xz`). Releases ship `xz`, the smallest package. It took
+2.5 min of the 3.5 min packaging step on a 4-core runner, so `pr.yml` builds
+the pull-request package with `gzip`; the tree being checked is the same. An
+unsupported value fails in `dpkg-deb`, after the AppImage is already built.
+
 ### The C++ runtime
 
 conda-forge builds Qt, VTK and ITK with a recent GCC (GCC 16, `GLIBCXX_3.4.36`,
@@ -295,6 +301,19 @@ GitHub job limit of six. Three measures keep that affordable:
   nothing.
 - **Test timeout.** `ctest --timeout 300` bounds each test. A GUI test that
   aborts on Windows can wait on an error dialog indefinitely rather than fail.
+- **One compile of the application.** Every source but `main.cpp` is the
+  `roift_gui_objects` object library, linked into `roift_gui` and into every
+  window test. Compiled once for the app and once for the tests, it held
+  `roift_gui` alone on the critical path for about three of the build's seven
+  minutes. The Visual Studio generator compiles a project's files one at a
+  time, so that library is compiled with `/MP`.
+- **Tests in their own folder.** Test executables go to `build/tests/<config>`,
+  not beside `roift_gui.exe`. `windeployqt` runs after `roift_gui` links and
+  replaces DLLs in the exe's folder; while a test was linking there in parallel,
+  with vcpkg copying the same DLLs beside it, the build failed with *"Cannot
+  remove existing file ...\icuin78.dll: The process cannot access the file
+  because it is being used by another process"*. The failure depended on link
+  order, so a run could pass or fail on the same commit.
 - **Keeping the cache.** GitHub deletes a cache entry not restored for 7 days,
   after which the next Windows build is cold again. `cache-warm.yml` restores
   the newest entry every Monday so that a quiet period does not cost a

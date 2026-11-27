@@ -13,6 +13,10 @@
 # The package is deliberately "fat": it installs the whole bundle under
 # /opt/roift_gui (no apt Depends on Qt6/VTK — Debian's VTK is Qt5-only), plus a
 # /usr/bin launcher, .desktop entry and icons for menu integration.
+#
+# DEB_COMPRESSION picks dpkg-deb's compressor (xz, gzip, none). The default, xz,
+# makes the smallest package and is what releases ship, but it took 2.5 min of a
+# 4-core CI runner; pull requests, where the package is only a check, use gzip.
 set -euo pipefail
 
 APPIMAGE="$(readlink -f "${1:?usage: build-deb.sh <appimage-file> [output-dir]}")"
@@ -114,5 +118,5 @@ EOF
 # ── Build the package (root:root ownership without needing root) ────────────
 mkdir -p "$OUT_DIR"
 DEB="$OUT_DIR/roift_gui-${VERSION}-amd64.deb"
-dpkg-deb --build --root-owner-group "$PKG" "$DEB"
+dpkg-deb --build --root-owner-group -Z"${DEB_COMPRESSION:-xz}" "$PKG" "$DEB"
 echo "deb written to $DEB"

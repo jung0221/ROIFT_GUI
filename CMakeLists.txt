@@ -150,8 +150,27 @@ find_package(VTK REQUIRED COMPONENTS
   GUISupportQt
 )
 
+# Everything but the entry point, compiled once and linked into roift_gui and into
+# every window test, which would otherwise each compile the whole application.
+set(APP_SOURCES ${SRC_FILES})
+list(REMOVE_ITEM APP_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
+add_library(roift_gui_objects OBJECT ${APP_SOURCES})
+target_include_directories(roift_gui_objects PUBLIC src)
+target_link_libraries(roift_gui_objects PUBLIC Qt6::Widgets ${ITK_LIBRARIES} ${VTK_LIBRARIES})
+if(TARGET Qt6::Svg)
+  target_link_libraries(roift_gui_objects PUBLIC Qt6::Svg)
+  target_compile_definitions(roift_gui_objects PUBLIC ROIFT_HAS_QT_SVG=1)
+else()
+  message(WARNING "Qt6 Svg module not found. NIfTI icon buttons will use non-SVG fallbacks.")
+endif()
+# The Visual Studio generator compiles a project's files one at a time; this is
+# the one project with dozens of them, each pulling in Qt, VTK and ITK headers.
+if(MSVC)
+  target_compile_options(roift_gui_objects PRIVATE /MP)
+endif()
+
 # resources/roift_gui.qrc carries the window/taskbar icon (AUTORCC compiles it in).
-add_executable(roift_gui ${SRC_FILES} resources/roift_gui.qrc)
+add_executable(roift_gui src/main.cpp resources/roift_gui.qrc)
 
 if(WIN32)
   # Exe icon + version metadata, and the GUI subsystem so no console window
@@ -165,25 +184,17 @@ if(WIN32)
   set_target_properties(roift_gui PROPERTIES WIN32_EXECUTABLE ON)
 endif()
 
-target_include_directories(roift_gui PRIVATE src)
-target_link_libraries(roift_gui
-  PRIVATE
-    Qt6::Widgets
-    ${ITK_LIBRARIES}
-    ${VTK_LIBRARIES}
-)
-
-if(TARGET Qt6::Svg)
-  target_link_libraries(roift_gui PRIVATE Qt6::Svg)
-  target_compile_definitions(roift_gui PRIVATE ROIFT_HAS_QT_SVG=1)
-else()
-  message(WARNING "Qt6 Svg module not found. NIfTI icon buttons will use non-SVG fallbacks.")
-endif()
+target_link_libraries(roift_gui PRIVATE roift_gui_objects)
 
 # Off by default: these targets are only needed to run the self-tests.
 option(BUILD_ROIFT_TESTS "Build the import probe and path-helper tests" OFF)
 if(BUILD_ROIFT_TESTS)
   enable_testing()
+
+  # Apart from roift_gui.exe: windeployqt replaces DLLs in the exe's folder, and
+  # fails with "Cannot remove existing file" while a test linking in parallel
+  # has vcpkg copying or reading the same DLLs there.
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
 
   add_executable(ui_paths_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/ui_paths_test.cpp
@@ -304,28 +315,19 @@ if(BUILD_ROIFT_TESTS)
   # Needs a QApplication but no display.
   set_tests_properties(wheel_guard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-  # The window tests drive the whole application except its entry point, which
-  # compiles once here and is linked into each of them.
-  set(GUI_TEST_SOURCES ${SRC_FILES})
-  list(REMOVE_ITEM GUI_TEST_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp)
-  add_library(roift_gui_test_objects OBJECT ${GUI_TEST_SOURCES})
-  target_include_directories(roift_gui_test_objects PUBLIC src)
-  target_link_libraries(roift_gui_test_objects PUBLIC Qt6::Widgets ${ITK_LIBRARIES} ${VTK_LIBRARIES})
-  if(TARGET Qt6::Svg)
-    target_link_libraries(roift_gui_test_objects PUBLIC Qt6::Svg)
-    target_compile_definitions(roift_gui_test_objects PUBLIC ROIFT_HAS_QT_SVG=1)
-  endif()
+  # The window tests drive the whole application except its entry point, linking
+  # the same roift_gui_objects as roift_gui.
 
   # Mask list and overlay blend.
   add_executable(mask_overlay_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_overlay_test.cpp)
-  target_link_libraries(mask_overlay_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(mask_overlay_test PRIVATE roift_gui_objects)
   add_test(NAME mask_overlay COMMAND mask_overlay_test)
   # Builds a window and reads composed slices back; no display needed.
   set_tests_properties(mask_overlay PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   # Opens a raster image in the window and checks what the tools are handed.
   add_executable(plane_mode_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/plane_mode_gui_test.cpp)
-  target_link_libraries(plane_mode_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(plane_mode_gui_test PRIVATE roift_gui_objects)
   add_test(NAME plane_mode_gui COMMAND plane_mode_gui_test)
   set(_plane_mode_gui_env "QT_QPA_PLATFORM=offscreen")
   if(TARGET oiftrelax)
@@ -335,102 +337,102 @@ if(BUILD_ROIFT_TESTS)
 
   # Brush, erase and Clear through the window's controls, each one undo step.
   add_executable(mask_edit_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_edit_gui_test.cpp)
-  target_link_libraries(mask_edit_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(mask_edit_gui_test PRIVATE roift_gui_objects)
   add_test(NAME mask_edit_gui COMMAND mask_edit_gui_test)
   set_tests_properties(mask_edit_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   # Every action that would drop unsaved mask edits asks first.
   add_executable(mask_unsaved_prompt_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_unsaved_prompt_test.cpp)
-  target_link_libraries(mask_unsaved_prompt_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(mask_unsaved_prompt_test PRIVATE roift_gui_objects)
   add_test(NAME mask_unsaved_prompt COMMAND mask_unsaved_prompt_test)
   set_tests_properties(mask_unsaved_prompt PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Crash copies of the edited mask: written, offered back, restored, removed.
   add_executable(mask_autosave_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_autosave_test.cpp)
-  target_link_libraries(mask_autosave_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(mask_autosave_test PRIVATE roift_gui_objects)
   add_test(NAME mask_autosave COMMAND mask_autosave_test)
   set_tests_properties(mask_autosave PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # A saved mask keeps its image's origin, spacing and direction, and every label.
   add_executable(mask_save_geometry_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_save_geometry_test.cpp)
-  target_link_libraries(mask_save_geometry_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(mask_save_geometry_test PRIVATE roift_gui_objects)
   add_test(NAME mask_save_geometry COMMAND mask_save_geometry_test)
   set_tests_properties(mask_save_geometry PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   # The label table: names, counts that follow edits, finding and picking labels.
   add_executable(label_table_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_table_gui_test.cpp)
-  target_link_libraries(label_table_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(label_table_gui_test PRIVATE roift_gui_objects)
   add_test(NAME label_table_gui COMMAND label_table_gui_test)
   set_tests_properties(label_table_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Locks and paint targets: no tool changes a locked label.
   add_executable(label_lock_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_lock_gui_test.cpp)
-  target_link_libraries(label_lock_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(label_lock_gui_test PRIVATE roift_gui_objects)
   add_test(NAME label_lock_gui COMMAND label_lock_gui_test)
   set_tests_properties(label_lock_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # The brush in millimetres: disc and ball on anisotropic voxels, gap-free strokes, Ctrl+wheel.
   add_executable(brush_mm_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/brush_mm_gui_test.cpp)
-  target_link_libraries(brush_mm_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(brush_mm_gui_test PRIVATE roift_gui_objects)
   add_test(NAME brush_mm_gui COMMAND brush_mm_gui_test)
   set_tests_properties(brush_mm_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Pieces, small-piece removal, relabelling a piece, swap and merge; each one undo step.
   add_executable(label_ops_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_ops_gui_test.cpp)
-  target_link_libraries(label_ops_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(label_ops_gui_test PRIVATE roift_gui_objects)
   add_test(NAME label_ops_gui COMMAND label_ops_gui_test)
   set_tests_properties(label_ops_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Fill between slices in the window: one undo step, locks and "Over" respected.
   add_executable(slice_fill_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_fill_gui_test.cpp)
-  target_link_libraries(slice_fill_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(slice_fill_gui_test PRIVATE roift_gui_objects)
   add_test(NAME slice_fill_gui COMMAND slice_fill_gui_test)
   set_tests_properties(slice_fill_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Fill mode in the window: slice or 3D region, one undo step, locks respected.
   add_executable(flood_fill_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/flood_fill_gui_test.cpp)
-  target_link_libraries(flood_fill_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(flood_fill_gui_test PRIVATE roift_gui_objects)
   add_test(NAME flood_fill_gui COMMAND flood_fill_gui_test)
   set_tests_properties(flood_fill_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Outlines only: the composed slice shows label edges and the image inside them.
   add_executable(mask_outline_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_outline_gui_test.cpp)
-  target_link_libraries(mask_outline_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(mask_outline_gui_test PRIVATE roift_gui_objects)
   add_test(NAME mask_outline_gui COMMAND mask_outline_gui_test)
   set_tests_properties(mask_outline_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Label morphology in the window: holes, grow, shrink, smooth; one undo step each.
   add_executable(label_morphology_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/label_morphology_gui_test.cpp)
-  target_link_libraries(label_morphology_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(label_morphology_gui_test PRIVATE roift_gui_objects)
   add_test(NAME label_morphology_gui COMMAND label_morphology_gui_test)
   set_tests_properties(label_morphology_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # The 3D surface builder on phantoms: labels, placement, closed edges, union colouring, cancel.
   add_executable(mask_surface_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/mask_surface_test.cpp)
-  target_link_libraries(mask_surface_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(mask_surface_test PRIVATE roift_gui_objects)
   add_test(NAME mask_surface COMMAND mask_surface_test)
 
   # Drawing with Show 3D on: one off-thread build per stroke, at its end; the camera stays.
   add_executable(draw_3d_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/draw_3d_gui_test.cpp)
-  target_link_libraries(draw_3d_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(draw_3d_gui_test PRIVATE roift_gui_objects)
   add_test(NAME draw_3d_gui COMMAND draw_3d_gui_test)
   set_tests_properties(draw_3d_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # Shift+drag on the 3D view erases the selected label inside the rectangle; Shift+click locates.
   add_executable(erase_3d_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/erase_3d_gui_test.cpp)
-  target_link_libraries(erase_3d_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(erase_3d_gui_test PRIVATE roift_gui_objects)
   add_test(NAME erase_3d_gui COMMAND erase_3d_gui_test)
   set_tests_properties(erase_3d_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # The slice keys from any focused widget that does not take text.
   add_executable(slice_keys_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_keys_gui_test.cpp)
-  target_link_libraries(slice_keys_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(slice_keys_gui_test PRIVATE roift_gui_objects)
   add_test(NAME slice_keys_gui COMMAND slice_keys_gui_test)
   set_tests_properties(slice_keys_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
   # A window/level drag draws once per hold interval, not once per queued move.
   add_executable(window_level_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/window_level_gui_test.cpp)
-  target_link_libraries(window_level_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(window_level_gui_test PRIVATE roift_gui_objects)
   add_test(NAME window_level_gui COMMAND window_level_gui_test)
   set_tests_properties(window_level_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
 
@@ -446,19 +448,19 @@ if(BUILD_ROIFT_TESTS)
 
   # Image loading in the window: inline by default, on a worker thread when enabled.
   add_executable(image_load_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/image_load_gui_test.cpp)
-  target_link_libraries(image_load_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(image_load_gui_test PRIVATE roift_gui_objects)
   add_test(NAME image_load_gui COMMAND image_load_gui_test)
   set_tests_properties(image_load_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   # Masks and seeds the command line pairs with each image open on that image.
   add_executable(image_mask_pairs_gui_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/image_mask_pairs_gui_test.cpp)
-  target_link_libraries(image_mask_pairs_gui_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(image_mask_pairs_gui_test PRIVATE roift_gui_objects)
   add_test(NAME image_mask_pairs_gui COMMAND image_mask_pairs_gui_test)
   set_tests_properties(image_mask_pairs_gui PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
   # Building the window must not show any widget as a window of its own.
   add_executable(startup_window_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_window_test.cpp)
-  target_link_libraries(startup_window_test PRIVATE roift_gui_test_objects)
+  target_link_libraries(startup_window_test PRIVATE roift_gui_objects)
   add_test(NAME startup_window COMMAND startup_window_test)
   set_tests_properties(startup_window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
@@ -500,12 +502,12 @@ if(BUILD_ROIFT_TESTS)
     message(STATUS "BUILD_ROIFT_TESTS=ON but no Python3 interpreter: npz_import test not registered")
   endif()
 
-  # wheel_guard, mask_overlay, plane_mode_gui and image_load_gui run with QT_QPA_PLATFORM=offscreen.
-  # Qt aborts at startup if the requested platform plugin is absent, and windeployqt
-  # stages only the native one — so on Windows the offscreen plugin has to be
-  # put beside the test binaries. Without it the tests do not fail, they hang:
-  # the aborting process sits on a Windows error dialog until CI's job limit
-  # kills the whole run.
+  # Every window test runs with QT_QPA_PLATFORM=offscreen, and they share one
+  # folder. Qt aborts at startup if the requested platform plugin is absent, and
+  # windeployqt deploys only beside roift_gui, so on Windows the offscreen plugin
+  # has to be put beside the test binaries. Without it the tests do not fail,
+  # they hang: the aborting process sits on a Windows error dialog until CI's job
+  # limit kills the whole run.
   if(WIN32 AND TARGET Qt6::QOffscreenIntegrationPlugin)
     foreach(_offscreen_consumer wheel_guard_test mask_overlay_test plane_mode_gui_test image_load_gui_test
                                 image_mask_pairs_gui_test)

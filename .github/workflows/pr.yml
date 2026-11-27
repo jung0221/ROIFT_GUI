@@ -46,6 +46,10 @@ jobs:
       # CI, so a green pull request said nothing about it.
       - name: Package
         shell: micromamba-shell {0}
+        # xz, what releases ship, took 2.5 of this step's 3.5 min; the layout
+        # under test is the same with gzip.
+        env:
+          DEB_COMPRESSION: gzip
         run: |
           packaging/linux/build-appimage.sh build dist
           packaging/linux/build-deb.sh dist/*.AppImage dist
